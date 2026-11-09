@@ -1,0 +1,47 @@
+:root {
+  --foil: conic-gradient(from 210deg, #9fd3ff, #c6a8ff, #ffb3d1, #ffe6a3, #a8f0d0, #9fd3ff);
+  --font-body: 'Plus Jakarta Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+
+html { overflow-y: auto; }
+body, .v-application {
+  font-family: var(--font-body) !important;
+  -webkit-font-smoothing: antialiased;
+}
+.v-application .text-h1, .v-application .text-h2, .v-application .text-h3,
+.v-application .text-h4, .v-application .text-h5, .v-application .text-h6 { font-family: var(--font-body) !important; }
+
+img { max-width: 100%; display: block; }
+.num { font-variant-numeric: tabular-nums; }
+.text-secondary-c { color: rgb(var(--v-theme-text-secondary)); }
+.text-muted-c { color: rgb(var(--v-theme-text-muted)); }
+.truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+
+.page { max-width: 1440px; margin: 0 auto; padding: 20px 24px 96px; }
+@media (max-width: 600px) { .page { padding: 16px 12px 96px; } }
+
+/* Card header: title + optional subtitle on the left, actions on the right. */
+.card-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 14px 18px; border-bottom: 1px solid rgb(var(--v-theme-border));
+  background: rgb(var(--v-theme-surface-chrome));
+}
+.card-head h2 { font-size: 15px; font-weight: 600; margin: 0; display: flex; align-items: center; gap: 8px; }
+.card-head p { font-size: 12.5px; margin: 2px 0 0; color: rgb(var(--v-theme-text-secondary)); }
+.card-body { padding: 18px; }
+
+/* Data tables: compact chrome header like the reference app. */
+.v-data-table thead th {
+  background: rgb(var(--v-theme-surface-chrome)) !important;
+  font-size: 12px !important; font-weight: 600 !important; text-transform: uppercase; letter-spacing: 0.04em;
+  color: rgb(var(--v-theme-text-secondary)) !important;
+}
+.v-data-table tbody tr { cursor: pointer; }
+
+.page-enter-active, .page-leave-active { transition: opacity 0.15s ease, transform 0.15s ease; }
+.page-enter-from { opacity: 0; transform: translateY(4px); }
+.page-leave-to { opacity: 0; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}

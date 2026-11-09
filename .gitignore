@@ -1,0 +1,19 @@
+# Secrets and local data
+.env
+*.db
+backend/data/
+
+# Python
+.venv/
+__pycache__/
+.pytest_cache/
+
+# Node / Nuxt
+node_modules/
+.nuxt/
+.output/
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
