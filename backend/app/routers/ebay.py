@@ -1,6 +1,8 @@
 import uuid
+from datetime import timedelta
+from statistics import median as _median
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlmodel import Session, col, select
 
@@ -54,6 +56,59 @@ def price_history(card_id: int, session: Session = Depends(get_session)):
     get_card_or_404(session, card_id)
     return session.exec(select(PriceSnapshot).where(PriceSnapshot.card_id == card_id)
                         .order_by(col(PriceSnapshot.created_at).desc())).all()
+
+
+_RANGE_DAYS = {"7d": 7, "1m": 30, "3m": 90, "1y": 365, "all": None}
+
+
+class TrendPoint(BaseModel):
+    date: str  # YYYY-MM-DD (UTC)
+    median: float
+    low: float | None
+    high: float | None
+    samples: int
+
+
+class Trend(BaseModel):
+    range: str
+    asking: list[TrendPoint]
+    sold: list[TrendPoint]
+    # Sold prices need eBay's restricted Marketplace Insights API; false until a sold snapshot exists.
+    sold_available: bool
+    first_recorded: str | None  # date of the earliest asking snapshot, for "history starts on ..."
+
+
+def _daily(snaps: list[PriceSnapshot]) -> list[TrendPoint]:
+    """One point per UTC day: the median of that day's snapshot medians."""
+    by_day: dict[str, list[PriceSnapshot]] = {}
+    for s in snaps:
+        if s.median is not None:
+            by_day.setdefault(s.created_at.date().isoformat(), []).append(s)
+    return [TrendPoint(date=d, median=round(_median(x.median for x in v), 2),
+                       low=min((x.low for x in v if x.low is not None), default=None),
+                       high=max((x.high for x in v if x.high is not None), default=None),
+                       samples=sum(x.sample_size for x in v))
+            for d, v in sorted(by_day.items())]
+
+
+@router.get("/trend", response_model=Trend)
+def price_trend(card_id: int, range: str = Query("1m", pattern="^(7d|1m|3m|1y|all)$"),
+                session: Session = Depends(get_session)):
+    """Asking vs sold price over time, built from the price snapshots saved for this card."""
+    get_card_or_404(session, card_id)
+    snaps = session.exec(select(PriceSnapshot).where(PriceSnapshot.card_id == card_id)
+                         .order_by(col(PriceSnapshot.created_at))).all()
+    asking_all = [s for s in snaps if s.source == "ebay-active"]
+    sold_all = [s for s in snaps if s.source == "ebay-sold"]
+    days = _RANGE_DAYS[range]
+    cutoff = utcnow() - timedelta(days=days) if days else None
+
+    def within(rows: list[PriceSnapshot]) -> list[PriceSnapshot]:
+        return [s for s in rows if cutoff is None or s.created_at >= cutoff]
+
+    return Trend(range=range, asking=_daily(within(asking_all)), sold=_daily(within(sold_all)),
+                 sold_available=bool(sold_all),
+                 first_recorded=asking_all[0].created_at.date().isoformat() if asking_all else None)
 
 
 class ListingCreate(BaseModel):

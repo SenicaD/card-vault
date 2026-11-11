@@ -7,7 +7,7 @@ from ..config import get_settings
 from ..models import PriceQuote
 from ..services.ebay import EbayItem
 from ..services.identify import CardIdentification, get_identifier
-from ..services.pricing import quote, summarize
+from ..services.pricing import quote, summarize, top_listings
 
 router = APIRouter(prefix="/api/scan", tags=["scan"])
 
@@ -63,7 +63,8 @@ async def scan_card(file: UploadFile = File(...),
         if not ident.name or not usable:
             result.price_error = "No matching listings on eBay. Enter the card details, then re-price."
         else:
-            result.quote = PriceQuote(query=ident.search_query, source="ebay-image", **summarize(usable))
+            result.quote = PriceQuote(query=ident.search_query, source="ebay-image",
+                                      top_listings=top_listings(usable), **summarize(usable))
             result.comps = sorted(usable, key=lambda c: c.price)[:25]
     elif price:
         try:

@@ -1,7 +1,9 @@
 from datetime import UTC, datetime
 from enum import StrEnum
+from typing import Any
 
-from sqlalchemy.types import DateTime, TypeDecorator
+from sqlalchemy import Column
+from sqlalchemy.types import JSON, DateTime, TypeDecorator
 from sqlmodel import Field, SQLModel
 
 
@@ -105,6 +107,8 @@ class PriceQuote(SQLModel):
     mean: float | None
     high: float | None
     currency: str = "USD"
+    # Best-match listings behind this quote (EbayItem dicts), kept so the card page can show them later
+    top_listings: list[dict[str, Any]] | None = None
 
 
 class CardCreate(CardBase):
@@ -148,13 +152,14 @@ class PriceSnapshot(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     card_id: int = Field(foreign_key="card.id", index=True)
     query: str
-    source: str  # "ebay-active" (Browse API) | "ebay-sold" (Marketplace Insights)
+    source: str  # "ebay-active" (Browse API, asking) | "ebay-image" (look-alikes) | "ebay-sold" (Marketplace Insights)
     sample_size: int
     low: float | None
     median: float | None
     mean: float | None
     high: float | None
     currency: str = "USD"
+    top_listings: list[dict[str, Any]] | None = Field(default=None, sa_column=Column(JSON, nullable=True))
     created_at: datetime = ts(default_factory=utcnow)
 
 

@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     ebay_return_policy_id: str = ""
     ebay_merchant_location_key: str = ""
 
+    # Re-price unsold cards this often so the trend chart fills in (live eBay only). 0 turns it off.
+    price_refresh_hours: float = 24
+
     database_url: str = "sqlite:///./data/cardvault.db"
     image_dir: Path = Path("./data/images")
     cors_origins: str = "http://localhost:3000"

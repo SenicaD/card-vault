@@ -50,6 +50,7 @@ export interface PriceQuote {
   mean: number | null
   high: number | null
   currency: string
+  top_listings?: EbayItem[] | null
 }
 
 export interface ScanResult {
@@ -81,7 +82,26 @@ export interface PriceSnapshot {
   mean: number | null
   high: number | null
   currency: string
+  top_listings?: EbayItem[] | null
   created_at: string
+}
+
+export interface TrendPoint {
+  date: string
+  median: number
+  low: number | null
+  high: number | null
+  samples: number
+}
+
+export type TrendRange = '7d' | '1m' | '3m' | '1y' | 'all'
+
+export interface Trend {
+  range: TrendRange
+  asking: TrendPoint[]
+  sold: TrendPoint[]
+  sold_available: boolean
+  first_recorded: string | null
 }
 
 export interface EbayItem {

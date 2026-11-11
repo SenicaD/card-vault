@@ -1,6 +1,7 @@
 from collections.abc import Iterator
 from pathlib import Path
 
+from sqlalchemy import inspect, text
 from sqlmodel import Session, SQLModel, create_engine
 
 from .config import get_settings
@@ -20,6 +21,18 @@ def init_db() -> None:
     from . import models  # noqa: F401  (register tables)
 
     SQLModel.metadata.create_all(engine)
+    _add_missing_columns()
+
+
+def _add_missing_columns() -> None:
+    """create_all never alters existing tables. Add columns introduced after a database was first created."""
+    additions = {"pricesnapshot": {"top_listings": "JSON"}}
+    with engine.begin() as conn:
+        for table, cols in additions.items():
+            have = {c["name"] for c in inspect(conn).get_columns(table)}
+            for name, ddl in cols.items():
+                if name not in have:
+                    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}"))
 
 
 def get_session() -> Iterator[Session]:

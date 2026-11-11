@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useDisplay } from 'vuetify'
-import { CATEGORY_LABELS, type Card, type CardFields, type EbayItem, type Listing, type Location, type PriceSnapshot } from '~/types'
+import { CATEGORY_LABELS, type Card, type CardFields, type EbayItem, type Listing, type Location, type PriceSnapshot, type Trend, type TrendRange } from '~/types'
 
 const { api } = useApi()
 const { xs } = useDisplay()
@@ -23,6 +23,24 @@ const listTitle = ref('')
 const listPrice = ref<number | null>(null)
 
 const latest = computed(() => history.value[0] ?? null)
+const top = computed(() => (latest.value?.top_listings ?? []).slice(0, 4))
+
+const RANGES: { value: TrendRange; label: string }[] = [
+  { value: '7d', label: '7D' }, { value: '1m', label: '1M' }, { value: '3m', label: '3M' },
+  { value: '1y', label: '1Y' }, { value: 'all', label: 'All' },
+]
+const range = ref<TrendRange>('1m')
+const trend = ref<Trend | null>(null)
+const trendLoading = ref(false)
+async function loadTrend() {
+  trendLoading.value = true
+  try { trend.value = await api<Trend>(`/api/cards/${id}/trend`, { query: { range: range.value } }) }
+  catch { trend.value = null } finally { trendLoading.value = false }
+}
+watch(range, () => {
+  loadTrend()
+  try { localStorage.setItem('cv-trend-range', range.value) } catch {}
+})
 const locName = computed(() => locations.value.find((l) => l.id === card.value?.location_id)?.name)
 const subline = computed(() => {
   const c = card.value
@@ -79,6 +97,7 @@ const lookUp = () => run('price', async () => {
   })
   comps.value = res.comps
   history.value = [res.snapshot, ...history.value]
+  loadTrend()
   card.value = await api<Card>(`/api/cards/${id}`)
   if (!listPrice.value) listPrice.value = res.snapshot.median
 })
@@ -115,7 +134,14 @@ const historyHeaders = [
   { title: 'High', key: 'high', align: 'end' as const },
 ]
 
-onMounted(load)
+onMounted(() => {
+  try {
+    const saved = localStorage.getItem('cv-trend-range') as TrendRange | null
+    if (saved && RANGES.some((r) => r.value === saved)) range.value = saved
+  } catch {}
+  load()
+  loadTrend()
+})
 </script>
 
 <template>
@@ -205,6 +231,43 @@ onMounted(load)
                 </v-alert>
                 <p v-else class="text-body-2 text-secondary-c mt-4 mb-0">No value yet. Look it up to see what similar cards are listed for.</p>
               </div>
+              <!-- Top 4 eBay listings behind the latest lookup -->
+              <template v-if="top.length">
+                <v-divider />
+                <div class="px-5 pt-4 pb-2 d-flex align-baseline justify-space-between ga-2">
+                  <span class="text-body-2 font-weight-medium">Top eBay listings</span>
+                  <span class="text-caption text-muted-c">Best matches for “{{ latest?.query }}”</span>
+                </div>
+                <div class="top-grid px-5 pb-4">
+                  <a v-for="l in top" :key="l.item_id" :href="l.url || undefined" target="_blank" rel="noopener" class="top-item">
+                    <div class="top-img">
+                      <img v-if="l.image_url" :src="l.image_url" alt="" loading="lazy" />
+                      <v-icon v-else icon="mdi-image-off-outline" />
+                    </div>
+                    <div class="top-title">{{ l.title }}</div>
+                    <div class="d-flex align-baseline justify-space-between ga-2">
+                      <strong class="num">{{ money(l.price) }}</strong>
+                      <span class="text-caption text-muted-c truncate">{{ l.condition || '' }}</span>
+                    </div>
+                  </a>
+                </div>
+              </template>
+
+              <!-- Asking vs sold trend -->
+              <v-divider />
+              <div class="px-5 pt-4 pb-2 d-flex align-center justify-space-between flex-wrap ga-2">
+                <span class="text-body-2 font-weight-medium">Price trend</span>
+                <v-btn-toggle v-model="range" mandatory density="compact" variant="outlined" divided rounded="lg" color="primary" aria-label="Time range">
+                  <v-btn v-for="r in RANGES" :key="r.value" :value="r.value" size="small">{{ r.label }}</v-btn>
+                </v-btn-toggle>
+              </div>
+              <div class="px-5 pb-4">
+                <TrendChart :asking="trend?.asking ?? []" :sold="trend?.sold ?? []" :sold-available="!!trend?.sold_available" :loading="trendLoading" />
+                <p v-if="trend?.first_recorded" class="text-caption text-muted-c mt-2 mb-0">
+                  History starts {{ trend.first_recorded }}. Cards are re-priced about once a day.
+                </p>
+              </div>
+
               <template v-if="comps.length">
                 <v-divider />
                 <div class="px-5 pt-4 pb-2 text-body-2 font-weight-medium">Comparable listings ({{ comps.length }})</div>
@@ -309,4 +372,11 @@ onMounted(load)
 .comp-link { color: rgb(var(--v-theme-primary)); text-decoration: none; }
 .comp-link:hover { text-decoration: underline; }
 .no-pointer :deep(tbody tr) { cursor: default; }
+.top-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+@media (max-width: 700px) { .top-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.top-item { display: grid; gap: 6px; align-content: start; color: inherit; text-decoration: none; padding: 8px; border-radius: 10px; border: 1px solid rgb(var(--v-theme-border)); transition: border-color 0.15s; }
+.top-item:hover, .top-item:focus-visible { border-color: rgb(var(--v-theme-primary)); }
+.top-img { aspect-ratio: 1; border-radius: 6px; overflow: hidden; display: grid; place-items: center; background: rgb(var(--v-theme-surface-sunken)); color: rgb(var(--v-theme-text-muted)); }
+.top-img img { width: 100%; height: 100%; object-fit: cover; }
+.top-title { font-size: 12.5px; line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; min-height: 2.7em; }
 </style>

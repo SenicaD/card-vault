@@ -126,3 +126,101 @@ def test_ebay_image_parser_reads_titles():
     assert (r.name, r.year, r.card_number, r.set_name, r.category) == ("Luka Doncic", "2018", "280", "Panini Prizm", "sports")
     assert r.grade == "Raw" and "Rookie" in r.variant
     assert parse_matches([]).confidence == 0
+
+
+def _card(c, name="Charizard Base Set"):
+    return c.post("/api/cards", json={"category": "pokemon", "name": name, "search_query": name}).json()
+
+
+def test_price_returns_top_four_listings_and_keeps_them():
+    with TestClient(app) as c:
+        card = _card(c)
+        snap = c.post(f"/api/cards/{card['id']}/price").json()["snapshot"]
+        assert len(snap["top_listings"]) == 4
+        assert {"title", "price", "url"} <= set(snap["top_listings"][0])
+        # persisted: visible again from the history endpoint
+        hist = c.get(f"/api/cards/{card['id']}/prices").json()
+        assert hist[0]["top_listings"] == snap["top_listings"]
+
+
+def test_trend_ranges_and_sold_flag():
+    from datetime import timedelta
+
+    from sqlmodel import Session
+
+    from app.db import engine
+    from app.models import PriceSnapshot, utcnow
+
+    with TestClient(app) as c:
+        card = _card(c, "Trend Card")
+        now = utcnow()
+        with Session(engine) as s:
+            for days_ago, med in ((400, 50.0), (60, 30.0), (3, 20.0), (3, 24.0)):
+                s.add(PriceSnapshot(card_id=card["id"], query="q", source="ebay-active", sample_size=5,
+                                    low=med - 5, median=med, mean=med, high=med + 5,
+                                    created_at=now - timedelta(days=days_ago)))
+            s.add(PriceSnapshot(card_id=card["id"], query="q", source="ebay-image", sample_size=5,
+                                low=1, median=1, mean=1, high=1, created_at=now))
+            s.commit()
+
+        def trend(r):
+            return c.get(f"/api/cards/{card['id']}/trend", params={"range": r}).json()
+
+        assert [p["median"] for p in trend("7d")["asking"]] == [22.0]  # two same-day snapshots -> median of medians
+        assert len(trend("3m")["asking"]) == 2
+        assert len(trend("1y")["asking"]) == 2  # the 400-day-old point is outside a year
+        assert len(trend("all")["asking"]) == 3  # the ebay-image snapshot is not an asking price
+        t = trend("all")
+        assert t["sold"] == [] and t["sold_available"] is False
+        assert t["first_recorded"] == (now - timedelta(days=400)).date().isoformat()
+        assert c.get(f"/api/cards/{card['id']}/trend", params={"range": "5y"}).status_code == 422
+
+
+def test_refresh_job_reprices_only_due_unsold_cards():
+    import asyncio
+    from datetime import timedelta
+
+    from app.services.refresh import refresh_due
+
+    with TestClient(app) as c:
+        fresh, stale, sold = _card(c, "Fresh One"), _card(c, "Stale One"), _card(c, "Sold One")
+        c.post(f"/api/cards/{fresh['id']}/price")  # priced just now -> not due
+        c.patch(f"/api/cards/{sold['id']}", json={"status": "sold"})
+
+        refreshed, failed = asyncio.run(refresh_due(pause=0))
+        assert refreshed >= 1 and failed == 0  # (other tests' cards share this database)
+        assert len(c.get(f"/api/cards/{stale['id']}/prices").json()) == 1
+        assert len(c.get(f"/api/cards/{fresh['id']}/prices").json()) == 1
+        assert c.get(f"/api/cards/{sold['id']}/prices").json() == []
+        assert c.get(f"/api/cards/{stale['id']}").json()["est_value"] is not None
+
+        # nothing is due again right away
+        assert asyncio.run(refresh_due(pause=0)) == (0, 0)
+        # ...but with a zero max age everything unsold is due
+        assert asyncio.run(refresh_due(max_age=timedelta(0), pause=0))[0] >= 2
+        assert len(c.get(f"/api/cards/{fresh['id']}/prices").json()) == 2
+        assert c.get(f"/api/cards/{sold['id']}/prices").json() == []  # sold cards are never re-priced
+
+
+def test_old_database_gets_top_listings_column(tmp_path):
+    import sqlite3
+
+    from sqlalchemy import create_engine, text
+
+    import app.db as db
+
+    path = tmp_path / "old.db"
+    con = sqlite3.connect(path)
+    con.execute("CREATE TABLE pricesnapshot (id INTEGER PRIMARY KEY, card_id INT, query TEXT, source TEXT, "
+                "sample_size INT, low REAL, median REAL, mean REAL, high REAL, currency TEXT, created_at DATETIME)")
+    con.commit(); con.close()
+
+    real = db.engine
+    db.engine = create_engine(f"sqlite:///{path}")
+    try:
+        db._add_missing_columns()
+        db._add_missing_columns()  # idempotent
+        with db.engine.connect() as conn:
+            assert "top_listings" in [r[1] for r in conn.execute(text("PRAGMA table_info(pricesnapshot)"))]
+    finally:
+        db.engine = real
