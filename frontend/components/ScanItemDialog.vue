@@ -1,7 +1,9 @@
 <script setup lang="ts">
+import { useDisplay } from 'vuetify'
 import type { Location } from '~/types'
 import type { ScanItem } from '~/composables/useScanQueue'
 
+const { mdAndUp } = useDisplay()
 const props = defineProps<{ item: ScanItem | null; locations: Location[] }>()
 const emit = defineEmits<{ close: []; reprice: [key: number]; save: [key: number] }>()
 
@@ -13,7 +15,7 @@ const stale = computed(() => !!props.item?.quote && props.item.quote.query !== p
 </script>
 
 <template>
-  <v-dialog :model-value="!!item" max-width="1100" scrollable @update:model-value="(v) => !v && emit('close')">
+  <v-dialog :model-value="!!item" max-width="1100" :fullscreen="!mdAndUp" scrollable @update:model-value="(v) => !v && emit('close')">
     <v-card v-if="item && item.form">
       <div class="card-head">
         <div>
@@ -97,5 +99,5 @@ const stale = computed(() => !!props.item?.quote && props.item.quote.query !== p
 .comps { display: block; min-width: 0; }
 .comp { display: flex; justify-content: space-between; gap: 10px; font-size: 13px; padding: 6px 0; border-top: 1px solid rgb(var(--v-theme-border)); color: inherit; text-decoration: none; }
 .comp:hover { color: rgb(var(--v-theme-primary)); }
-.footer-actions { display: flex; gap: 8px; padding: 12px 18px; background: rgb(var(--v-theme-surface-chrome)); }
+.footer-actions { display: flex; gap: 8px; padding: 12px 18px calc(12px + env(safe-area-inset-bottom, 0px)); background: rgb(var(--v-theme-surface-chrome)); }
 </style>

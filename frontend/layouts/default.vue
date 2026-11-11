@@ -4,7 +4,7 @@ import type { Stats } from '~/types'
 
 const route = useRoute()
 const theme = useTheme()
-const { mdAndUp } = useDisplay()
+const { mdAndUp, xs } = useDisplay()
 const { api } = useApi()
 
 const drawer = ref(true)
@@ -93,7 +93,7 @@ function doSearch() {
       <v-text-field
         v-model="search"
         prepend-inner-icon="mdi-magnify"
-        placeholder="Search cards by name, set, number"
+        :placeholder="xs ? 'Search cards' : 'Search cards by name, set, number'"
         density="compact"
         variant="solo-filled"
         flat
@@ -125,7 +125,7 @@ function doSearch() {
       @click="toggleTheme"
     />
     <div v-if="route.path.startsWith('/scan')" class="mr-2" />
-    <v-btn v-else color="primary" variant="flat" prepend-icon="mdi-camera-plus-outline" to="/scan" class="ml-2 mr-3 d-none d-sm-flex">
+    <v-btn v-else color="primary" variant="flat" prepend-icon="mdi-camera-plus-outline" to="/scan" class="ml-2 mr-3 d-none d-md-flex">
       Scan card
     </v-btn>
   </v-app-bar>
@@ -162,8 +162,9 @@ function doSearch() {
 .nav-heading { font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: rgb(var(--v-theme-text-muted)); }
 .nav-item :deep(.v-list-item-title) { font-weight: 500; font-size: 14px; }
 .nav-footer { font-size: 11px; color: rgb(var(--v-theme-text-muted)); padding: 4px 12px 8px; }
-.shell-bar { border-bottom: 1px solid rgb(var(--v-theme-border)) !important; }
-.bar-search { width: min(420px, 100%); margin-left: 16px; }
+.shell-bar { border-bottom: 1px solid rgb(var(--v-theme-border)) !important; padding-top: env(safe-area-inset-top, 0px); }
+.bar-search { width: min(420px, 100%); margin-left: 16px; min-width: 0; }
+@media (max-width: 599px) { .bar-search { margin-left: 4px; } }
 .shell-main { background: rgb(var(--v-theme-background)); }
 .scan-fab { position: fixed !important; right: 16px; bottom: calc(16px + env(safe-area-inset-bottom, 0px)); z-index: 1005; }
 </style>

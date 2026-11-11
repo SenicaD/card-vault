@@ -1,7 +1,9 @@
 <script setup lang="ts">
+import { useDisplay } from 'vuetify'
 import { CATEGORY_LABELS, STATUS_LABELS, type Card, type Category, type Location, type Stats } from '~/types'
 
 const { api } = useApi()
+const { mdAndUp } = useDisplay()
 const route = useRoute()
 const router = useRouter()
 
@@ -11,6 +13,8 @@ const status = ref<string | null>(null)
 const locationId = ref<number | null>(route.query.location ? Number(route.query.location) : null)
 const sort = ref<'recent' | 'value' | 'name'>('recent')
 const view = ref<'table' | 'grid'>('table')
+// The 7-column table needs desktop width; below md the grid is the only view.
+const showTable = computed(() => mdAndUp.value && view.value === 'table')
 
 const cards = ref<Card[]>([])
 const locations = ref<Location[]>([])
@@ -104,7 +108,7 @@ watch(view, (v) => { try { localStorage.setItem('cv-view', v) } catch {} })
     <PageHeader title="Inventory" subtitle="Every card in your collection, where it's stored, and what it's worth.">
       <template #actions>
         <v-btn variant="outlined" prepend-icon="mdi-refresh" :loading="loading" @click="load">Refresh</v-btn>
-        <v-btn color="primary" variant="flat" prepend-icon="mdi-camera-plus-outline" to="/scan">Scan card</v-btn>
+        <v-btn color="primary" variant="flat" prepend-icon="mdi-camera-plus-outline" to="/scan" class="d-none d-md-flex">Scan card</v-btn>
       </template>
     </PageHeader>
 
@@ -160,7 +164,7 @@ watch(view, (v) => { try { localStorage.setItem('cv-view', v) } catch {} })
           <h2><v-icon icon="mdi-format-list-bulleted" size="18" />Cards</h2>
           <p>{{ cards.length }} {{ cards.length === 1 ? 'result' : 'results' }}<template v-if="hasFilters"> · filtered</template></p>
         </div>
-        <v-btn-toggle v-model="view" mandatory density="compact" variant="outlined" divided rounded="lg" color="primary">
+        <v-btn-toggle v-if="mdAndUp" v-model="view" mandatory density="compact" variant="outlined" divided rounded="lg" color="primary">
           <v-btn value="table" icon="mdi-table" aria-label="Table view" />
           <v-btn value="grid" icon="mdi-view-grid-outline" aria-label="Grid view" />
         </v-btn-toggle>
@@ -187,7 +191,7 @@ watch(view, (v) => { try { localStorage.setItem('cv-view', v) } catch {} })
 
       <!-- Table -->
       <v-data-table
-        v-else-if="view === 'table'"
+        v-else-if="showTable"
         :headers="headers"
         :items="cards"
         :loading="loading"
@@ -226,7 +230,7 @@ watch(view, (v) => { try { localStorage.setItem('cv-view', v) } catch {} })
         <v-card v-for="c in cards" :key="c.id" class="tile" :to="`/cards/${c.id}`">
           <div class="pa-3 pb-0"><CardThumb :src="c.image_url" :alt="c.name" :foil="!!c.est_value && c.est_value >= 100" /></div>
           <div class="pa-3">
-            <div class="d-flex justify-space-between align-baseline ga-2">
+            <div class="tile-row d-flex justify-space-between align-baseline ga-2">
               <strong class="truncate">{{ c.name }}</strong>
               <span class="num font-weight-semibold text-no-wrap">{{ money(c.est_value) }}</span>
             </div>
@@ -247,6 +251,7 @@ watch(view, (v) => { try { localStorage.setItem('cv-view', v) } catch {} })
 .font-weight-semibold { font-weight: 600; }
 .toolbar { display: grid; grid-template-columns: minmax(200px, 2fr) repeat(4, minmax(140px, 1fr)) auto; gap: 10px; padding: 14px 18px; align-items: center; }
 @media (max-width: 1100px) { .toolbar { grid-template-columns: 1fr 1fr; } .tb-search { grid-column: 1 / -1; } }
+@media (max-width: 599px) { .toolbar { padding: 12px; gap: 8px; } }
 .mini-thumb { width: 36px; flex-shrink: 0; }
 .mini-thumb :deep(.thumb) { border-radius: 5px; padding: 1px; }
 .mini-thumb :deep(img), .mini-thumb :deep(.empty) { border-radius: 4px; }
@@ -261,6 +266,12 @@ watch(view, (v) => { try { localStorage.setItem('cv-view', v) } catch {} })
 .mix-item.on { border-color: rgb(var(--v-theme-primary)); background: rgb(var(--v-theme-brand-muted)); }
 
 .grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(min(180px, 100%), 1fr)); }
+@media (max-width: 599px) {
+  .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; padding: 12px; }
+  .tile-row { flex-direction: column; align-items: flex-start !important; gap: 0 !important; width: 100%; }
+  .tile :deep(.pa-3) { padding: 8px !important; }
+  .tile :deep(.pa-3.pb-0) { padding-bottom: 0 !important; }
+}
 .tile { transition: border-color 0.15s, box-shadow 0.15s; }
 .tile:hover { border-color: rgb(var(--v-theme-primary)) !important; box-shadow: 0 4px 14px rgba(20, 30, 60, 0.08); }
 

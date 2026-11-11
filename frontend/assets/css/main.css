@@ -26,6 +26,10 @@ img { max-width: 100%; display: block; }
   padding: 14px 18px; border-bottom: 1px solid rgb(var(--v-theme-border));
   background: rgb(var(--v-theme-surface-chrome));
 }
+@media (max-width: 599px) {
+  .card-head { flex-wrap: wrap; padding: 12px 14px; }
+  .card-body { padding: 14px; }
+}
 .card-head h2 { font-size: 15px; font-weight: 600; margin: 0; display: flex; align-items: center; gap: 8px; }
 .card-head p { font-size: 12.5px; margin: 2px 0 0; color: rgb(var(--v-theme-text-secondary)); }
 .card-body { padding: 18px; }

@@ -1,7 +1,9 @@
 <script setup lang="ts">
+import { useDisplay } from 'vuetify'
 import { CATEGORY_LABELS, type Card, type CardFields, type EbayItem, type Listing, type Location, type PriceSnapshot } from '~/types'
 
 const { api } = useApi()
+const { xs } = useDisplay()
 const route = useRoute()
 const id = Number(route.params.id)
 
@@ -134,7 +136,7 @@ onMounted(load)
       <v-col cols="12" md="4" lg="3">
         <div class="side">
           <v-card>
-            <div class="card-body"><CardThumb :src="card.image_url" :alt="card.name" :foil="!!card.est_value && card.est_value >= 100" /></div>
+            <div class="card-body photo"><CardThumb :src="card.image_url" :alt="card.name" :foil="!!card.est_value && card.est_value >= 100" /></div>
           </v-card>
 
           <v-card>
@@ -180,10 +182,10 @@ onMounted(load)
 
         <v-card>
           <v-tabs v-model="tab" color="primary" density="comfortable" class="tabs">
-            <v-tab value="value" prepend-icon="mdi-cash-multiple">Valuation</v-tab>
-            <v-tab value="sell" prepend-icon="mdi-storefront-outline">Sell on eBay</v-tab>
-            <v-tab value="history" prepend-icon="mdi-history">
-              Price history <v-chip size="x-small" class="ml-2" variant="tonal">{{ history.length }}</v-chip>
+            <v-tab value="value" :prepend-icon="xs ? undefined : 'mdi-cash-multiple'">{{ xs ? 'Value' : 'Valuation' }}</v-tab>
+            <v-tab value="sell" :prepend-icon="xs ? undefined : 'mdi-storefront-outline'">{{ xs ? 'Sell' : 'Sell on eBay' }}</v-tab>
+            <v-tab value="history" :prepend-icon="xs ? undefined : 'mdi-history'">
+              {{ xs ? 'History' : 'Price history' }} <v-chip size="x-small" class="ml-2" variant="tonal">{{ history.length }}</v-chip>
             </v-tab>
           </v-tabs>
           <v-divider />
@@ -293,6 +295,7 @@ onMounted(load)
 <style scoped>
 .side { display: grid; gap: 16px; position: sticky; top: 84px; }
 @media (max-width: 959px) { .side { position: static; } }
+@media (max-width: 959px) { .photo { max-width: 240px; margin: 0 auto; } }
 .facts { margin: 0; padding: 6px 18px 14px; display: grid; }
 .facts > div { display: flex; justify-content: space-between; gap: 12px; padding: 9px 0; border-bottom: 1px solid rgb(var(--v-theme-border)); font-size: 13.5px; }
 .facts > div:last-child { border-bottom: 0; }

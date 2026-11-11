@@ -1,7 +1,9 @@
 <script setup lang="ts">
+import { useDisplay } from 'vuetify'
 import type { Location } from '~/types'
 
 const { api } = useApi()
+const { xs } = useDisplay()
 const locations = ref<Location[]>([])
 const name = ref('')
 const kind = ref('box')
@@ -109,7 +111,22 @@ onMounted(load)
           <div class="card-head">
             <div><h2><v-icon icon="mdi-archive-outline" size="18" />All locations</h2><p>Click a row to see its cards.</p></div>
           </div>
+          <v-list v-if="xs" class="py-0">
+            <div v-if="!loading && !locations.length" class="py-8 px-4 text-secondary-c">No locations yet. Add your first one, then pick it when you scan.</div>
+            <template v-for="(l, n) in locations" :key="l.id">
+              <v-divider v-if="n" />
+              <v-list-item class="py-2" @click="open(l)">
+                <template #prepend><div class="loc-icon mr-3"><v-icon :icon="kindIcon(l.kind)" size="18" /></div></template>
+                <v-list-item-title class="font-weight-medium">{{ l.name }}</v-list-item-title>
+                <v-list-item-subtitle><span class="text-capitalize">{{ l.kind }}</span> · <span class="num">{{ l.card_count }}</span> {{ l.card_count === 1 ? 'card' : 'cards' }}</v-list-item-subtitle>
+                <template #append>
+                  <v-btn icon="mdi-delete-outline" variant="text" color="error" :aria-label="`Delete ${l.name}`" @click.stop="pendingDelete = l" />
+                </template>
+              </v-list-item>
+            </template>
+          </v-list>
           <v-data-table
+            v-else
             :headers="headers"
             :items="locations"
             :loading="loading"
