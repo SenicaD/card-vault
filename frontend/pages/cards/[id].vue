@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useDisplay } from 'vuetify'
-import { CATEGORY_LABELS, type Card, type CardFields, type EbayItem, type Listing, type Location, type PriceResult, type PriceSnapshot, type Trend, type TrendRange } from '~/types'
+import { CATEGORY_LABELS, type Card, type CardFields, type EbayItem, type Listing, type Location, type GoneListing, type PriceResult, type PriceSnapshot, type Sale, type Trend, type TrendRange } from '~/types'
 
 const { api } = useApi()
 const { xs } = useDisplay()
@@ -24,7 +24,9 @@ const listPrice = ref<number | null>(null)
 
 const ownGrade = computed(() => normalizeGrade(card.value?.grade))
 // The estimate and the KPI cards follow the card's own grade; older pooled snapshots are the fallback.
-const latest = computed(() => history.value.find((s) => s.grade === ownGrade.value) ?? history.value[0] ?? null)
+// Never fall back to another grade's snapshot: that would show, say, PSA 10 figures on a PSA 9 card.
+// Only snapshots from before grades existed (no grade) stand in.
+const latest = computed(() => history.value.find((s) => s.grade === ownGrade.value) ?? history.value.find((s) => !s.grade) ?? null)
 
 // Grades to price and plot. Colour slots follow the grade, never its position, so removing one
 // grade doesn't repaint the others (the chart plots at most 4).
@@ -81,6 +83,37 @@ const RANGES: { value: TrendRange; label: string }[] = [
   { value: '7d', label: '7D' }, { value: '1m', label: '1M' }, { value: '3m', label: '3M' },
   { value: '1y', label: '1Y' }, { value: 'all', label: 'All' },
 ]
+const sales = ref<Sale[]>([])
+const gone = ref<GoneListing[]>([])
+const loadGone = async () => { gone.value = await api<GoneListing[]>(`/api/cards/${id}/gone`, { query: { limit: 10 } }).catch(() => []) }
+
+// "Mark sold" asks what you actually got, so the sale lands on the chart and in your sales list
+const sellOpen = ref(false)
+const sellPrice = ref<number | null>(null)
+const sellDate = ref('')
+const sellNote = ref('')
+const todayISO = () => new Date().toISOString().slice(0, 10)
+function openSell() {
+  sellPrice.value = card.value?.est_value ?? latest.value?.median ?? listPrice.value ?? null
+  sellDate.value = todayISO()
+  sellNote.value = ''
+  sellOpen.value = true
+}
+const recordSale = () => run('sale', async () => {
+  await api<Sale>(`/api/cards/${id}/sales`, {
+    method: 'POST',
+    body: { price: sellPrice.value, note: sellNote.value || null, sold_at: sellDate.value === todayISO() ? undefined : `${sellDate.value}T12:00:00Z` },
+  })
+  sellOpen.value = false
+  ;[card.value, sales.value] = await Promise.all([api<Card>(`/api/cards/${id}`), api<Sale[]>(`/api/cards/${id}/sales`)])
+  loadTrend()
+})
+const removeSale = (sid: number) => run('sale', async () => {
+  await api(`/api/cards/${id}/sales/${sid}`, { method: 'DELETE' })
+  sales.value = sales.value.filter((x) => x.id !== sid)
+  loadTrend()
+})
+
 const range = ref<TrendRange>('1m')
 const trend = ref<Trend | null>(null)
 const trendLoading = ref(false)
@@ -112,12 +145,14 @@ function defaultTitle(c: Card) {
 
 async function load() {
   try {
-    ;[card.value, locations.value, history.value, listings.value] = await Promise.all([
+    ;[card.value, locations.value, history.value, listings.value, sales.value] = await Promise.all([
       api<Card>(`/api/cards/${id}`),
       api<Location[]>('/api/locations'),
       api<PriceSnapshot[]>(`/api/cards/${id}/prices`),
       api<Listing[]>(`/api/cards/${id}/listings`),
+      api<Sale[]>(`/api/cards/${id}/sales`),
     ])
+    loadGone()
     form.value = fieldsOf(card.value)
     listTitle.value = defaultTitle(card.value)
     listPrice.value = card.value.est_value
@@ -135,8 +170,15 @@ async function run(label: string, fn: () => Promise<void>) {
 }
 
 const save = () => run('save', async () => {
+  const before = ownGrade.value
   card.value = await api<Card>(`/api/cards/${id}`, { method: 'PATCH', body: form.value })
   form.value = fieldsOf(card.value)
+  // The card's grade changed: move the grade selection (chips, price table, trend) over to the new grade.
+  const after = normalizeGrade(card.value.grade)
+  if (after !== before) {
+    const swapped = selectedGrades.value.map((g) => (g === before ? after : g))
+    selectedGrades.value = [...new Set(swapped.includes(after) ? swapped : [after, ...swapped])]
+  }
   listTitle.value = defaultTitle(card.value)
   editing.value = false
 })
@@ -153,6 +195,7 @@ const lookUp = () => run('price', async () => {
   comps.value = res.comps
   gradeCounts.value = res.grade_counts
   history.value = [...res.snapshots, ...history.value]
+  loadGone()
   card.value = await api<Card>(`/api/cards/${id}`)
   if (!listPrice.value) listPrice.value = res.snapshot.median
   loadTrend()
@@ -205,7 +248,7 @@ onMounted(() => {
     <PageHeader :title="card.name" :subtitle="subline" :crumbs="[{ title: 'Inventory', to: '/' }, { title: card.name }]">
       <template #actions>
         <StatusPill :status="card.status" size="default" />
-        <v-btn v-if="card.status !== 'sold'" variant="outlined" prepend-icon="mdi-check-circle-outline" :loading="busy === 'status'" @click="setStatus('sold')">Mark sold</v-btn>
+        <v-btn v-if="card.status !== 'sold'" variant="outlined" prepend-icon="mdi-check-circle-outline" @click="openSell">Mark sold</v-btn>
         <v-btn v-else variant="outlined" prepend-icon="mdi-undo" :loading="busy === 'status'" @click="setStatus('in_stock')">Return to stock</v-btn>
         <v-btn variant="outlined" color="error" prepend-icon="mdi-delete-outline" @click="confirmDelete = true">Delete</v-btn>
       </template>
@@ -378,12 +421,33 @@ onMounted(() => {
                 </v-btn-toggle>
               </div>
               <div class="px-5 pb-4">
-                <TrendChart :asking="trend?.asking ?? []" :sold="trend?.sold ?? []" :sold-available="!!trend?.sold_available" :slots="slots" :loading="trendLoading" />
+                <TrendChart :asking="trend?.asking ?? []" :sold="trend?.sold ?? []" :sold-source="trend?.sold_source ?? null" :sales="trend?.sales ?? []" :slots="slots" :loading="trendLoading" />
                 <p v-if="selectedGrades.length > MAX_PLOTTED" class="text-caption text-muted-c mt-2 mb-0">The chart shows the first {{ MAX_PLOTTED }} grades you selected.</p>
                 <p v-if="trend?.first_recorded" class="text-caption text-muted-c mt-2 mb-0">
                   History starts {{ trend.first_recorded }}. Cards are re-priced about once a day.
                 </p>
               </div>
+
+              <!-- Listings that disappeared: the estimate behind the dashed line -->
+              <template v-if="gone.length">
+                <v-divider />
+                <div class="px-5 pt-4 pb-1 text-body-2 font-weight-medium">Listings that disappeared</div>
+                <p class="px-5 text-caption text-muted-c mb-2">
+                  Likely sales, not confirmed ones: a seller can also end or relist a listing. The price is what it was asking when we last saw it.
+                </p>
+                <v-table density="compact" class="grade-table">
+                  <thead><tr><th>Gone</th><th>Grade</th><th>Listing</th><th class="text-right">Last asking price</th></tr></thead>
+                  <tbody>
+                    <tr v-for="g in gone" :key="g.id">
+                      <td class="num text-no-wrap">{{ g.gone_at ? isoDate(g.gone_at).slice(0, 10) : '' }}</td>
+                      <td class="text-no-wrap">{{ g.grade }}</td>
+                      <td class="gone-title"><span class="truncate d-block">{{ g.title }}</span></td>
+                      <td class="text-right num text-no-wrap"><PriceLink :value="g.price" :listing="{ item_id: g.item_id, title: g.title, price: g.price, currency: 'USD', condition: null, url: g.url }" :label="g.verdict === 'out_of_stock' ? 'Sold out' : 'No longer on eBay'" /></td>
+                    </tr>
+                  </tbody>
+                </v-table>
+                <div class="pb-3" />
+              </template>
 
               <template v-if="comps.length">
                 <v-divider />
@@ -437,6 +501,23 @@ onMounted(() => {
 
             <!-- History -->
             <v-window-item value="history">
+              <template v-if="sales.length">
+                <div class="px-5 pt-4 pb-2 text-body-2 font-weight-medium">Your sales</div>
+                <v-table density="compact" class="grade-table">
+                  <thead><tr><th>Date</th><th>Grade</th><th>Note</th><th class="text-right">Price</th><th /></tr></thead>
+                  <tbody>
+                    <tr v-for="x in sales" :key="x.id">
+                      <td class="num text-no-wrap">{{ isoDate(x.sold_at).slice(0, 10) }}</td>
+                      <td class="text-no-wrap">{{ x.grade || '—' }}</td>
+                      <td>{{ x.note || '' }}</td>
+                      <td class="text-right num font-weight-semibold">{{ money(x.price) }}</td>
+                      <td class="text-right"><v-btn icon="mdi-delete-outline" variant="text" size="small" color="error" :aria-label="`Delete the ${money(x.price)} sale`" @click="removeSale(x.id)" /></td>
+                    </tr>
+                  </tbody>
+                </v-table>
+                <v-divider class="mt-2" />
+                <div class="px-5 pt-4 pb-2 text-body-2 font-weight-medium">Price lookups</div>
+              </template>
               <v-data-table :headers="historyHeaders" :items="history" density="comfortable" items-per-page="10" class="no-pointer">
                 <template #item.created_at="{ item }"><span class="num">{{ isoDate(item.created_at) }}</span></template>
                 <template #item.grade="{ item }">{{ item.grade || 'All' }}</template>
@@ -450,6 +531,22 @@ onMounted(() => {
         </v-card>
       </v-col>
     </v-row>
+
+    <v-dialog v-model="sellOpen" max-width="440">
+      <v-card>
+        <div class="card-head"><div><h2><v-icon icon="mdi-check-circle-outline" size="18" />Mark as sold</h2><p>What did you actually get? It goes on the price chart.</p></div></div>
+        <form class="card-body d-grid" @submit.prevent="recordSale">
+          <v-text-field v-model.number="sellPrice" label="Sale price" prefix="$" type="number" min="0.01" step="0.01" inputmode="decimal" autofocus />
+          <v-text-field v-model="sellDate" label="Sold on" type="date" :max="todayISO()" />
+          <v-text-field v-model="sellNote" label="Note (optional)" placeholder="eBay auction, trade show, local sale…" maxlength="500" />
+          <v-card-actions class="px-0 pb-0">
+            <v-spacer />
+            <v-btn variant="text" @click="sellOpen = false">Cancel</v-btn>
+            <v-btn type="submit" color="primary" variant="flat" :disabled="!sellPrice || sellPrice <= 0 || !sellDate" :loading="busy === 'sale'">Mark sold</v-btn>
+          </v-card-actions>
+        </form>
+      </v-card>
+    </v-dialog>
 
     <v-dialog v-model="confirmDelete" max-width="420">
       <v-card>
@@ -491,6 +588,8 @@ onMounted(() => {
 .comp-link:hover { text-decoration: underline; }
 .no-pointer :deep(tbody tr) { cursor: default; }
 .grade-table { background: transparent !important; }
+.d-grid { display: grid; gap: 14px; }
+.gone-title { max-width: 320px; }
 .grade-table :deep(th) { font-size: 11.5px !important; text-transform: uppercase; letter-spacing: 0.04em; color: rgb(var(--v-theme-text-muted)) !important; }
 .top-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
 @media (max-width: 700px) { .top-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }

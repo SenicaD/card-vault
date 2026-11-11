@@ -30,10 +30,10 @@ const locationItems = computed(() => [
       <v-col cols="12"><v-text-field v-model="model.variant" label="Variant or parallel" placeholder="Refractor, 1st Edition, Holo…" /></v-col>
       <v-col cols="12" sm="6">
         <v-combobox v-model="model.grade" :items="GRADE_OPTIONS" label="Grade" placeholder="Raw, PSA 10…" clearable
-          hint="Pick the grade on the slab, or Raw if the card isn't graded. You can also type one." />
+          hint="Pick the grade on the slab, or Raw if the card isn't graded. You can also type one." persistent-hint />
       </v-col>
       <v-col cols="12" sm="6">
-        <v-select v-model="model.condition" :items="conditions" label="Condition (raw cards)" hint="How worn an ungraded card is. Graded cards use the grade instead.">
+        <v-select v-model="model.condition" :items="conditions" label="Condition (raw cards)" hint="How worn an ungraded card is. Graded cards use the grade instead." persistent-hint>
           <template #item="{ props: p, item }">
             <v-list-item v-bind="p" :title="item.raw.title" :subtitle="[item.raw.description, item.raw.sports].filter(Boolean).join(' ')" lines="three" />
           </template>

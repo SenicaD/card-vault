@@ -4,6 +4,7 @@ from sqlmodel import Session, col, func, or_, select
 from ..config import get_settings
 from ..db import get_session
 from ..models import Card, CardCategory, CardCreate, CardRead, CardStatus, CardUpdate, PriceSnapshot, utcnow
+from ..services.grading import normalize_grade
 from ..services.identify import CardIdentification, build_search_query
 from .common import get_card_or_404, to_read
 
@@ -81,7 +82,16 @@ def get_card(card_id: int, session: Session = Depends(get_session)):
 @router.patch("/{card_id}", response_model=CardRead)
 def update_card(card_id: int, body: CardUpdate, session: Session = Depends(get_session)):
     card = get_card_or_404(session, card_id)
+    old_grade = normalize_grade(card.grade)
     card.sqlmodel_update(body.model_dump(exclude_unset=True))
+    new_grade = normalize_grade(card.grade)
+    if new_grade != old_grade:
+        # The estimate belonged to the old grade. Use the newest price we already have for the new one,
+        # or clear it until the card is priced, rather than keep showing the old grade's value.
+        snap = session.exec(select(PriceSnapshot).where(
+            PriceSnapshot.card_id == card.id, PriceSnapshot.source == "ebay-active", PriceSnapshot.grade == new_grade,
+            col(PriceSnapshot.median).is_not(None)).order_by(col(PriceSnapshot.created_at).desc()).limit(1)).first()
+        card.est_value, card.priced_at = (snap.median, snap.created_at) if snap else (None, None)
     card.updated_at = utcnow()
     session.add(card)
     session.commit()

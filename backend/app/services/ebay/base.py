@@ -42,4 +42,9 @@ class EbayClient(Protocol):
 
     async def search_by_image(self, image_bytes: bytes, limit: int = 50) -> list[EbayItem]: ...
 
+    async def get_item_status(self, item_id: str) -> str:
+        """'active' if the listing is still up, 'out_of_stock' if it sold out, 'not_found' if it is gone.
+        Raises when eBay can't say (rate limit, outage), so the caller can try again later."""
+        ...
+
     async def create_listing(self, req: ListingRequest, publish: bool = True) -> ListingResult: ...

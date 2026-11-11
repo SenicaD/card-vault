@@ -171,7 +171,7 @@ def test_trend_ranges_and_sold_flag():
         assert len(trend("1y")["asking"][0]["points"]) == 2  # the 400-day-old point is outside a year
         assert len(trend("all")["asking"][0]["points"]) == 3  # the ebay-image snapshot is not an asking price
         t = trend("all")
-        assert t["sold"][0]["points"] == [] and t["sold_available"] is False
+        assert t["sold"][0]["points"] == [] and t["sold_source"] is None and t["sales"] == []
         assert t["first_recorded"] == (now - timedelta(days=400)).date().isoformat()
         assert c.get(f"/api/cards/{card['id']}/trend", params={"range": "5y"}).status_code == 422
 
@@ -306,7 +306,7 @@ def test_grade_groups_never_mix_listings():
 
     async def run():
         items = await get_ebay().search_active(mix_q, limit=200)
-        quotes, counts, comps = await quote_grades(mix_q, ["Raw", "PSA 10", "PSA 9"])
+        quotes, counts, comps, groups = await quote_grades(mix_q, ["Raw", "PSA 10", "PSA 9"])
         return items, quotes, counts, comps
 
     items, quotes, counts, comps = asyncio.run(run())
@@ -455,3 +455,163 @@ def test_refresh_saves_counts_and_does_not_research_empty_cards_every_round(monk
         assert q not in calls  # the check counts, so it isn't searched again straight away
         asyncio.run(refresh.refresh_due(max_age=timedelta(0), pause=0))
         assert q in calls
+
+
+# ---------- sales you made, and listings that disappear ----------
+
+def test_recording_a_sale_marks_sold_and_appears_on_the_trend():
+    from datetime import timedelta
+
+    from app.models import utcnow
+
+    with TestClient(app) as c:
+        card = c.post("/api/cards", json={"category": "sports", "name": "Sale Card", "grade": "PSA 9"}).json()
+        cid = card["id"]
+        assert c.post(f"/api/cards/{cid}/sales", json={"price": 0}).status_code == 422
+        when = (utcnow() - timedelta(days=3)).isoformat()
+        r = c.post(f"/api/cards/{cid}/sales", json={"price": 123.456, "sold_at": when, "note": "eBay auction"})
+        assert r.status_code == 201, r.text
+        sale = r.json()
+        assert sale["price"] == 123.46 and sale["grade"] == "PSA 9"
+        assert c.get(f"/api/cards/{cid}").json()["status"] == "sold"
+        assert [x["id"] for x in c.get(f"/api/cards/{cid}/sales").json()] == [sale["id"]]
+
+        t = c.get(f"/api/cards/{cid}/trend", params={"range": "1m"}).json()
+        assert [(p["price"], p["grade"]) for p in t["sales"]] == [(123.46, "PSA 9")]
+        # a different grade's chart doesn't show it, and neither does a range that ends before the sale
+        assert c.get(f"/api/cards/{cid}/trend", params=[("range", "1m"), ("grades", "Raw")]).json()["sales"] == []
+        assert c.get(f"/api/cards/{cid}/trend", params={"range": "7d"}).json()["sales"][0]["price"] == 123.46
+
+        assert c.delete(f"/api/cards/{cid}/sales/{sale['id']}").status_code == 204
+        assert c.get(f"/api/cards/{cid}/sales").json() == []
+        assert c.delete(f"/api/cards/{cid}/sales/{sale['id']}").status_code == 404
+
+
+def test_listings_that_disappear_become_an_estimated_sold_line():
+    import asyncio
+
+    from sqlmodel import Session, select
+
+    from app.db import engine
+    from app.models import ListingSeen
+    from app.services import pricing
+    from app.services.ebay import EbayItem, get_ebay
+    from app.services.tracker import track_listings
+
+    ebay = get_ebay()
+
+    def item(n, price, title="Tracked Card"):
+        return EbayItem(item_id=f"v1|track{n}|0", title=title, price=price, condition="Ungraded", url=f"https://ebay.test/{n}")
+
+    with TestClient(app) as c:
+        card = c.post("/api/cards", json={"category": "sports", "name": "Tracked", "search_query": "tracked card"}).json()
+        cid = card["id"]
+        with Session(engine) as s:
+            first = asyncio.run(track_listings(s, cid, {"Raw": [item(1, 10.0), item(2, 20.0), item(3, 30.0), item(4, 40.0)]}))
+            assert first == dict(seen=4, new=4, gone=0, checked=0, unknown=0)
+
+            # next day: 2 and 3 have left the results. eBay says 2 is gone, 3 is still up (it just ranked lower)
+            ebay.gone.add("v1|track2|0")
+            ebay.gone.add("v1|track4|0")
+            second = asyncio.run(track_listings(s, cid, {"Raw": [item(1, 12.0)]}))
+            assert second["gone"] == 2 and second["checked"] == 3 and second["new"] == 0
+            rows = {r.item_id: r for r in s.exec(select(ListingSeen).where(ListingSeen.card_id == cid)).all()}
+            assert rows["v1|track2|0"].status == "gone" and rows["v1|track2|0"].price == 20.0  # last asking price
+            assert rows["v1|track3|0"].status == "active"  # ranked out, not sold: never counted
+            assert rows["v1|track1|0"].price == 12.0  # latest asking price while it is up
+
+        gone = c.get(f"/api/cards/{cid}/gone").json()
+        assert sorted(g["price"] for g in gone) == [20.0, 40.0]
+        assert all(g["verdict"] == "not_found" and g["url"] for g in gone)
+
+        t = c.get(f"/api/cards/{cid}/trend", params={"range": "7d", "grades": "Raw"}).json()
+        assert t["sold_source"] == "estimated"
+        point = t["sold"][0]["points"][0]
+        assert (point["median"], point["low"], point["high"], point["samples"]) == (30.0, 20.0, 40.0, 2)
+
+        # it comes back (relisted under the same id): no longer counted as gone
+        ebay.gone.discard("v1|track2|0")
+        with Session(engine) as s:
+            asyncio.run(track_listings(s, cid, {"Raw": [item(1, 12.0), item(2, 19.0)]}))
+        assert [g["price"] for g in c.get(f"/api/cards/{cid}/gone").json()] == [40.0]
+    ebay.gone.clear()
+
+
+def test_tracking_never_guesses_from_an_ebay_error_and_unknown_grades_are_skipped(monkeypatch):
+    import asyncio
+
+    from sqlmodel import Session, select
+
+    from app.db import engine
+    from app.models import ListingSeen
+    from app.services.ebay import EbayItem, get_ebay
+    from app.services.tracker import track_listings
+
+    async def boom(item_id):
+        raise RuntimeError("rate limited")
+
+    with TestClient(app) as c:
+        cid = c.post("/api/cards", json={"category": "sports", "name": "Errors"}).json()["id"]
+        mk = lambda n: EbayItem(item_id=f"v1|err{n}|0", title="Card", price=5.0, url="u")  # noqa: E731
+        with Session(engine) as s:
+            asyncio.run(track_listings(s, cid, {"Raw": [mk(1), mk(2)], "Unknown": [mk(9)]}))
+            assert {r.item_id for r in s.exec(select(ListingSeen).where(ListingSeen.card_id == cid)).all()} == {"v1|err1|0", "v1|err2|0"}
+            monkeypatch.setattr(get_ebay(), "get_item_status", boom)
+            stats = asyncio.run(track_listings(s, cid, {"Raw": []}))
+            assert stats["unknown"] == 2 and stats["gone"] == 0  # an error is not a sale
+        assert c.get(f"/api/cards/{cid}/gone").json() == []
+
+
+def test_lookup_and_daily_job_feed_the_tracker():
+    import asyncio
+
+    from sqlmodel import Session, select
+
+    from app.db import engine
+    from app.models import ListingSeen
+
+    with TestClient(app) as c:
+        cid = c.post("/api/cards", json={"category": "pokemon", "name": "Feeds", "search_query": "feeds tracker query"}).json()["id"]
+        assert c.post(f"/api/cards/{cid}/price").status_code == 200
+        with Session(engine) as s:
+            n = len(s.exec(select(ListingSeen).where(ListingSeen.card_id == cid)).all())
+        assert n > 0
+
+
+def test_live_item_status_reading():
+    import pytest
+
+    from app.services.ebay.live import EbayApiError, item_status
+
+    assert item_status(404, {}) == "not_found"
+    assert item_status(200, {"estimatedAvailabilities": [{"estimatedAvailabilityStatus": "OUT_OF_STOCK"}]}) == "out_of_stock"
+    assert item_status(200, {"estimatedAvailabilities": [{"estimatedAvailabilityStatus": "IN_STOCK"}]}) == "active"
+    assert item_status(200, {}) == "active"
+    for code in (400, 429, 500, 503):
+        with pytest.raises(EbayApiError):
+            item_status(code, {})
+
+
+def test_changing_the_grade_moves_the_estimate_to_the_new_grade():
+    q = _query_with("PSA 10", "PSA 9")
+    with TestClient(app) as c:
+        card = c.post("/api/cards", json={"category": "pokemon", "name": "Regrade", "grade": "PSA 10", "search_query": q}).json()
+        cid = card["id"]
+        r = c.post(f"/api/cards/{cid}/price", json={"grades": ["PSA 10", "PSA 9"]}).json()
+        by = {s["grade"]: s["median"] for s in r["snapshots"]}
+        assert c.get(f"/api/cards/{cid}").json()["est_value"] == by["PSA 10"]
+
+        # PSA 9 was already priced: the estimate switches to its latest price straight away
+        got = c.patch(f"/api/cards/{cid}", json={"grade": "PSA 9"}).json()
+        assert got["est_value"] == by["PSA 9"]
+
+        # a grade that was never priced: the old grade's value must not linger
+        got = c.patch(f"/api/cards/{cid}", json={"grade": "BGS 7"}).json()
+        assert got["est_value"] is None and got["priced_at"] is None
+
+        # editing something else leaves the estimate alone
+        c.patch(f"/api/cards/{cid}", json={"grade": "PSA 9"})
+        keep = c.get(f"/api/cards/{cid}").json()["est_value"]
+        assert c.patch(f"/api/cards/{cid}", json={"notes": "hello"}).json()["est_value"] == keep
+        # "PSA 9" and "psa 9" are the same grade, so retyping it doesn't reset anything
+        assert c.patch(f"/api/cards/{cid}", json={"grade": "psa 9"}).json()["est_value"] == keep

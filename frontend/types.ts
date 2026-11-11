@@ -105,12 +105,42 @@ export interface TrendSeries {
   points: TrendPoint[]
 }
 
+export interface SalePoint {
+  id: number
+  date: string
+  price: number
+  grade: string | null
+}
+
+export interface Sale {
+  id: number
+  card_id: number
+  price: number
+  grade: string | null
+  note: string | null
+  sold_at: string
+}
+
+// A listing that disappeared from eBay: its last asking price is our estimate of a sale.
+export interface GoneListing {
+  id: number
+  item_id: string
+  grade: string
+  title: string
+  price: number
+  url: string | null
+  image_url: string | null
+  gone_at: string | null
+  verdict: 'not_found' | 'out_of_stock' | null
+}
+
 export interface Trend {
   range: TrendRange
   grades: string[]
   asking: TrendSeries[]
   sold: TrendSeries[]
-  sold_available: boolean
+  sold_source: 'sold' | 'estimated' | null
+  sales: SalePoint[]
   first_recorded: string | null
   grades_available: string[]
 }

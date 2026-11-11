@@ -33,6 +33,7 @@ class MockEbayClient:
 
     def __init__(self) -> None:
         self.listings: dict[str, ListingResult] = {}
+        self.gone: set[str] = set()  # item ids the mock reports as no longer on eBay (tests use this)
 
     async def search_active(self, query: str, limit: int = 50) -> list[EbayItem]:
         seed = int(hashlib.sha256(query.lower().encode()).hexdigest(), 16)
@@ -72,6 +73,9 @@ class MockEbayClient:
         if len(items) > 4:
             items[-1].title, items[-2].title = "Random card lot 50 cards", "Different Player 2019 Topps #12"
         return items
+
+    async def get_item_status(self, item_id: str) -> str:
+        return "not_found" if item_id in self.gone else "active"
 
     async def create_listing(self, req: ListingRequest, publish: bool = True) -> ListingResult:
         offer_id = f"mock-offer-{uuid.uuid4().hex[:10]}"

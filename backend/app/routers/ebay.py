@@ -8,10 +8,11 @@ from sqlmodel import Session, col, select
 
 from ..config import get_settings
 from ..db import get_session
-from ..models import Card, CardCategory, CardStatus, Listing, PriceSnapshot, utcnow
+from ..models import Card, CardCategory, CardStatus, Listing, ListingSeen, PriceSnapshot, Sale, utcnow
 from ..services.ebay import EbayItem, ListingRequest, get_ebay
 from ..services.grading import grade_sort_key, normalize_grade
 from ..services.pricing import quote_grades
+from ..services.tracker import track_listings
 from .common import get_card_or_404
 
 router = APIRouter(prefix="/api/cards/{card_id}", tags=["ebay"])
@@ -42,7 +43,7 @@ async def price_card(card_id: int, body: PriceRequest | None = None,
     asked = body.grades if body and body.grades else [own]
     grades = list(dict.fromkeys(normalize_grade(g) for g in asked))[:8]
     try:
-        quotes, counts, comps = await quote_grades(query, grades)
+        quotes, counts, comps, groups = await quote_grades(query, grades)
     except Exception as e:
         raise HTTPException(502, f"eBay search failed: {e}") from e
 
@@ -59,7 +60,11 @@ async def price_card(card_id: int, body: PriceRequest | None = None,
     card.updated_at = utcnow()
     session.add(card)
     session.commit()
-    for s in snaps:
+    try:  # after the commit, so a failure here can never lose the price lookup
+        await track_listings(session, card.id, groups)
+    except Exception:
+        session.rollback()
+    for s in snaps:  # tracking commits too, which expires these; reload them before they are serialised
         session.refresh(s)
     return PriceResult(snapshot=primary, snapshots=snaps, comps=comps, grade_counts=counts)
 
@@ -82,6 +87,13 @@ class TrendPoint(BaseModel):
     samples: int
 
 
+class SalePoint(BaseModel):
+    id: int
+    date: str
+    price: float
+    grade: str | None
+
+
 class TrendSeries(BaseModel):
     grade: str
     points: list[TrendPoint]
@@ -92,8 +104,10 @@ class Trend(BaseModel):
     grades: list[str]  # grades plotted, in order (at most MAX_TREND_GRADES)
     asking: list[TrendSeries]
     sold: list[TrendSeries]
-    # Sold prices need eBay's restricted Marketplace Insights API; false until a sold snapshot exists.
-    sold_available: bool
+    # Where `sold` comes from: "sold" = real sold prices (eBay Marketplace Insights, if we ever get it),
+    # "estimated" = last asking prices of listings that disappeared, None = nothing yet.
+    sold_source: str | None
+    sales: list[SalePoint]  # sales you recorded yourself, for the plotted grades
     first_recorded: str | None  # date of the earliest asking snapshot, for "history starts on ..."
     grades_available: list[str]  # grades this card has recorded asking prices for
 
@@ -114,6 +128,16 @@ def _daily(snaps: list[PriceSnapshot]) -> list[TrendPoint]:
             for d, v in sorted(by_day.items())]
 
 
+def _daily_gone(rows: list[ListingSeen]) -> list[TrendPoint]:
+    """One point per UTC day: the median last-asking price of the listings that disappeared that day."""
+    by_day: dict[str, list[ListingSeen]] = {}
+    for r in rows:
+        by_day.setdefault(r.gone_at.date().isoformat(), []).append(r)
+    return [TrendPoint(date=d, median=round(_median(x.price for x in v), 2), low=min(x.price for x in v),
+                       high=max(x.price for x in v), samples=len(v))
+            for d, v in sorted(by_day.items())]
+
+
 @router.get("/trend", response_model=Trend)
 def price_trend(card_id: int, range: str = Query("1m", pattern="^(7d|1m|3m|1y|all)$"),
                 grades: list[str] | None = Query(None), session: Session = Depends(get_session)):
@@ -126,14 +150,28 @@ def price_trend(card_id: int, range: str = Query("1m", pattern="^(7d|1m|3m|1y|al
     sold_all = [s for s in snaps if s.source == "ebay-sold" and s.grade]
     days = _RANGE_DAYS[range]
     cutoff = utcnow() - timedelta(days=days) if days else None
+    in_range = lambda d: cutoff is None or d >= cutoff  # noqa: E731
 
     def series(rows: list[PriceSnapshot]) -> list[TrendSeries]:
-        return [TrendSeries(grade=g, points=_daily([s for s in rows if s.grade == g
-                                                    and (cutoff is None or s.created_at >= cutoff)]))
+        return [TrendSeries(grade=g, points=_daily([s for s in rows if s.grade == g and in_range(s.created_at)]))
                 for g in wanted]
 
-    return Trend(range=range, grades=wanted, asking=series(asking_all), sold=series(sold_all),
-                 sold_available=bool(sold_all),
+    # Sold line: real sold prices if we have any, otherwise the estimate from listings that disappeared.
+    gone = session.exec(select(ListingSeen).where(ListingSeen.card_id == card_id, ListingSeen.status == "gone")).all()
+    if sold_all:
+        sold_source, sold = "sold", series(sold_all)
+    elif gone:
+        sold_source = "estimated"
+        sold = [TrendSeries(grade=g, points=_daily_gone([r for r in gone if r.grade == g and r.gone_at and in_range(r.gone_at)]))
+                for g in wanted]
+    else:
+        sold_source, sold = None, series([])
+
+    sales = [SalePoint(id=x.id, date=x.sold_at.date().isoformat(), price=x.price, grade=x.grade)
+             for x in session.exec(select(Sale).where(Sale.card_id == card_id).order_by(col(Sale.sold_at))).all()
+             if in_range(x.sold_at) and (x.grade is None or x.grade in wanted)]
+
+    return Trend(range=range, grades=wanted, asking=series(asking_all), sold=sold, sold_source=sold_source, sales=sales,
                  first_recorded=asking_all[0].created_at.date().isoformat() if asking_all else None,
                  grades_available=sorted({s.grade for s in asking_all}, key=grade_sort_key))
 

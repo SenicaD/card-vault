@@ -1,12 +1,13 @@
 <script setup lang="ts">
-import type { TrendPoint, TrendSeries } from '~/types'
+import type { SalePoint, TrendPoint, TrendSeries } from '~/types'
 
 // Asking vs sold price over time, one colour per grade: solid = asking, dashed = sold.
 // One y-axis. Hand-rolled SVG, so there is no chart dependency.
 const props = defineProps<{
   asking: TrendSeries[]
   sold: TrendSeries[]
-  soldAvailable: boolean
+  soldSource: 'sold' | 'estimated' | null // where the dashed line comes from
+  sales?: SalePoint[] // sales you recorded yourself
   slots: Record<string, number> // grade -> colour slot 0-3; colour follows the grade, never its position
   loading?: boolean
 }>()
@@ -29,7 +30,13 @@ const plotH = computed(() => H.value - M.top - M.bottom)
 
 const slot = (g: string) => props.slots[g] ?? 0
 const day = (d: string) => Date.parse(d + 'T00:00:00Z')
-const allPoints = computed<TrendPoint[]>(() => [...props.asking, ...props.sold].flatMap((s) => s.points))
+const salesList = computed(() => props.sales ?? [])
+const saleAsPoint = (s: SalePoint): TrendPoint => ({ date: s.date, median: s.price, low: null, high: null, samples: 1 })
+// the axes have to make room for your own sales as well as the market lines
+const allPoints = computed<TrendPoint[]>(() => [...props.asking, ...props.sold].flatMap((s) => s.points).concat(salesList.value.map(saleAsPoint)))
+const marketPoints = computed(() => [...props.asking, ...props.sold].flatMap((s) => s.points))
+const soldLabel = computed(() => (props.soldSource === 'sold' ? 'Sold' : props.soldSource === 'estimated' ? 'Likely sold (estimate)' : 'Sold'))
+const saleD = (s: SalePoint) => { const x = sx(s.date), y = sy(s.price); return `M${x},${y - 7}L${x + 7},${y}L${x},${y + 7}L${x - 7},${y}Z` }
 const xMin = computed(() => Math.min(...allPoints.value.map((p) => day(p.date))))
 const xMax = computed(() => Math.max(...allPoints.value.map((p) => day(p.date))))
 
@@ -76,7 +83,7 @@ const yLabel = (v: number) => (yScale.value.max - yScale.value.min > 20 ? '$' + 
 
 const LOW = 5 // fewer listings than this makes a point provisional
 const grades = computed(() => props.asking.map((s) => s.grade))
-const anyLow = computed(() => allPoints.value.some((p) => p.samples < LOW))
+const anyLow = computed(() => marketPoints.value.some((p) => p.samples < LOW))
 const lines = computed(() => [
   ...props.sold.filter((s) => s.points.length).map((s) => ({ key: 'sold-' + s.grade, grade: s.grade, kind: 'sold' as const, points: s.points })),
   ...props.asking.filter((s) => s.points.length).map((s) => ({ key: 'ask-' + s.grade, grade: s.grade, kind: 'ask' as const, points: s.points })),
@@ -92,6 +99,7 @@ function onMove(e: PointerEvent) {
   hover.value = best ?? null
 }
 const at = (series: TrendSeries[], g: string, d: string | null) => series.find((s) => s.grade === g)?.points.find((p) => p.date === d)
+const hoverSales = computed(() => salesList.value.filter((s) => s.date === hover.value))
 const hoverRows = computed(() => grades.value.map((g) => ({ g, a: at(props.asking, g, hover.value), s: at(props.sold, g, hover.value) })))
 const tipLeft = computed(() => (hover.value ? Math.min(Math.max(sx(hover.value) - 90, 4), width.value - 184) : 0))
 
@@ -114,9 +122,10 @@ const noData = computed(() => grades.value.filter((g) => !props.asking.find((s) 
       </span>
       <span class="key style">
         <svg width="22" height="8" aria-hidden="true"><line x1="0" y1="4" x2="22" y2="4" class="ln plain" /></svg>Asking
-        <svg width="22" height="8" aria-hidden="true" class="ml"><line x1="0" y1="4" x2="22" y2="4" class="ln plain" stroke-dasharray="5 3" /></svg>Sold
-        <span v-if="!soldAvailable" class="muted">(needs eBay Marketplace Insights access)</span>
+        <svg width="22" height="8" aria-hidden="true" class="ml"><line x1="0" y1="4" x2="22" y2="4" class="ln plain" stroke-dasharray="5 3" /></svg>{{ soldLabel }}
+        <span v-if="!soldSource" class="muted">(fills in as listings disappear)</span>
       </span>
+      <span v-if="salesList.length" class="key style"><svg width="14" height="14" aria-hidden="true"><path d="M7,1L13,7L7,13L1,7Z" class="plain-diamond" /></svg>Your sale</span>
       <span v-if="anyLow" class="key style"><svg width="12" height="12" aria-hidden="true"><circle cx="6" cy="6" r="4" class="dot lowc plain" /></svg>Fewer than {{ LOW }} listings</span>
     </div>
 
@@ -144,6 +153,8 @@ const noData = computed(() => grades.value.filter((g) => !props.asking.find((s) 
             </template>
           </template>
 
+          <path v-for="s in salesList" :key="'sale' + s.id" :d="saleD(s)" :class="['diamond', 'f' + slot(s.grade ?? grades[0] ?? '')]" />
+
           <g v-if="hover">
             <line :x1="sx(hover)" :x2="sx(hover)" :y1="M.top" :y2="M.top + plotH" class="cross" />
             <template v-for="r in hoverRows" :key="r.g">
@@ -158,8 +169,9 @@ const noData = computed(() => grades.value.filter((g) => !props.asking.find((s) 
           <template v-for="r in hoverRows" :key="r.g">
             <div class="tip-row"><span :class="['sw', 'f' + slot(r.g)]" />{{ r.g }} <strong class="num">{{ r.a ? money(r.a.median) : '—' }}</strong></div>
             <div v-if="r.a" class="tip-sub num">{{ money(r.a.low) }} – {{ money(r.a.high) }} · {{ r.a.samples }} {{ r.a.samples === 1 ? 'listing' : 'listings' }}<template v-if="r.a.samples < LOW"> · low confidence</template></div>
-            <div v-if="soldAvailable && r.s" class="tip-sub num">Sold {{ money(r.s.median) }}</div>
+            <div v-if="soldSource && r.s" class="tip-sub num">{{ soldLabel }} {{ money(r.s.median) }}<template v-if="soldSource === 'estimated'"> · {{ r.s.samples }} {{ r.s.samples === 1 ? 'listing' : 'listings' }}</template></div>
           </template>
+          <div v-for="s in hoverSales" :key="'ts' + s.id" class="tip-row"><span class="sw diamond-sw" />Your sale{{ s.grade ? ' · ' + s.grade : '' }} <strong class="num">{{ money(s.price) }}</strong></div>
         </div>
       </template>
     </div>
@@ -172,14 +184,15 @@ const noData = computed(() => grades.value.filter((g) => !props.asking.find((s) 
       <div class="tbl-scroll">
         <table>
           <thead>
-            <tr><th>Date (UTC)</th><th v-for="g in grades" :key="g" class="r">{{ g }}</th></tr>
+            <tr><th>Date (UTC)</th><th v-for="g in grades" :key="g" class="r">{{ g }}</th><th v-if="salesList.length" class="r">Your sale</th></tr>
           </thead>
           <tbody>
             <tr v-for="r in rows" :key="r.d">
               <td class="num">{{ r.d }}</td>
               <td v-for="(c, i) in r.cells" :key="i" class="r num">
-                {{ c.a ? money(c.a.median) : '—' }}<span v-if="soldAvailable && c.s" class="muted"> · sold {{ money(c.s.median) }}</span>
+                {{ c.a ? money(c.a.median) : '—' }}<span v-if="soldSource && c.s" class="muted"> · {{ soldSource === 'estimated' ? 'likely sold' : 'sold' }} {{ money(c.s.median) }}</span>
               </td>
+              <td v-if="salesList.length" class="r num">{{ salesList.filter((s) => s.date === r.d).map((s) => money(s.price)).join(', ') || '—' }}</td>
             </tr>
           </tbody>
         </table>
@@ -205,6 +218,9 @@ const noData = computed(() => grades.value.filter((g) => !props.asking.find((s) 
 .ln.s0 { stroke: var(--s0); } .ln.s1 { stroke: var(--s1); } .ln.s2 { stroke: var(--s2); } .ln.s3 { stroke: var(--s3); }
 .dot { stroke: var(--surface); stroke-width: 2; }
 .dot.hot { stroke-width: 2.5; }
+.diamond { stroke: var(--surface); stroke-width: 2; }
+.plain-diamond { fill: rgb(var(--v-theme-text-muted)); }
+.sw.diamond-sw { background: rgb(var(--v-theme-text-muted)); transform: rotate(45deg) scale(0.8); border-radius: 1px; }
 .dot.lowc { fill: var(--surface); stroke-width: 2; }
 .dot.lowc.f0 { stroke: var(--s0); } .dot.lowc.f1 { stroke: var(--s1); } .dot.lowc.f2 { stroke: var(--s2); } .dot.lowc.f3 { stroke: var(--s3); }
 .dot.lowc.plain { stroke: rgb(var(--v-theme-text-muted)); }

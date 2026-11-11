@@ -15,6 +15,7 @@ Sold comps need the Marketplace Insights API, which requires eBay approval.
 """
 import base64
 import time
+from urllib.parse import quote
 
 import httpx
 
@@ -72,6 +73,18 @@ class LiveEbayClient:
         if r.status_code != 200:
             raise EbayApiError(f"browse search failed: {r.status_code} {r.text}")
         return _items(r.json())
+
+    async def get_item_status(self, item_id: str) -> str:
+        """Browse getItem: is this listing still up? See item_status() for how the answer is read."""
+        async with httpx.AsyncClient(timeout=20) as client:
+            token = await self._application_token(client)
+            r = await client.get(
+                f"{self.host}/buy/browse/v1/item/{quote(item_id, safe='')}",
+                headers={"Authorization": f"Bearer {token}",
+                         "X-EBAY-C-MARKETPLACE-ID": self.s.ebay_marketplace_id},
+            )
+        body = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
+        return item_status(r.status_code, body)
 
     async def search_by_image(self, image_bytes: bytes, limit: int = 50) -> list[EbayItem]:
         """Browse API searchByImage: listings that look like the photo, best match first."""
@@ -145,6 +158,19 @@ class LiveEbayClient:
             url=f"{self.web}/itm/{listing_id}" if listing_id else None,
             status="published" if listing_id else "draft",
         )
+
+
+def item_status(status_code: int, body: dict) -> str:
+    """Read a Browse getItem response. 404 means eBay no longer has the listing, and a fixed-price
+    listing with nothing left reports OUT_OF_STOCK. Anything else (rate limits, outages) raises, because
+    guessing 'gone' from an error would invent sales."""
+    if status_code == 404:
+        return "not_found"
+    if status_code != 200:
+        raise EbayApiError(f"item lookup failed: {status_code} {body}")
+    if any(a.get("estimatedAvailabilityStatus") == "OUT_OF_STOCK" for a in body.get("estimatedAvailabilities", [])):
+        return "out_of_stock"
+    return "active"
 
 
 def _items(body: dict) -> list[EbayItem]:

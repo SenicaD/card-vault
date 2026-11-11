@@ -14,6 +14,7 @@ from ..db import engine
 from ..models import Card, CardStatus, PriceSnapshot, utcnow
 from .grading import grade_sort_key, normalize_grade
 from .pricing import quote_grades
+from .tracker import track_listings
 
 log = logging.getLogger("cardvault.refresh")
 
@@ -50,7 +51,7 @@ async def refresh_due(max_age: timedelta | None = None, pause: float = PAUSE_BET
 
     for card_id, query, own, tracked in due:
         try:
-            quotes, counts, _ = await quote_grades(query, tracked)
+            quotes, counts, _, groups = await quote_grades(query, tracked)
         except Exception as e:  # keep going: one bad query shouldn't stop the round
             failed += 1
             log.warning("re-price failed for card %s (%r): %s", card_id, query, e)
@@ -70,6 +71,11 @@ async def refresh_due(max_age: timedelta | None = None, pause: float = PAUSE_BET
                 session.commit()
                 if priced:
                     refreshed += 1
+                try:  # after the commit, so a failure here can never lose the prices
+                    await track_listings(session, card_id, groups)
+                except Exception:
+                    log.exception("listing tracking failed for card %s", card_id)
+                    session.rollback()
         await asyncio.sleep(pause)
 
     if due:

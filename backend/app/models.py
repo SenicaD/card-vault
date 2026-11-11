@@ -175,6 +175,42 @@ class PriceSnapshot(SQLModel, table=True):
     created_at: datetime = ts(default_factory=utcnow)
 
 
+# ---------- Sales you made ----------
+
+class Sale(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    card_id: int = Field(foreign_key="card.id", index=True)
+    price: float
+    currency: str = "USD"
+    grade: str | None = None  # the card's grade label when it sold, so the chart can put it on the right line
+    note: str | None = None
+    sold_at: datetime = ts(default_factory=utcnow)
+    created_at: datetime = ts(default_factory=utcnow)
+
+
+# ---------- Listings we have watched ----------
+
+class ListingSeen(SQLModel, table=True):
+    """An eBay listing seen in a card's searches. When one disappears, its last asking price is the
+    best guess we have at what it sold for (it may also have been ended or relisted)."""
+
+    id: int | None = Field(default=None, primary_key=True)
+    card_id: int = Field(foreign_key="card.id", index=True)
+    item_id: str = Field(index=True)
+    grade: str
+    title: str
+    price: float  # the latest asking price while it was up
+    currency: str = "USD"
+    condition: str | None = None
+    url: str | None = None
+    image_url: str | None = None
+    first_seen: datetime = ts(default_factory=utcnow)
+    last_seen: datetime = ts(default_factory=utcnow)
+    status: str = "active"  # active | gone
+    gone_at: datetime | None = ts(default=None)
+    verdict: str | None = None  # why we think it's gone: "not_found" | "out_of_stock"
+
+
 # ---------- Listings ----------
 
 class Listing(SQLModel, table=True):

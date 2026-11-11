@@ -68,11 +68,11 @@ def group_by_grade(items: list[EbayItem]) -> dict[str, list[EbayItem]]:
     return groups
 
 
-async def quote_grades(query: str, grades: list[str]) -> tuple[list[PriceQuote], dict[str, int], list[EbayItem]]:
+async def quote_grades(query: str, grades: list[str]) -> tuple[list[PriceQuote], dict[str, int], list[EbayItem], dict[str, list[EbayItem]]]:
     """One eBay search, priced separately for each requested grade.
 
     Returns (a quote per grade in the order asked, how many listings eBay showed for every grade,
-    the cheapest 25 listings across the requested grades). Asking for more grades costs no extra
+    the cheapest 25 listings across the requested grades, every listing grouped by grade). Asking for more grades costs no extra
     API calls, because the grade is read from the same results.
     """
     items = await get_ebay().search_active(query, limit=200)
@@ -84,4 +84,4 @@ async def quote_grades(query: str, grades: list[str]) -> tuple[list[PriceQuote],
                                  top_listings=top_listings(group), **summarize(group)))
     wanted = [i for g in grades for i in groups.get(g, [])]
     counts = {g: len(v) for g, v in sorted(groups.items(), key=lambda kv: grade_sort_key(kv[0]) if kv[0] != "Unknown" else (9, "", 0))}
-    return quotes, counts, sorted(wanted, key=lambda c: c.price)[:25]
+    return quotes, counts, sorted(wanted, key=lambda c: c.price)[:25], groups
