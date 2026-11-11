@@ -54,6 +54,29 @@ const byGrade = computed(() => selectedGrades.value.map((grade) => ({
 })))
 const lowConfidence = (n: number) => n > 0 && n < 5
 
+// Which grades eBay has listings for, remembered on the card from the last search or daily refresh.
+const searched = computed(() => !!card.value?.grade_counts_at || Object.keys(gradeCounts.value).length > 0)
+const emptySelected = computed(() => (searched.value ? selectedGrades.value.filter((g) => !(gradeCounts.value[g] > 0)) : []))
+const suggestions = computed(() => sortGrades(Object.keys(gradeCounts.value)
+  .filter((g) => g !== 'Unknown' && gradeCounts.value[g] > 0 && !selectedGrades.value.includes(g))))
+
+function priceGrade(g: string) {
+  // swap the empty grades for this one, then price it
+  selectedGrades.value = [...selectedGrades.value.filter((x) => !emptySelected.value.includes(x)), g]
+  lookUp()
+}
+
+const gradeDraft = ref<string | null>(null)
+const setGrade = () => run('grade', async () => {
+  card.value = await api<Card>(`/api/cards/${id}`, { method: 'PATCH', body: { grade: gradeDraft.value } })
+  form.value = fieldsOf(card.value)
+  selectedGrades.value = [normalizeGrade(card.value.grade)]
+})
+async function setGradeAndPrice() {
+  await setGrade()
+  if (!error.value) await lookUp()
+}
+
 const RANGES: { value: TrendRange; label: string }[] = [
   { value: '7d', label: '7D' }, { value: '1m', label: '1M' }, { value: '3m', label: '3M' },
   { value: '1y', label: '1Y' }, { value: 'all', label: 'All' },
@@ -98,6 +121,7 @@ async function load() {
     form.value = fieldsOf(card.value)
     listTitle.value = defaultTitle(card.value)
     listPrice.value = card.value.est_value
+    gradeCounts.value = card.value.grade_counts ?? {}
     if (!selectedGrades.value.length) selectedGrades.value = [normalizeGrade(card.value.grade)]
   } catch (e: any) {
     error.value = e.message
@@ -268,6 +292,28 @@ onMounted(() => {
                 <p class="text-caption text-muted-c mt-1 mb-0">
                   <v-icon icon="mdi-star" size="11" /> is this card's grade. The estimate follows it; other grades are for comparison. Each grade you price is re-priced daily.
                 </p>
+
+                <!-- No grade set: it is being priced as Raw -->
+                <v-alert v-if="!card.grade" type="warning" variant="tonal" density="compact" class="mt-4" icon="mdi-alert-outline">
+                  <div>This card has no grade, so it's priced as <strong>Raw</strong>. If it's in a graded slab, set its grade so the estimate uses the right listings.</div>
+                  <div class="d-flex ga-2 align-center flex-wrap mt-3">
+                    <v-combobox v-model="gradeDraft" :items="GRADE_OPTIONS" label="This card's grade" placeholder="PSA 9, BGS 9.5…" style="max-width: 240px" bg-color="surface" />
+                    <v-btn color="primary" variant="flat" size="small" :disabled="!gradeDraft" :loading="busy === 'grade'" @click="setGradeAndPrice">Set grade and price</v-btn>
+                  </div>
+                </v-alert>
+
+                <!-- The selected grade has no listings -->
+                <v-alert v-if="emptySelected.length" type="warning" variant="tonal" density="compact" class="mt-4" icon="mdi-magnify-close">
+                  <template v-if="suggestions.length">
+                    <div>No <strong>{{ emptySelected.join(', ') }}</strong> listings on eBay right now for this search. These grades do have listings:</div>
+                    <div class="d-flex flex-wrap ga-2 mt-3">
+                      <v-btn v-for="g in suggestions.slice(0, 8)" :key="g" size="small" variant="outlined" :loading="busy === 'price'" @click="priceGrade(g)">
+                        Price {{ g }} <span class="text-muted-c ml-1">· {{ gradeCounts[g] }}</span>
+                      </v-btn>
+                    </div>
+                  </template>
+                  <div v-else>No <strong>{{ emptySelected.join(', ') }}</strong> listings, and nothing at all for this search. Try a shorter or different search query.</div>
+                </v-alert>
 
                 <v-alert v-if="latest" type="info" variant="tonal" density="compact" class="mt-4" icon="mdi-information-outline">
                   {{ latest.grade || 'All grades' }}: {{ latest.sample_size }} {{ latest.source === 'ebay-image' ? 'listings matched by photo' : 'active listings' }} at {{ isoDate(latest.created_at) }}. Asking prices run higher than sold prices.

@@ -26,9 +26,14 @@ def init_db() -> None:
 
 def _add_missing_columns() -> None:
     """create_all never alters existing tables. Add columns introduced after a database was first created."""
-    additions = {"pricesnapshot": {"top_listings": "JSON", "grade": "VARCHAR", "price_refs": "JSON"}}
+    additions = {
+        "pricesnapshot": {"top_listings": "JSON", "grade": "VARCHAR", "price_refs": "JSON"},
+        "card": {"grade_counts": "JSON", "grade_counts_at": "DATETIME"},
+    }
     with engine.begin() as conn:
         for table, cols in additions.items():
+            if not inspect(conn).has_table(table):
+                continue
             have = {c["name"] for c in inspect(conn).get_columns(table)}
             for name, ddl in cols.items():
                 if name not in have:

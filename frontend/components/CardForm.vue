@@ -28,7 +28,10 @@ const locationItems = computed(() => [
       <v-col cols="12" sm="8"><v-text-field v-model="model.set_name" label="Set" /></v-col>
       <v-col cols="12" sm="4"><v-text-field v-model="model.card_number" label="Card number" /></v-col>
       <v-col cols="12"><v-text-field v-model="model.variant" label="Variant or parallel" placeholder="Refractor, 1st Edition, Holo…" /></v-col>
-      <v-col cols="12" sm="6"><v-text-field v-model="model.grade" label="Grade" placeholder="Raw, PSA 10…" /></v-col>
+      <v-col cols="12" sm="6">
+        <v-combobox v-model="model.grade" :items="GRADE_OPTIONS" label="Grade" placeholder="Raw, PSA 10…" clearable
+          hint="Pick the grade on the slab, or Raw if the card isn't graded. You can also type one." />
+      </v-col>
       <v-col cols="12" sm="6">
         <v-select v-model="model.condition" :items="conditions" label="Condition (raw cards)" hint="How worn an ungraded card is. Graded cards use the grade instead.">
           <template #item="{ props: p, item }">

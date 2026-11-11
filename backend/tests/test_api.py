@@ -223,6 +223,11 @@ def test_old_database_gets_top_listings_column(tmp_path):
         with db.engine.connect() as conn:
             cols = [r[1] for r in conn.execute(text("PRAGMA table_info(pricesnapshot)"))]
             assert {"top_listings", "grade", "price_refs"} <= set(cols)
+        con = sqlite3.connect(path)
+        con.execute("CREATE TABLE card (id INTEGER PRIMARY KEY, name TEXT)"); con.commit(); con.close()
+        db._add_missing_columns()
+        with db.engine.connect() as conn:
+            assert {"grade_counts", "grade_counts_at"} <= {r[1] for r in conn.execute(text("PRAGMA table_info(card)"))}
     finally:
         db.engine = real
 
@@ -401,3 +406,52 @@ def test_snapshots_keep_listing_links():
         assert refs["low"]["price"] == snap["low"] and refs["high"]["price"] == snap["high"]
         assert refs["low"]["url"] and refs["high"]["url"]
         assert c.get(f"/api/cards/{card['id']}/prices").json()[0]["price_refs"] == refs
+
+
+def test_card_remembers_which_grades_have_listings():
+    q = _query_with("Raw", "PSA 10")
+    with TestClient(app) as c:
+        card = c.post("/api/cards", json={"category": "pokemon", "name": "Counts Card", "grade": "PSA 10",
+                                          "search_query": q}).json()
+        assert card["grade_counts"] is None
+        c.post(f"/api/cards/{card['id']}/price")
+        got = c.get(f"/api/cards/{card['id']}").json()
+        assert got["grade_counts"]["Raw"] > 0 and got["grade_counts"]["PSA 10"] > 0
+        assert got["grade_counts_at"].endswith("Z")
+
+
+def test_refresh_saves_counts_and_does_not_research_empty_cards_every_round(monkeypatch):
+    import asyncio
+    from datetime import timedelta
+
+    from app.services import pricing, refresh
+    from app.services.ebay import get_ebay
+
+    calls = []
+    real = get_ebay().search_active
+
+    async def counting(query, limit=50):
+        calls.append(query)
+        return await real(query, limit)
+
+    monkeypatch.setattr(get_ebay(), "search_active", counting)
+    monkeypatch.setattr(pricing, "get_ebay", lambda: get_ebay())
+
+    with TestClient(app) as c:
+        # Raw has listings for this query, PSA 10 never does for a query that only has raw copies
+        q = next(f"only raw {n}" for n in range(500) if "PSA 10" not in {
+            __import__("app.services.grading", fromlist=["x"]).parse_grade(i.title, i.condition)
+            for i in asyncio.run(real(f"only raw {n}", 200))})
+        card = c.post("/api/cards", json={"category": "pokemon", "name": "Empty Grade", "grade": "PSA 10",
+                                          "search_query": q}).json()
+        calls.clear()
+        asyncio.run(refresh.refresh_due(pause=0))
+        assert calls.count(q) == 1
+        got = c.get(f"/api/cards/{card['id']}").json()
+        assert got["grade_counts"] and "PSA 10" not in got["grade_counts"]  # nothing to price for its own grade
+        assert c.get(f"/api/cards/{card['id']}/prices").json() == []  # ...and no empty snapshot was written
+        calls.clear()
+        asyncio.run(refresh.refresh_due(pause=0))
+        assert q not in calls  # the check counts, so it isn't searched again straight away
+        asyncio.run(refresh.refresh_due(max_age=timedelta(0), pause=0))
+        assert q in calls

@@ -50,6 +50,7 @@ async def price_card(card_id: int, body: PriceRequest | None = None,
     session.add_all(snaps)
     primary = next((s for s in snaps if s.grade == own), snaps[0])
     card.search_query = query
+    card.grade_counts, card.grade_counts_at = counts, utcnow()
     # The estimate only ever follows the card's own grade, so comparing other grades can't change it.
     own_snap = next((s for s in snaps if s.grade == own), None)
     if own_snap and own_snap.median is not None:

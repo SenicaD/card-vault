@@ -93,6 +93,10 @@ class Card(CardBase, table=True):
     id_confidence: float | None = None
     est_value: float | None = None  # latest median price
     priced_at: datetime | None = ts(default=None)
+    # Listings eBay showed per grade the last time this card was searched, e.g. {"Raw": 0, "BGS 9": 4}.
+    # Lets the card page suggest grades that do have listings without making a new search.
+    grade_counts: dict[str, int] | None = Field(default=None, sa_column=Column(JSON, nullable=True))
+    grade_counts_at: datetime | None = ts(default=None)
     created_at: datetime = ts(default_factory=utcnow)
     updated_at: datetime = ts(default_factory=utcnow)
 
@@ -146,6 +150,8 @@ class CardRead(CardBase):
     id_confidence: float | None
     est_value: float | None
     priced_at: datetime | None
+    grade_counts: dict[str, int] | None = None
+    grade_counts_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
 

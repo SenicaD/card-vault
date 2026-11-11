@@ -22,3 +22,13 @@ export function sortGrades(grades: string[]): string[] {
     return x[0] - y[0] || x[1].localeCompare(y[1]) || x[2] - y[2]
   })
 }
+
+// Every grade offered in the Grade dropdown, grouped by grader. Raw first; the field also accepts free text.
+const SCALES: Record<string, string[]> = {
+  PSA: ['10', '9', '8.5', '8', '7.5', '7', '6', '5', '4', '3', '2', '1'],
+  BGS: ['10', '9.5', '9', '8.5', '8', '7.5', '7', '6', '5', '4', '3', '2', '1'],
+  CGC: ['10', '9.5', '9', '8.5', '8', '7.5', '7', '6', '5', '4', '3', '2', '1'],
+  SGC: ['10', '9.5', '9', '8.5', '8', '7', '6', '5', '4', '3', '2', '1'],
+  HGA: ['10', '9.5', '9', '8.5', '8', '7', '6', '5', '4', '3', '2', '1'],
+}
+export const GRADE_OPTIONS: string[] = ['Raw', ...Object.entries(SCALES).flatMap(([grader, nums]) => nums.map((n) => `${grader} ${n}`))]

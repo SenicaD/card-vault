@@ -71,6 +71,7 @@ export default defineNuxtPlugin((nuxtApp) => {
       VList: { density: 'comfortable' },
       VTextField: { variant: 'outlined', density: 'compact', rounded: 'lg', hideDetails: 'auto', color: 'primary' },
       VSelect: { variant: 'outlined', density: 'compact', rounded: 'lg', hideDetails: 'auto', color: 'primary' },
+      VCombobox: { variant: 'outlined', density: 'compact', rounded: 'lg', hideDetails: 'auto', color: 'primary' },
       VTextarea: { variant: 'outlined', density: 'compact', rounded: 'lg', hideDetails: 'auto', color: 'primary', rows: 3 },
       VDataTable: { density: 'comfortable', hover: true },
     },

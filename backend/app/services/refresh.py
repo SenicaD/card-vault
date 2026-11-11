@@ -40,7 +40,9 @@ async def refresh_due(max_age: timedelta | None = None, pause: float = PAUSE_BET
             rows = session.exec(select(PriceSnapshot.grade, PriceSnapshot.created_at).where(
                 PriceSnapshot.card_id == c.id, PriceSnapshot.source == "ebay-active",
                 col(PriceSnapshot.grade).is_not(None))).all()
-            last = max((created for _, created in rows), default=None)
+            # A search that found nothing still counts as a check, or a card with no listings
+            # for its grade would be searched again every hour.
+            last = max([created for _, created in rows] + ([c.grade_counts_at] if c.grade_counts_at else []), default=None)
             if last is None or last < cutoff:
                 own = normalize_grade(c.grade)
                 others = sorted({g for g, _ in rows} - {own}, key=grade_sort_key)
@@ -48,24 +50,25 @@ async def refresh_due(max_age: timedelta | None = None, pause: float = PAUSE_BET
 
     for card_id, query, own, tracked in due:
         try:
-            quotes, _, _ = await quote_grades(query, tracked)
+            quotes, counts, _ = await quote_grades(query, tracked)
         except Exception as e:  # keep going: one bad query shouldn't stop the round
             failed += 1
             log.warning("re-price failed for card %s (%r): %s", card_id, query, e)
             await asyncio.sleep(pause)
             continue
-        quotes = [q for q in quotes if q.median is not None]  # don't record empty points
-        if quotes:
-            with Session(engine) as session:
-                card = session.get(Card, card_id)
-                if card and card.status != CardStatus.sold:
-                    for q in quotes:
-                        session.add(PriceSnapshot(card_id=card_id, **q.model_dump()))
-                        if q.grade == own:  # the estimate follows only the card's own grade
-                            card.est_value = q.median
-                            card.priced_at = utcnow()
-                    session.add(card)
-                    session.commit()
+        priced = [q for q in quotes if q.median is not None]  # don't record empty points
+        with Session(engine) as session:
+            card = session.get(Card, card_id)
+            if card and card.status != CardStatus.sold:
+                card.grade_counts, card.grade_counts_at = counts, utcnow()
+                for q in priced:
+                    session.add(PriceSnapshot(card_id=card_id, **q.model_dump()))
+                    if q.grade == own:  # the estimate follows only the card's own grade
+                        card.est_value = q.median
+                        card.priced_at = utcnow()
+                session.add(card)
+                session.commit()
+                if priced:
                     refreshed += 1
         await asyncio.sleep(pause)
 

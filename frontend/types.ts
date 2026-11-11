@@ -24,6 +24,8 @@ export interface Card extends CardFields {
   id_confidence: number | null
   est_value: number | null
   priced_at: string | null
+  grade_counts?: Record<string, number> | null
+  grade_counts_at?: string | null
   created_at: string
   updated_at: string
 }
