@@ -109,6 +109,8 @@ class PriceQuote(SQLModel):
     currency: str = "USD"
     # Best-match listings behind this quote (EbayItem dicts), kept so the card page can show them later
     top_listings: list[dict[str, Any]] | None = None
+    # Grade this quote covers ("Raw", "PSA 10", ...). None = every listing pooled together (older data).
+    grade: str | None = None
 
 
 class CardCreate(CardBase):
@@ -160,6 +162,7 @@ class PriceSnapshot(SQLModel, table=True):
     high: float | None
     currency: str = "USD"
     top_listings: list[dict[str, Any]] | None = Field(default=None, sa_column=Column(JSON, nullable=True))
+    grade: str | None = Field(default=None, index=True)
     created_at: datetime = ts(default_factory=utcnow)
 
 

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useDisplay } from 'vuetify'
-import { CATEGORY_LABELS, type Card, type CardFields, type EbayItem, type Listing, type Location, type PriceSnapshot, type Trend, type TrendRange } from '~/types'
+import { CATEGORY_LABELS, type Card, type CardFields, type EbayItem, type Listing, type Location, type PriceResult, type PriceSnapshot, type Trend, type TrendRange } from '~/types'
 
 const { api } = useApi()
 const { xs } = useDisplay()
@@ -22,8 +22,37 @@ const tab = ref('value')
 const listTitle = ref('')
 const listPrice = ref<number | null>(null)
 
-const latest = computed(() => history.value[0] ?? null)
-const top = computed(() => (latest.value?.top_listings ?? []).slice(0, 4))
+const ownGrade = computed(() => normalizeGrade(card.value?.grade))
+// The estimate and the KPI cards follow the card's own grade; older pooled snapshots are the fallback.
+const latest = computed(() => history.value.find((s) => s.grade === ownGrade.value) ?? history.value[0] ?? null)
+
+// Grades to price and plot. Colour slots follow the grade, never its position, so removing one
+// grade doesn't repaint the others (the chart plots at most 4).
+const MAX_PLOTTED = 4
+const selectedGrades = ref<string[]>([])
+const gradeCounts = ref<Record<string, number>>({})
+const slots = reactive<Record<string, number>>({})
+watch(selectedGrades, (sel) => {
+  const plotted = sel.slice(0, MAX_PLOTTED)
+  for (const g of Object.keys(slots)) if (!plotted.includes(g)) delete slots[g]
+  for (const g of plotted) {
+    if (slots[g] != null) continue
+    const used = new Set(Object.values(slots))
+    slots[g] = [0, 1, 2, 3].find((n) => !used.has(n)) ?? 0
+  }
+}, { immediate: true, deep: true })
+
+const gradeOptions = computed(() => sortGrades([...new Set([
+  ...STANDARD_GRADES,
+  ...Object.keys(gradeCounts.value).filter((g) => g !== 'Unknown'),
+  ...(history.value.map((s) => s.grade).filter(Boolean) as string[]),
+  ...selectedGrades.value,
+])]))
+// history is newest first, so the first match is the latest asking price for that grade
+const byGrade = computed(() => selectedGrades.value.map((grade) => ({
+  grade, snap: history.value.find((s) => s.source === 'ebay-active' && s.grade === grade) ?? null,
+})))
+const lowConfidence = (n: number) => n > 0 && n < 5
 
 const RANGES: { value: TrendRange; label: string }[] = [
   { value: '7d', label: '7D' }, { value: '1m', label: '1M' }, { value: '3m', label: '3M' },
@@ -34,13 +63,14 @@ const trend = ref<Trend | null>(null)
 const trendLoading = ref(false)
 async function loadTrend() {
   trendLoading.value = true
-  try { trend.value = await api<Trend>(`/api/cards/${id}/trend`, { query: { range: range.value } }) }
+  if (!selectedGrades.value.length) return
+  try { trend.value = await api<Trend>(`/api/cards/${id}/trend`, { query: { range: range.value, grades: selectedGrades.value } }) }
   catch { trend.value = null } finally { trendLoading.value = false }
 }
-watch(range, () => {
+watch([range, selectedGrades], () => {
   loadTrend()
   try { localStorage.setItem('cv-trend-range', range.value) } catch {}
-})
+}, { deep: true })
 const locName = computed(() => locations.value.find((l) => l.id === card.value?.location_id)?.name)
 const subline = computed(() => {
   const c = card.value
@@ -68,6 +98,7 @@ async function load() {
     form.value = fieldsOf(card.value)
     listTitle.value = defaultTitle(card.value)
     listPrice.value = card.value.est_value
+    if (!selectedGrades.value.length) selectedGrades.value = [normalizeGrade(card.value.grade)]
   } catch (e: any) {
     error.value = e.message
   }
@@ -92,14 +123,15 @@ function cancelEdit() {
 }
 
 const lookUp = () => run('price', async () => {
-  const res = await api<{ snapshot: PriceSnapshot; comps: EbayItem[] }>(`/api/cards/${id}/price`, {
-    method: 'POST', body: { query: form.value?.search_query || null },
+  const res = await api<PriceResult>(`/api/cards/${id}/price`, {
+    method: 'POST', body: { query: form.value?.search_query || null, grades: selectedGrades.value },
   })
   comps.value = res.comps
-  history.value = [res.snapshot, ...history.value]
-  loadTrend()
+  gradeCounts.value = res.grade_counts
+  history.value = [...res.snapshots, ...history.value]
   card.value = await api<Card>(`/api/cards/${id}`)
   if (!listPrice.value) listPrice.value = res.snapshot.median
+  loadTrend()
 })
 
 const list = () => run('list', async () => {
@@ -120,13 +152,14 @@ const remove = () => run('delete', async () => {
   await navigateTo('/')
 })
 
-const compHeaders = [
+const compHeaders = computed(() => [
   { title: 'Listing', key: 'title' },
-  { title: 'Condition', key: 'condition' },
+  ...(xs.value ? [] : [{ title: 'Condition', key: 'condition' }]),
   { title: 'Price', key: 'price', align: 'end' as const },
-]
+])
 const historyHeaders = [
   { title: 'Date (UTC)', key: 'created_at' },
+  { title: 'Grade', key: 'grade' },
   { title: 'Source', key: 'source' },
   { title: 'Samples', key: 'sample_size', align: 'end' as const },
   { title: 'Low', key: 'low', align: 'end' as const },
@@ -139,8 +172,7 @@ onMounted(() => {
     const saved = localStorage.getItem('cv-trend-range') as TrendRange | null
     if (saved && RANGES.some((r) => r.value === saved)) range.value = saved
   } catch {}
-  load()
-  loadTrend()
+  load() // selects the card's own grade, which loads the trend
 })
 </script>
 
@@ -226,20 +258,58 @@ onMounted(() => {
                     {{ latest ? 'Refresh value' : 'Look up value' }}
                   </v-btn>
                 </div>
+
+                <div class="text-body-2 font-weight-medium mt-4 mb-1">Grades to price</div>
+                <v-chip-group v-model="selectedGrades" multiple mandatory column filter color="primary" aria-label="Grades to price">
+                  <v-chip v-for="g in gradeOptions" :key="g" :value="g" variant="outlined" size="small">
+                    <v-icon v-if="g === ownGrade" icon="mdi-star" size="12" class="mr-1" :title="`This card's grade`" />{{ g }}<span v-if="gradeCounts[g]" class="text-muted-c ml-1">· {{ gradeCounts[g] }}</span>
+                  </v-chip>
+                </v-chip-group>
+                <p class="text-caption text-muted-c mt-1 mb-0">
+                  <v-icon icon="mdi-star" size="11" /> is this card's grade. The estimate follows it; other grades are for comparison. Each grade you price is re-priced daily.
+                </p>
+
                 <v-alert v-if="latest" type="info" variant="tonal" density="compact" class="mt-4" icon="mdi-information-outline">
-                  From {{ latest.sample_size }} {{ latest.source === 'ebay-image' ? 'listings matched by photo' : 'active listings' }} at {{ isoDate(latest.created_at) }}. Asking prices run higher than sold prices.
+                  {{ latest.grade || 'All grades' }}: {{ latest.sample_size }} {{ latest.source === 'ebay-image' ? 'listings matched by photo' : 'active listings' }} at {{ isoDate(latest.created_at) }}. Asking prices run higher than sold prices.
                 </v-alert>
                 <p v-else class="text-body-2 text-secondary-c mt-4 mb-0">No value yet. Look it up to see what similar cards are listed for.</p>
               </div>
-              <!-- Top 4 eBay listings behind the latest lookup -->
-              <template v-if="top.length">
+
+              <!-- Asking price per selected grade -->
+              <template v-if="byGrade.some((r) => r.snap)">
                 <v-divider />
-                <div class="px-5 pt-4 pb-2 d-flex align-baseline justify-space-between ga-2">
-                  <span class="text-body-2 font-weight-medium">Top eBay listings</span>
-                  <span class="text-caption text-muted-c">Best matches for “{{ latest?.query }}”</span>
+                <div class="px-5 pt-4 pb-2 text-body-2 font-weight-medium">Asking prices by grade</div>
+                <v-table density="compact" class="grade-table">
+                  <thead><tr><th>Grade</th><th class="text-right">Median</th><th class="text-right d-none d-sm-table-cell">Range</th><th class="text-right">Listings</th></tr></thead>
+                  <tbody>
+                    <tr v-for="r in byGrade" :key="r.grade">
+                      <td class="text-no-wrap"><v-icon v-if="r.grade === ownGrade" icon="mdi-star" size="12" class="mr-1" />{{ r.grade }}</td>
+                      <template v-if="r.snap">
+                        <td class="text-right num font-weight-semibold">{{ money(r.snap.median) }}</td>
+                        <td class="text-right num text-no-wrap d-none d-sm-table-cell">{{ r.snap.sample_size ? `${money(r.snap.low)} – ${money(r.snap.high)}` : '—' }}</td>
+                        <td class="text-right text-no-wrap">
+                          <v-chip v-if="r.snap.sample_size === 0" size="x-small" variant="tonal">No listings</v-chip>
+                          <template v-else>
+                            <v-chip v-if="lowConfidence(r.snap.sample_size)" size="x-small" color="warning" variant="tonal" class="mr-2">Low confidence</v-chip>
+                            <span class="num">{{ r.snap.sample_size }}</span>
+                          </template>
+                        </td>
+                      </template>
+                      <td v-else colspan="3" class="text-right text-muted-c text-caption">Not priced yet. Press Look up value.</td>
+                    </tr>
+                  </tbody>
+                </v-table>
+              </template>
+
+              <!-- Top 4 eBay listings per selected grade -->
+              <template v-for="r in byGrade.filter((x) => x.snap?.top_listings?.length)" :key="'top-' + r.grade">
+                <v-divider />
+                <div class="px-5 pt-4 pb-2 d-flex flex-wrap align-baseline justify-space-between ga-x-2">
+                  <span class="text-body-2 font-weight-medium">Top eBay listings<template v-if="selectedGrades.length > 1"> · {{ r.grade }}</template></span>
+                  <span class="text-caption text-muted-c truncate" style="max-width: 100%">Best matches for “{{ r.snap?.query }}”</span>
                 </div>
                 <div class="top-grid px-5 pb-4">
-                  <a v-for="l in top" :key="l.item_id" :href="l.url || undefined" target="_blank" rel="noopener" class="top-item">
+                  <a v-for="l in (r.snap?.top_listings ?? []).slice(0, 4)" :key="l.item_id" :href="l.url || undefined" target="_blank" rel="noopener" class="top-item">
                     <div class="top-img">
                       <img v-if="l.image_url" :src="l.image_url" alt="" loading="lazy" />
                       <v-icon v-else icon="mdi-image-off-outline" />
@@ -262,7 +332,8 @@ onMounted(() => {
                 </v-btn-toggle>
               </div>
               <div class="px-5 pb-4">
-                <TrendChart :asking="trend?.asking ?? []" :sold="trend?.sold ?? []" :sold-available="!!trend?.sold_available" :loading="trendLoading" />
+                <TrendChart :asking="trend?.asking ?? []" :sold="trend?.sold ?? []" :sold-available="!!trend?.sold_available" :slots="slots" :loading="trendLoading" />
+                <p v-if="selectedGrades.length > MAX_PLOTTED" class="text-caption text-muted-c mt-2 mb-0">The chart shows the first {{ MAX_PLOTTED }} grades you selected.</p>
                 <p v-if="trend?.first_recorded" class="text-caption text-muted-c mt-2 mb-0">
                   History starts {{ trend.first_recorded }}. Cards are re-priced about once a day.
                 </p>
@@ -322,6 +393,7 @@ onMounted(() => {
             <v-window-item value="history">
               <v-data-table :headers="historyHeaders" :items="history" density="comfortable" items-per-page="10" class="no-pointer">
                 <template #item.created_at="{ item }"><span class="num">{{ isoDate(item.created_at) }}</span></template>
+                <template #item.grade="{ item }">{{ item.grade || 'All' }}</template>
                 <template #item.low="{ item }"><span class="num">{{ money(item.low) }}</span></template>
                 <template #item.median="{ item }"><span class="num font-weight-semibold">{{ money(item.median) }}</span></template>
                 <template #item.high="{ item }"><span class="num">{{ money(item.high) }}</span></template>
@@ -372,6 +444,8 @@ onMounted(() => {
 .comp-link { color: rgb(var(--v-theme-primary)); text-decoration: none; }
 .comp-link:hover { text-decoration: underline; }
 .no-pointer :deep(tbody tr) { cursor: default; }
+.grade-table { background: transparent !important; }
+.grade-table :deep(th) { font-size: 11.5px !important; text-transform: uppercase; letter-spacing: 0.04em; color: rgb(var(--v-theme-text-muted)) !important; }
 .top-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
 @media (max-width: 700px) { .top-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .top-item { display: grid; gap: 6px; align-content: start; color: inherit; text-decoration: none; padding: 8px; border-radius: 10px; border: 1px solid rgb(var(--v-theme-border)); transition: border-color 0.15s; }

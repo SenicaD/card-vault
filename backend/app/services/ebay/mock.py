@@ -10,6 +10,7 @@ import uuid
 from .base import EbayItem, ListingRequest, ListingResult
 
 _CONDITIONS = ["Ungraded", "Ungraded", "Ungraded", "Graded"]
+_GRADES = ["PSA 10", "PSA 10", "PSA 9", "PSA 8", "BGS 9.5", "BGS 9", "CGC 9"]
 _TITLE_NOISE = ["", " NM", " 🔥", " Rare", " Invest", " Mint", " Look!", " L@@K", " Sharp corners"]
 
 
@@ -42,11 +43,15 @@ class MockEbayClient:
         for i in range(n):
             # Lognormal spread around the base, like real asking prices (long right tail)
             price = round(max(0.99, base * rng.lognormvariate(0, 0.35)), 2)
+            condition = rng.choice(_CONDITIONS)
+            graded = condition == "Graded"
+            if graded:
+                price = round(price * rng.uniform(1.5, 4), 2)  # slabs sell above raw copies
             items.append(EbayItem(
                 item_id=f"v1|mock{seed % 10**9}{i:03d}|0",
-                title=(query + rng.choice(_TITLE_NOISE))[:80],
+                title=(query + rng.choice(_TITLE_NOISE) + (" " + rng.choice(_GRADES) if graded else ""))[:80],
                 price=price,
-                condition=rng.choice(_CONDITIONS),
+                condition=condition,
                 url=f"https://www.ebay.com/sch/i.html?_nkw={query.replace(' ', '+')}",
             ))
         return items

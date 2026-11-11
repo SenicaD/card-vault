@@ -10,7 +10,8 @@ from ..config import get_settings
 from ..db import get_session
 from ..models import Card, CardCategory, CardStatus, Listing, PriceSnapshot, utcnow
 from ..services.ebay import EbayItem, ListingRequest, get_ebay
-from ..services.pricing import quote
+from ..services.grading import grade_sort_key, normalize_grade
+from ..services.pricing import quote_grades
 from .common import get_card_or_404
 
 router = APIRouter(prefix="/api/cards/{card_id}", tags=["ebay"])
@@ -21,12 +22,15 @@ _CCG_SINGLES = "183454"
 
 
 class PriceResult(BaseModel):
-    snapshot: PriceSnapshot
-    comps: list[EbayItem]
+    snapshot: PriceSnapshot  # the card's own grade if it was priced, otherwise the first grade asked for
+    snapshots: list[PriceSnapshot]  # one per grade asked for
+    comps: list[EbayItem]  # cheapest listings across the grades asked for
+    grade_counts: dict[str, int]  # listings eBay showed per grade, including grades not asked for
 
 
 class PriceRequest(BaseModel):
     query: str | None = None  # override the card's stored search query
+    grades: list[str] | None = None  # grades to price; default is the card's own grade (Raw if none)
 
 
 @router.post("/price", response_model=PriceResult)
@@ -34,21 +38,29 @@ async def price_card(card_id: int, body: PriceRequest | None = None,
                      session: Session = Depends(get_session)):
     card = get_card_or_404(session, card_id)
     query = (body and body.query) or card.search_query or card.name
+    own = normalize_grade(card.grade)
+    asked = body.grades if body and body.grades else [own]
+    grades = list(dict.fromkeys(normalize_grade(g) for g in asked))[:8]
     try:
-        q, comps = await quote(query)
+        quotes, counts, comps = await quote_grades(query, grades)
     except Exception as e:
         raise HTTPException(502, f"eBay search failed: {e}") from e
 
-    snap = PriceSnapshot(card_id=card.id, **q.model_dump())
-    session.add(snap)
+    snaps = [PriceSnapshot(card_id=card.id, **q.model_dump()) for q in quotes]
+    session.add_all(snaps)
+    primary = next((s for s in snaps if s.grade == own), snaps[0])
     card.search_query = query
-    card.est_value = snap.median
-    card.priced_at = utcnow()
+    # The estimate only ever follows the card's own grade, so comparing other grades can't change it.
+    own_snap = next((s for s in snaps if s.grade == own), None)
+    if own_snap and own_snap.median is not None:
+        card.est_value = own_snap.median
+        card.priced_at = utcnow()
     card.updated_at = utcnow()
     session.add(card)
     session.commit()
-    session.refresh(snap)
-    return PriceResult(snapshot=snap, comps=comps)
+    for s in snaps:
+        session.refresh(s)
+    return PriceResult(snapshot=primary, snapshots=snaps, comps=comps, grade_counts=counts)
 
 
 @router.get("/prices", response_model=list[PriceSnapshot])
@@ -69,13 +81,23 @@ class TrendPoint(BaseModel):
     samples: int
 
 
+class TrendSeries(BaseModel):
+    grade: str
+    points: list[TrendPoint]
+
+
 class Trend(BaseModel):
     range: str
-    asking: list[TrendPoint]
-    sold: list[TrendPoint]
+    grades: list[str]  # grades plotted, in order (at most MAX_TREND_GRADES)
+    asking: list[TrendSeries]
+    sold: list[TrendSeries]
     # Sold prices need eBay's restricted Marketplace Insights API; false until a sold snapshot exists.
     sold_available: bool
     first_recorded: str | None  # date of the earliest asking snapshot, for "history starts on ..."
+    grades_available: list[str]  # grades this card has recorded asking prices for
+
+
+MAX_TREND_GRADES = 4
 
 
 def _daily(snaps: list[PriceSnapshot]) -> list[TrendPoint]:
@@ -93,22 +115,26 @@ def _daily(snaps: list[PriceSnapshot]) -> list[TrendPoint]:
 
 @router.get("/trend", response_model=Trend)
 def price_trend(card_id: int, range: str = Query("1m", pattern="^(7d|1m|3m|1y|all)$"),
-                session: Session = Depends(get_session)):
-    """Asking vs sold price over time, built from the price snapshots saved for this card."""
-    get_card_or_404(session, card_id)
+                grades: list[str] | None = Query(None), session: Session = Depends(get_session)):
+    """Asking vs sold price over time for one or more grades, from the snapshots saved for this card."""
+    card = get_card_or_404(session, card_id)
+    wanted = list(dict.fromkeys(normalize_grade(g) for g in (grades or [card.grade])))[:MAX_TREND_GRADES]
     snaps = session.exec(select(PriceSnapshot).where(PriceSnapshot.card_id == card_id)
                          .order_by(col(PriceSnapshot.created_at))).all()
-    asking_all = [s for s in snaps if s.source == "ebay-active"]
-    sold_all = [s for s in snaps if s.source == "ebay-sold"]
+    asking_all = [s for s in snaps if s.source == "ebay-active" and s.grade]
+    sold_all = [s for s in snaps if s.source == "ebay-sold" and s.grade]
     days = _RANGE_DAYS[range]
     cutoff = utcnow() - timedelta(days=days) if days else None
 
-    def within(rows: list[PriceSnapshot]) -> list[PriceSnapshot]:
-        return [s for s in rows if cutoff is None or s.created_at >= cutoff]
+    def series(rows: list[PriceSnapshot]) -> list[TrendSeries]:
+        return [TrendSeries(grade=g, points=_daily([s for s in rows if s.grade == g
+                                                    and (cutoff is None or s.created_at >= cutoff)]))
+                for g in wanted]
 
-    return Trend(range=range, asking=_daily(within(asking_all)), sold=_daily(within(sold_all)),
+    return Trend(range=range, grades=wanted, asking=series(asking_all), sold=series(sold_all),
                  sold_available=bool(sold_all),
-                 first_recorded=asking_all[0].created_at.date().isoformat() if asking_all else None)
+                 first_recorded=asking_all[0].created_at.date().isoformat() if asking_all else None,
+                 grades_available=sorted({s.grade for s in asking_all}, key=grade_sort_key))
 
 
 class ListingCreate(BaseModel):

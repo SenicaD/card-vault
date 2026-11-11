@@ -83,6 +83,7 @@ export interface PriceSnapshot {
   high: number | null
   currency: string
   top_listings?: EbayItem[] | null
+  grade?: string | null
   created_at: string
 }
 
@@ -96,12 +97,26 @@ export interface TrendPoint {
 
 export type TrendRange = '7d' | '1m' | '3m' | '1y' | 'all'
 
+export interface TrendSeries {
+  grade: string
+  points: TrendPoint[]
+}
+
 export interface Trend {
   range: TrendRange
-  asking: TrendPoint[]
-  sold: TrendPoint[]
+  grades: string[]
+  asking: TrendSeries[]
+  sold: TrendSeries[]
   sold_available: boolean
   first_recorded: string | null
+  grades_available: string[]
+}
+
+export interface PriceResult {
+  snapshot: PriceSnapshot
+  snapshots: PriceSnapshot[]
+  comps: EbayItem[]
+  grade_counts: Record<string, number>
 }
 
 export interface EbayItem {

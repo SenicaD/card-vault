@@ -136,7 +136,7 @@ def test_price_returns_top_four_listings_and_keeps_them():
     with TestClient(app) as c:
         card = _card(c)
         snap = c.post(f"/api/cards/{card['id']}/price").json()["snapshot"]
-        assert len(snap["top_listings"]) == 4
+        assert 1 <= len(snap["top_listings"]) <= 4  # (the mock may have fewer than 4 raw copies)
         assert {"title", "price", "url"} <= set(snap["top_listings"][0])
         # persisted: visible again from the history endpoint
         hist = c.get(f"/api/cards/{card['id']}/prices").json()
@@ -156,22 +156,22 @@ def test_trend_ranges_and_sold_flag():
         now = utcnow()
         with Session(engine) as s:
             for days_ago, med in ((400, 50.0), (60, 30.0), (3, 20.0), (3, 24.0)):
-                s.add(PriceSnapshot(card_id=card["id"], query="q", source="ebay-active", sample_size=5,
+                s.add(PriceSnapshot(card_id=card["id"], query="q", source="ebay-active", grade="Raw", sample_size=5,
                                     low=med - 5, median=med, mean=med, high=med + 5,
                                     created_at=now - timedelta(days=days_ago)))
-            s.add(PriceSnapshot(card_id=card["id"], query="q", source="ebay-image", sample_size=5,
+            s.add(PriceSnapshot(card_id=card["id"], query="q", source="ebay-image", grade="Raw", sample_size=5,
                                 low=1, median=1, mean=1, high=1, created_at=now))
             s.commit()
 
         def trend(r):
             return c.get(f"/api/cards/{card['id']}/trend", params={"range": r}).json()
 
-        assert [p["median"] for p in trend("7d")["asking"]] == [22.0]  # two same-day snapshots -> median of medians
-        assert len(trend("3m")["asking"]) == 2
-        assert len(trend("1y")["asking"]) == 2  # the 400-day-old point is outside a year
-        assert len(trend("all")["asking"]) == 3  # the ebay-image snapshot is not an asking price
+        assert [p["median"] for p in trend("7d")["asking"][0]["points"]] == [22.0]  # two same-day snapshots -> median of medians
+        assert len(trend("3m")["asking"][0]["points"]) == 2
+        assert len(trend("1y")["asking"][0]["points"]) == 2  # the 400-day-old point is outside a year
+        assert len(trend("all")["asking"][0]["points"]) == 3  # the ebay-image snapshot is not an asking price
         t = trend("all")
-        assert t["sold"] == [] and t["sold_available"] is False
+        assert t["sold"][0]["points"] == [] and t["sold_available"] is False
         assert t["first_recorded"] == (now - timedelta(days=400)).date().isoformat()
         assert c.get(f"/api/cards/{card['id']}/trend", params={"range": "5y"}).status_code == 422
 
@@ -224,3 +224,147 @@ def test_old_database_gets_top_listings_column(tmp_path):
             assert "top_listings" in [r[1] for r in conn.execute(text("PRAGMA table_info(pricesnapshot)"))]
     finally:
         db.engine = real
+
+
+# ---------- grades ----------
+
+def test_parse_grade_from_titles():
+    from app.services.grading import normalize_grade, parse_grade
+
+    for title, cond, want in [
+        ("2000 Playoff Contenders Tom Brady Ticket AUTO BGS 9 MINT", None, "BGS 9"),
+        ("PSA10 Charizard", None, "PSA 10"), ("Beckett 9.5 Gem Mint Jordan", None, "BGS 9.5"),
+        ("CGC Pristine 10 card", None, "CGC 10"), ("Charizard raw NM", None, "Raw"),
+        ("Charizard NM", "Ungraded", "Raw"), ("Charizard PSA 10 candidate!", None, "Raw"),
+        ("Charizard ready for PSA 10", None, "Raw"), ("Charizard Base Set", None, None),
+        ("Card #144 PSA 100", None, None), ("PSAbulk 10 cards", None, None),
+    ]:
+        assert parse_grade(title, cond) == want, (title, parse_grade(title, cond))
+    assert [normalize_grade(g) for g in (None, "", "raw", "psa 10", "Beckett 9", "CGC10", "mint")] == \
+        ["Raw", "Raw", "Raw", "PSA 10", "BGS 9", "CGC 10", "Raw"]
+
+
+def _query_with(*grades):
+    """A mock-eBay query whose results include every given grade (the mock is random per query)."""
+    import asyncio
+
+    from app.services.ebay import get_ebay
+    from app.services.grading import parse_grade
+
+    async def has(q):
+        found = {parse_grade(i.title, i.condition) for i in await get_ebay().search_active(q, limit=200)}
+        return all(g in found for g in grades)
+
+    for n in range(500):
+        q = f"grade probe {n}"
+        if asyncio.run(has(q)):
+            return q
+    raise AssertionError(f"no mock query had {grades}")
+
+
+def test_price_defaults_to_cards_own_grade_and_compares_others():
+    q = _query_with("Raw", "PSA 10", "PSA 9")
+    with TestClient(app) as c:
+        card = c.post("/api/cards", json={"category": "pokemon", "name": "Grade Test",
+                                          "grade": "PSA 9", "search_query": q}).json()
+        cid = card["id"]
+        # no grades asked -> the card's own grade only
+        r = c.post(f"/api/cards/{cid}/price").json()
+        assert [s["grade"] for s in r["snapshots"]] == ["PSA 9"]
+        assert r["snapshot"]["grade"] == "PSA 9"
+        est = c.get(f"/api/cards/{cid}").json()["est_value"]
+        assert est == r["snapshot"]["median"] and est is not None
+        assert r["grade_counts"]  # eBay showed listings for some grades
+
+        # comparing other grades must not move the estimate, and every grade gets its own snapshot
+        r2 = c.post(f"/api/cards/{cid}/price", json={"grades": ["Raw", "PSA 10"]}).json()
+        assert [s["grade"] for s in r2["snapshots"]] == ["Raw", "PSA 10"]
+        assert r2["snapshot"]["grade"] == "Raw"  # own grade (PSA 9) wasn't asked for -> first asked
+        assert c.get(f"/api/cards/{cid}").json()["est_value"] == est
+        for s in r2["snapshots"]:  # each grade is priced only from listings of that grade
+            assert all(t for t in (s["top_listings"] or []))
+            assert len(s["top_listings"] or []) <= 4
+
+        # a card with no grade is priced as Raw
+        raw = c.post("/api/cards", json={"category": "pokemon", "name": "Ungraded Card"}).json()
+        assert c.post(f"/api/cards/{raw['id']}/price").json()["snapshot"]["grade"] == "Raw"
+
+
+def test_grade_groups_never_mix_listings():
+    import asyncio
+
+    from app.services.ebay import get_ebay
+    from app.services.pricing import quote_grades
+
+    mix_q = _query_with("Raw", "PSA 10")
+
+    async def run():
+        items = await get_ebay().search_active(mix_q, limit=200)
+        quotes, counts, comps = await quote_grades(mix_q, ["Raw", "PSA 10", "PSA 9"])
+        return items, quotes, counts, comps
+
+    items, quotes, counts, comps = asyncio.run(run())
+    by_grade = {q.grade: q for q in quotes}
+    assert set(by_grade) == {"Raw", "PSA 10", "PSA 9"}
+    assert sum(counts.values()) <= len(items)
+    for q in quotes:
+        for t in q.top_listings or []:
+            from app.services.grading import parse_grade
+            assert parse_grade(t["title"], t["condition"]) == q.grade
+
+
+def test_trend_per_grade_and_legacy_snapshots_ignored():
+    from datetime import timedelta
+
+    from sqlmodel import Session
+
+    from app.db import engine
+    from app.models import PriceSnapshot, utcnow
+
+    with TestClient(app) as c:
+        card = c.post("/api/cards", json={"category": "pokemon", "name": "Multi Grade", "grade": "PSA 10"}).json()
+        now = utcnow()
+        with Session(engine) as s:
+            for grade, med in (("PSA 10", 100.0), ("Raw", 10.0), ("BGS 9.5", 80.0), ("PSA 9", 40.0), ("CGC 9", 30.0), (None, 999.0)):
+                s.add(PriceSnapshot(card_id=card["id"], query="q", source="ebay-active", grade=grade, sample_size=5,
+                                    low=med, median=med, mean=med, high=med, created_at=now - timedelta(days=1)))
+            s.commit()
+
+        t = c.get(f"/api/cards/{card['id']}/trend", params={"range": "1m"}).json()
+        assert t["grades"] == ["PSA 10"]  # default: the card's own grade
+        assert [p["median"] for p in t["asking"][0]["points"]] == [100.0]  # the legacy NULL-grade 999 is ignored
+
+        t = c.get(f"/api/cards/{card['id']}/trend",
+                  params=[("range", "1m"), ("grades", "Raw"), ("grades", "PSA 10"), ("grades", "BGS 9.5"),
+                          ("grades", "PSA 9"), ("grades", "CGC 9")]).json()
+        assert t["grades"] == ["Raw", "PSA 10", "BGS 9.5", "PSA 9"]  # capped at four lines
+        assert [s["points"][0]["median"] for s in t["asking"]] == [10.0, 100.0, 80.0, 40.0]
+        assert t["grades_available"] == ["Raw", "BGS 9.5", "CGC 9", "PSA 10", "PSA 9"]
+
+
+def test_refresh_tracks_own_and_looked_up_grades_with_one_search(monkeypatch):
+    import asyncio
+
+    from app.services import pricing, refresh
+    from app.services.ebay import get_ebay
+
+    calls = []
+    real = get_ebay().search_active
+
+    async def counting(query, limit=50):
+        calls.append(query)
+        return await real(query, limit)
+
+    monkeypatch.setattr(get_ebay(), "search_active", counting)
+    monkeypatch.setattr(pricing, "get_ebay", lambda: get_ebay())
+
+    with TestClient(app) as c:
+        card = c.post("/api/cards", json={"category": "pokemon", "name": "Refresh Grades", "grade": "PSA 10",
+                                          "search_query": "refresh grades query"}).json()
+        c.post(f"/api/cards/{card['id']}/price", json={"grades": ["PSA 10", "Raw", "PSA 9"]})
+        calls.clear()
+        refreshed, _ = asyncio.run(refresh.refresh_due(max_age=__import__("datetime").timedelta(0), pause=0))
+        assert refreshed >= 1
+        assert calls.count("refresh grades query") == 1  # three grades, one eBay search
+        grades = {s["grade"] for s in c.get(f"/api/cards/{card['id']}/prices").json()}
+        assert grades >= {"PSA 10", "Raw", "PSA 9"}

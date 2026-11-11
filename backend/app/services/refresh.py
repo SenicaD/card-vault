@@ -12,18 +12,21 @@ from sqlmodel import Session, col, select
 from ..config import get_settings
 from ..db import engine
 from ..models import Card, CardStatus, PriceSnapshot, utcnow
-from .pricing import quote
+from .grading import grade_sort_key, normalize_grade
+from .pricing import quote_grades
 
 log = logging.getLogger("cardvault.refresh")
 
 CHECK_EVERY_SECONDS = 3600  # how often to look for cards that are due
 PAUSE_BETWEEN_CARDS = 1.0  # be polite to the eBay API
+MAX_TRACKED_GRADES = 6
 
 
 async def refresh_due(max_age: timedelta | None = None, pause: float = PAUSE_BETWEEN_CARDS) -> tuple[int, int]:
-    """Re-price every unsold card whose last asking-price snapshot is older than max_age.
+    """Re-price every unsold card whose last graded asking snapshot is older than max_age.
 
-    Returns (refreshed, failed).
+    Each card is priced for its own grade plus every grade previously looked up for it. That is one
+    eBay search per card however many grades it tracks. Returns (cards refreshed, cards failed).
     """
     if max_age is None:
         max_age = timedelta(hours=get_settings().price_refresh_hours)
@@ -32,37 +35,38 @@ async def refresh_due(max_age: timedelta | None = None, pause: float = PAUSE_BET
 
     with Session(engine) as session:
         cards = session.exec(select(Card).where(col(Card.status) != CardStatus.sold)).all()
-        due: list[tuple[int, str]] = []
+        due: list[tuple[int, str, str, list[str]]] = []
         for c in cards:
-            last = session.exec(
-                select(PriceSnapshot.created_at)
-                .where(PriceSnapshot.card_id == c.id, PriceSnapshot.source == "ebay-active")
-                .order_by(col(PriceSnapshot.created_at).desc()).limit(1)
-            ).first()
+            rows = session.exec(select(PriceSnapshot.grade, PriceSnapshot.created_at).where(
+                PriceSnapshot.card_id == c.id, PriceSnapshot.source == "ebay-active",
+                col(PriceSnapshot.grade).is_not(None))).all()
+            last = max((created for _, created in rows), default=None)
             if last is None or last < cutoff:
-                due.append((c.id, c.search_query or c.name))
+                own = normalize_grade(c.grade)
+                others = sorted({g for g, _ in rows} - {own}, key=grade_sort_key)
+                due.append((c.id, c.search_query or c.name, own, ([own] + others)[:MAX_TRACKED_GRADES]))
 
-    for card_id, query in due:
+    for card_id, query, own, tracked in due:
         try:
-            q, _ = await quote(query)
+            quotes, _, _ = await quote_grades(query, tracked)
         except Exception as e:  # keep going: one bad query shouldn't stop the round
             failed += 1
             log.warning("re-price failed for card %s (%r): %s", card_id, query, e)
             await asyncio.sleep(pause)
             continue
-        if q.median is None:  # no usable listings; don't record an empty point
-            await asyncio.sleep(pause)
-            continue
-        with Session(engine) as session:
-            card = session.get(Card, card_id)
-            if not card or card.status == CardStatus.sold:
-                continue
-            session.add(PriceSnapshot(card_id=card_id, **q.model_dump()))
-            card.est_value = q.median
-            card.priced_at = utcnow()
-            session.add(card)
-            session.commit()
-        refreshed += 1
+        quotes = [q for q in quotes if q.median is not None]  # don't record empty points
+        if quotes:
+            with Session(engine) as session:
+                card = session.get(Card, card_id)
+                if card and card.status != CardStatus.sold:
+                    for q in quotes:
+                        session.add(PriceSnapshot(card_id=card_id, **q.model_dump()))
+                        if q.grade == own:  # the estimate follows only the card's own grade
+                            card.est_value = q.median
+                            card.priced_at = utcnow()
+                    session.add(card)
+                    session.commit()
+                    refreshed += 1
         await asyncio.sleep(pause)
 
     if due:
