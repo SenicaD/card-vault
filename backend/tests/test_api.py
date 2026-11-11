@@ -221,7 +221,8 @@ def test_old_database_gets_top_listings_column(tmp_path):
         db._add_missing_columns()
         db._add_missing_columns()  # idempotent
         with db.engine.connect() as conn:
-            assert "top_listings" in [r[1] for r in conn.execute(text("PRAGMA table_info(pricesnapshot)"))]
+            cols = [r[1] for r in conn.execute(text("PRAGMA table_info(pricesnapshot)"))]
+            assert {"top_listings", "grade", "price_refs"} <= set(cols)
     finally:
         db.engine = real
 
@@ -368,3 +369,35 @@ def test_refresh_tracks_own_and_looked_up_grades_with_one_search(monkeypatch):
         assert calls.count("refresh grades query") == 1  # three grades, one eBay search
         grades = {s["grade"] for s in c.get(f"/api/cards/{card['id']}/prices").json()}
         assert grades >= {"PSA 10", "Raw", "PSA 9"}
+
+
+def test_prices_link_to_the_listing_behind_them():
+    from app.services.ebay import EbayItem
+    from app.services.pricing import summarize
+
+    items = [EbayItem(item_id=str(n), title=f"Card {n}", price=p, url=f"https://ebay.test/{n}")
+             for n, p in enumerate([5.0, 9.0, 12.0, 20.0, 31.0])]
+    s = summarize(items)
+    refs = s["price_refs"]
+    assert (s["low"], s["median"], s["high"]) == (5.0, 12.0, 31.0)
+    assert refs["low"]["url"] == "https://ebay.test/0" and refs["low"]["price"] == 5.0
+    assert refs["high"]["url"] == "https://ebay.test/4" and refs["high"]["price"] == 31.0
+    assert refs["median"]["url"] == "https://ebay.test/2"
+    # an even count: the median (10.5) sits between two listings, so it points at the closest one
+    even = summarize(items[:4])
+    assert even["median"] == 10.5 and even["price_refs"]["median"]["price"] in (9.0, 12.0)
+    assert summarize([])["price_refs"] is None
+    # junk titles never become a reference
+    junk = summarize([EbayItem(item_id="j", title="Huge lot of cards", price=1.0, url="u")] + items)
+    assert junk["price_refs"]["low"]["item_id"] == "0"
+
+
+def test_snapshots_keep_listing_links():
+    with TestClient(app) as c:
+        card = _card(c, "Link Card")
+        snap = c.post(f"/api/cards/{card['id']}/price").json()["snapshot"]
+        refs = snap["price_refs"]
+        assert snap["sample_size"] > 0 and set(refs) == {"low", "median", "high"}
+        assert refs["low"]["price"] == snap["low"] and refs["high"]["price"] == snap["high"]
+        assert refs["low"]["url"] and refs["high"]["url"]
+        assert c.get(f"/api/cards/{card['id']}/prices").json()[0]["price_refs"] == refs

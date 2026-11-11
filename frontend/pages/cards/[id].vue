@@ -285,8 +285,8 @@ onMounted(() => {
                     <tr v-for="r in byGrade" :key="r.grade">
                       <td class="text-no-wrap"><v-icon v-if="r.grade === ownGrade" icon="mdi-star" size="12" class="mr-1" />{{ r.grade }}</td>
                       <template v-if="r.snap">
-                        <td class="text-right num font-weight-semibold">{{ money(r.snap.median) }}</td>
-                        <td class="text-right num text-no-wrap d-none d-sm-table-cell">{{ r.snap.sample_size ? `${money(r.snap.low)} – ${money(r.snap.high)}` : '—' }}</td>
+                        <td class="text-right num font-weight-semibold"><PriceLink :value="r.snap.median" :listing="r.snap.price_refs?.median" label="Closest to the median" /></td>
+                        <td class="text-right num text-no-wrap d-none d-sm-table-cell"><template v-if="r.snap.sample_size"><PriceLink :value="r.snap.low" :listing="r.snap.price_refs?.low" label="Lowest" /> – <PriceLink :value="r.snap.high" :listing="r.snap.price_refs?.high" label="Highest" /></template><template v-else>—</template></td>
                         <td class="text-right text-no-wrap">
                           <v-chip v-if="r.snap.sample_size === 0" size="x-small" variant="tonal">No listings</v-chip>
                           <template v-else>
@@ -394,9 +394,9 @@ onMounted(() => {
               <v-data-table :headers="historyHeaders" :items="history" density="comfortable" items-per-page="10" class="no-pointer">
                 <template #item.created_at="{ item }"><span class="num">{{ isoDate(item.created_at) }}</span></template>
                 <template #item.grade="{ item }">{{ item.grade || 'All' }}</template>
-                <template #item.low="{ item }"><span class="num">{{ money(item.low) }}</span></template>
-                <template #item.median="{ item }"><span class="num font-weight-semibold">{{ money(item.median) }}</span></template>
-                <template #item.high="{ item }"><span class="num">{{ money(item.high) }}</span></template>
+                <template #item.low="{ item }"><span class="num"><PriceLink :value="item.low" :listing="item.price_refs?.low" label="Lowest" /></span></template>
+                <template #item.median="{ item }"><span class="num font-weight-semibold"><PriceLink :value="item.median" :listing="item.price_refs?.median" label="Closest to the median" /></span></template>
+                <template #item.high="{ item }"><span class="num"><PriceLink :value="item.high" :listing="item.price_refs?.high" label="Highest" /></span></template>
                 <template #no-data><div class="py-6 text-secondary-c">No price lookups yet.</div></template>
               </v-data-table>
             </v-window-item>

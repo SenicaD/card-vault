@@ -23,18 +23,27 @@ def top_listings(items: list[EbayItem], n: int = 4) -> list[dict]:
 
 
 def summarize(items: list[EbayItem]) -> dict:
-    prices = sorted(i.price for i in items if not _JUNK.search(i.title))
-    if len(prices) >= 10:  # trim 10% each side to blunt outliers
-        k = len(prices) // 10
-        prices = prices[k:-k]
-    if not prices:
-        return dict(sample_size=0, low=None, median=None, mean=None, high=None)
+    """Low / median / mean / high over the usable listings, plus the listing behind each of the three.
+
+    price_refs lets the UI link a price to a real listing: low and high are exact, and the median
+    points at the listing priced closest to it (the true median can fall between two listings).
+    """
+    usable = sorted((i for i in items if not _JUNK.search(i.title)), key=lambda i: i.price)
+    if len(usable) >= 10:  # trim 10% each side to blunt outliers
+        k = len(usable) // 10
+        usable = usable[k:-k]
+    if not usable:
+        return dict(sample_size=0, low=None, median=None, mean=None, high=None, price_refs=None)
+    prices = [i.price for i in usable]
+    median = round(statistics.median(prices), 2)
     return dict(
         sample_size=len(prices),
         low=prices[0],
-        median=round(statistics.median(prices), 2),
+        median=median,
         mean=round(statistics.fmean(prices), 2),
         high=prices[-1],
+        price_refs={"low": usable[0].model_dump(), "high": usable[-1].model_dump(),
+                    "median": min(usable, key=lambda i: abs(i.price - median)).model_dump()},
     )
 
 

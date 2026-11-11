@@ -83,6 +83,7 @@ export interface PriceSnapshot {
   high: number | null
   currency: string
   top_listings?: EbayItem[] | null
+  price_refs?: { low?: EbayItem; median?: EbayItem; high?: EbayItem } | null
   grade?: string | null
   created_at: string
 }
