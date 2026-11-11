@@ -1,0 +1,36 @@
+services:
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    env_file:
+      - path: ./backend/.env   # optional; copy backend/.env.example to enable Claude/eBay keys
+        required: false
+    environment:
+      DATABASE_URL: sqlite:////data/cardvault.db
+      IMAGE_DIR: /data/images
+      CORS_ORIGINS: http://localhost:3000
+    volumes:
+      - cardvault-data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:8000/docs')"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    # No published port: the frontend proxies /api and /images.
+    # Uncomment to reach http://localhost:8000/docs directly:
+    # ports: ["8000:8000"]
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        NUXT_API_BASE: http://backend:8000
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+
+volumes:
+  cardvault-data:
