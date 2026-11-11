@@ -5,7 +5,13 @@ const model = defineModel<CardFields>({ required: true })
 const props = defineProps<{ locations: Location[] }>()
 
 const categories = Object.entries(CATEGORY_LABELS).map(([value, title]) => ({ value, title }))
-const conditions = [{ value: null, title: '—' }, ...['NM', 'LP', 'MP', 'HP', 'DMG'].map((c) => ({ value: c, title: c }))]
+// Older records may hold a code we no longer list (e.g. EX): keep it selectable so it isn't silently lost.
+const conditions = computed(() => [
+  { value: null, title: 'Not set', description: '', sports: '' },
+  ...CONDITIONS.map((c) => ({ value: c.value, title: c.name, description: c.description, sports: c.sports })),
+  ...(model.value.condition && !conditionInfo(model.value.condition)
+    ? [{ value: model.value.condition, title: model.value.condition, description: 'Older value', sports: '' }] : []),
+])
 const locationItems = computed(() => [
   { value: null, title: 'Unassigned' },
   ...props.locations.map((l) => ({ value: l.id, title: l.name })),
@@ -23,7 +29,13 @@ const locationItems = computed(() => [
       <v-col cols="12" sm="4"><v-text-field v-model="model.card_number" label="Card number" /></v-col>
       <v-col cols="12"><v-text-field v-model="model.variant" label="Variant or parallel" placeholder="Refractor, 1st Edition, Holo…" /></v-col>
       <v-col cols="12" sm="6"><v-text-field v-model="model.grade" label="Grade" placeholder="Raw, PSA 10…" /></v-col>
-      <v-col cols="12" sm="6"><v-select v-model="model.condition" :items="conditions" label="Condition" /></v-col>
+      <v-col cols="12" sm="6">
+        <v-select v-model="model.condition" :items="conditions" label="Condition (raw cards)" hint="How worn an ungraded card is. Graded cards use the grade instead.">
+          <template #item="{ props: p, item }">
+            <v-list-item v-bind="p" :title="item.raw.title" :subtitle="[item.raw.description, item.raw.sports].filter(Boolean).join(' ')" lines="three" />
+          </template>
+        </v-select>
+      </v-col>
     </v-row>
 
     <div class="section-label mt-4">Storage</div>

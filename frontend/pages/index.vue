@@ -218,7 +218,7 @@ watch(view, (v) => { try { localStorage.setItem('cv-view', v) } catch {} })
           <div v-if="item.slot" class="text-caption text-muted-c">{{ item.slot }}</div>
         </template>
         <template #item.grade="{ item }">
-          <span class="text-no-wrap">{{ item.grade || '—' }}<span v-if="item.condition" class="text-muted-c"> · {{ item.condition }}</span></span>
+          <span class="text-no-wrap">{{ item.grade || '—' }}<span v-if="item.condition" class="text-muted-c"> · {{ conditionName(item.condition) }}</span></span>
         </template>
         <template #item.quantity="{ item }"><span class="num">{{ item.quantity }}</span></template>
         <template #item.status="{ item }"><StatusPill :status="item.status" /></template>

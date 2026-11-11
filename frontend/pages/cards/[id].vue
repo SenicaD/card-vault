@@ -205,7 +205,7 @@ onMounted(() => {
             <dl class="facts">
               <div><dt>Type</dt><dd>{{ CATEGORY_LABELS[card.category] }}</dd></div>
               <div><dt>Stored in</dt><dd>{{ locName || 'Unassigned' }}<span v-if="card.slot" class="text-muted-c">, {{ card.slot }}</span></dd></div>
-              <div><dt>Grade</dt><dd>{{ card.grade || '—' }}<span v-if="card.condition" class="text-muted-c"> · {{ card.condition }}</span></dd></div>
+              <div><dt>Grade</dt><dd>{{ card.grade || '—' }}<span v-if="card.condition" class="text-muted-c" :title="conditionInfo(card.condition)?.description"> · {{ conditionName(card.condition) }}</span></dd></div>
               <div><dt>Quantity</dt><dd class="num">{{ card.quantity }}</dd></div>
               <div v-if="card.id_confidence != null"><dt>ID confidence</dt><dd class="num">{{ Math.round(card.id_confidence * 100) }}%</dd></div>
               <div><dt>Added</dt><dd class="num">{{ isoDate(card.created_at) }}</dd></div>
