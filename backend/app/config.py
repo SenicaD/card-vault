@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     soldcomps_api_key: str = ""
     soldcomps_base_url: str = "https://api.sold-comps.com"
     sold_monthly_budget: int = 100  # lookups the app may spend per calendar month (the free tier gives 100)
+    sold_auto_refresh: bool = False  # automatic background checks; off unless you turn them on
     sold_refresh_days: int = 7  # how often a card's sold prices are refreshed automatically
     sold_min_value: float = 0  # automatic checks only for cards estimated at or above this
     sold_window_days: int = 90  # how far back sold prices count

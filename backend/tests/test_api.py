@@ -1067,7 +1067,8 @@ def test_sold_prices_flow_into_the_comparison_and_trend(monkeypatch):
         assert c.post(f"/api/cards/{cid}/sold/refresh").status_code == 200
         blocked = c.post(f"/api/cards/{cid}/sold/refresh")
         assert blocked.status_code == 503 and "budget" in blocked.json()["detail"]
-        assert c.get("/api/debug/health").json()["sold"]["used_this_month"] == 2
+        health_sold = c.get("/api/debug/health").json()["sold"]
+        assert health_sold["used_this_month"] == 2 and health_sold["auto_enabled"] is False  # automatic checks are opt-in
 
 
 def test_automatic_sold_checks_respect_the_auto_budget(monkeypatch):

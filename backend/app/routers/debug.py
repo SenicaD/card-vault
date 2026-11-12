@@ -177,7 +177,8 @@ def health():
                         "budget": s.sold_monthly_budget, "used_this_month": used_this_month(session),
                         "auto_used": used_this_month(session, "auto"), "refresh_days": s.sold_refresh_days,
                         "min_value": s.sold_min_value, "window_days": s.sold_window_days,
-                        "auto_enabled": isinstance(provider, SoldCompsClient)}
+                        "auto_enabled": isinstance(provider, SoldCompsClient) and s.sold_auto_refresh,
+                        "auto_setting": s.sold_auto_refresh}
     return info
 
 

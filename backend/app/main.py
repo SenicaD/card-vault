@@ -22,7 +22,7 @@ async def lifespan(_: FastAPI):
     tasks = []
     if settings.ebay_mode == "live" and settings.price_refresh_hours > 0:
         tasks.append(asyncio.create_task(refresh_loop()))
-    if isinstance(get_sold(), SoldCompsClient):  # real sold prices are only fetched when a key is set
+    if isinstance(get_sold(), SoldCompsClient) and settings.sold_auto_refresh:  # spends lookups, so opt-in
         tasks.append(asyncio.create_task(sold_loop()))
     yield
     for task in tasks:

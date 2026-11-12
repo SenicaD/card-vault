@@ -12,7 +12,7 @@ interface Health {
   db: { path?: string; size_mb?: number; tables: Record<string, number> }
   disk?: { free_gb: number; total_gb: number }
   images: { count: number; size_mb: number }
-  sold: { provider: string | null; configured: boolean; budget: number; used_this_month: number; auto_used: number; refresh_days: number; min_value: number; window_days: number; auto_enabled: boolean }
+  sold: { provider: string | null; configured: boolean; auto_setting: boolean; budget: number; used_this_month: number; auto_used: number; refresh_days: number; min_value: number; window_days: number; auto_enabled: boolean }
   backups: { name: string; size_mb: number; modified: string }[]
 }
 const jobs = ref<{ runs: JobRunRow[]; current: any; daily_enabled: boolean; every_hours: number } | null>(null)
@@ -148,7 +148,7 @@ const eventHeaders = [{ title: 'Time', key: 'ts' }, { title: 'Why', key: 'purpos
                 <div><dt>Provider</dt><dd>{{ health.sold.provider }}</dd></div>
                 <div><dt>Lookups this month</dt><dd class="num">{{ health.sold.used_this_month }} of {{ health.sold.budget }}</dd></div>
                 <div><dt>Of those, automatic</dt><dd class="num">{{ health.sold.auto_used }} (up to 80% of the budget)</dd></div>
-                <div><dt>Automatic refresh</dt><dd>{{ health.sold.auto_enabled ? `every ${health.sold.refresh_days} days per card, most valuable first` : 'off (demo data)' }}</dd></div>
+                <div><dt>Automatic refresh</dt><dd>{{ health.sold.auto_enabled ? `on: every ${health.sold.refresh_days} days per card, most valuable first` : health.sold.provider === 'mock' ? 'off (demo data)' : 'off. Manual "Check sold prices" still works. Set SOLD_AUTO_REFRESH=true to turn on' }}</dd></div>
                 <div><dt>Only cards worth</dt><dd>{{ health.sold.min_value ? `at least $${health.sold.min_value}` : 'any value' }}</dd></div>
                 <div><dt>Sales counted from</dt><dd>the last {{ health.sold.window_days }} days</dd></div>
               </dl>
