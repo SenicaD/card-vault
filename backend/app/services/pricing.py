@@ -10,6 +10,7 @@ from ..models import PriceQuote
 from .debuglog import current_purpose
 from .ebay import EbayItem, get_ebay
 from .grading import grade_sort_key, parse_grade
+from .identity import Who, same_card
 from .parallels import parse_parallel
 
 # Titles that are clearly not a single copy of the card
@@ -192,7 +193,8 @@ def build_quotes(groups: dict[str, list[EbayItem]], grades: list[str], query: st
 
 
 async def quote_grades(query: str, grades: list[str], image: bytes | None = None,
-                       parallel: str | None = None, exclude: set[str] = frozenset(), trace=None) -> Priced:
+                       parallel: str | None = None, exclude: set[str] = frozenset(), trace=None,
+                       who: Who | None = None) -> Priced:
     """One eBay search, priced separately for each requested grade.
 
     Asking for more grades costs no extra API calls, because the grade is read from the same results.
@@ -200,10 +202,10 @@ async def quote_grades(query: str, grades: list[str], image: bytes | None = None
     Pass a Trace to record how the numbers were reached.
     """
     with (trace.active() if trace is not None else nullcontext()):
-        return await _quote_grades(query, grades, image, parallel, exclude, trace)
+        return await _quote_grades(query, grades, image, parallel, exclude, trace, who)
 
 
-async def _quote_grades(query, grades, image, parallel, exclude, trace) -> Priced:
+async def _quote_grades(query, grades, image, parallel, exclude, trace, who=None) -> Priced:
     source = "ebay-active"
     items = []
     if image:  # the card's own photo finds the right card far better than words do
@@ -231,12 +233,21 @@ async def _quote_grades(query, grades, image, parallel, exclude, trace) -> Price
     groups = group_by_grade(items)
     if source == "ebay-image":
         await _top_up_graded(items, groups, grades)
+    rejected: list[EbayItem] = []  # look-alikes: another player, year or card number
+    if who is not None:
+        for g in list(groups):
+            groups[g] = [i for i in groups[g] if same_card(i.title, who) or rejected.append(i)]
+        items = [i for i in items if same_card(i.title, who)]
+    if rejected and trace is not None:
+        trace.note(f"{len(rejected)} look-alike listings were left out before pricing: another player, year or card number.")
     quotes, used = build_quotes(groups, grades, query, source, parallel, exclude, trace)
     counts = {g: len(v) for g, v in sorted(groups.items(), key=lambda kv: grade_sort_key(kv[0]) if kv[0] != "Unknown" else (9, "", 0))}
     if trace is not None:
         trace.mode, trace.query = source, query
         listed = {i.item_id for g in grades for i in groups.get(g, [])}
         everything = list({i.item_id: i for i in [*items, *(i for v in groups.values() for i in v)]}.values())
+        for i in rejected:
+            trace.decide(i, parse_grade(i.title, i.condition), "other_card", parse_parallel(i.title))
         for i in everything:
             if i.item_id in listed:
                 continue  # already decided in build_quotes
@@ -245,7 +256,8 @@ async def _quote_grades(query, grades, image, parallel, exclude, trace) -> Price
             else:
                 g = parse_grade(i.title, i.condition)
                 trace.decide(i, g, "unknown_grade" if g is None else "grade_not_requested", parse_parallel(i.title))
-        trace.summary = {"returned": len(items), "after_top_up": len(everything), "mode": source,
+        trace.summary = {"returned": len(items) + len(rejected), "after_top_up": len(everything) + len(rejected),
+                         "other_card": len(rejected), "mode": source,
                          "junk": sum(1 for i in everything if _JUNK.search(i.title)),
                          "unknown_grade": len(groups.get("Unknown", [])),
                          "grades_found": counts}

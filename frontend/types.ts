@@ -308,11 +308,11 @@ export interface SoldCompare {
 
 export interface TraceCall { api: string; purpose: string; detail: string; ms: number; returned: number | null; error: string | null }
 export interface TraceFunnel {
-  grade: string; found: number; excluded: number; other_version: number; outliers: number; used: number
+  grade: string; found: number; excluded: number; other_card?: number; other_version: number; outliers: number; used: number
   low: number | null; median: number | null; high: number | null; spread: number | null
   fences: { q1: number; q3: number; lo: number; hi: number } | null
 }
-export type Decision = 'junk' | 'unknown_grade' | 'grade_not_requested' | 'excluded' | 'other_version' | 'outlier' | 'used'
+export type Decision = 'junk' | 'unknown_grade' | 'grade_not_requested' | 'other_card' | 'excluded' | 'other_version' | 'outlier' | 'used'
 export interface TraceListing { id: string; t: string; p: number; g: string | null; v: string | null; d: Decision; r: 'low' | 'median' | 'high' | null; u: string | null }
 export interface TraceSummary {
   id: number; kind: 'lookup' | 'sold'; created_at: string; trigger: string | null; mode: string | null; query: string | null; grades: string[] | null

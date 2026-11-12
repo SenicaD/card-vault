@@ -1,0 +1,62 @@
+"""Is a listing title about this card at all?
+
+eBay's photo search returns cards that merely look alike (same set, same colours), so a Surtain Mosaic
+search also brings back Mahomes and Josh Jacobs cards. A title is rejected when it names a different
+player, a different year, or a different card number. When we know too little about the card to judge
+(no usable name), nothing is rejected.
+"""
+import re
+import unicodedata
+from typing import NamedTuple
+
+_SUFFIX = {"jr", "sr", "ii", "iii", "iv", "v"}
+_YEAR = re.compile(r"\b(19[5-9]\d|20[0-4]\d)(?:\s?[-/]\s?(\d{2}))?\b")
+_NUM = re.compile(r"#\s?([A-Za-z]{0,4}-?\d+[A-Za-z]?)(?!\s?/)")
+
+
+def _fold(s: str) -> str:
+    return unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode().lower()
+
+
+class Who(NamedTuple):
+    surname: str | None
+    year: str | None
+    number: str | None
+
+
+def who_from(name: str | None, year: str | None, number: str | None) -> Who | None:
+    words = [w for w in re.findall(r"[a-z']+", _fold(name or "")) if w not in _SUFFIX]
+    surname = words[-1].replace("'", "") if words and len(words[-1]) >= 3 else None
+    y = re.search(r"(19[5-9]\d|20[0-4]\d)", year or "")
+    n = re.sub(r"[^a-z0-9-]", "", _fold(number or "")) or None
+    if not (surname or y or n):
+        return None
+    return Who(surname, y.group(1) if y else None, n if n and any(c.isdigit() for c in n) else None)
+
+
+def who_of_card(card) -> Who | None:
+    """None when the card's details are too uncertain to filter by (a poor identification)."""
+    if card.id_confidence is not None and card.id_confidence < 0.5:
+        return None
+    return who_from(card.name, card.year, card.card_number)
+
+
+def same_card(title: str, who: Who | None) -> bool:
+    if who is None:
+        return True
+    t = _fold(title).replace("'", "")
+    if who.surname and not re.search(rf"\b{re.escape(who.surname)}", t):
+        return False
+    if who.year:
+        years = set()
+        for m in _YEAR.finditer(t):
+            years.add(m.group(1))
+            if m.group(2):  # "2024-25" also covers the following season's year
+                years.add(m.group(1)[:2] + m.group(2))
+        if years and who.year not in years:
+            return False
+    if who.number:
+        nums = {re.sub(r"[^a-z0-9-]", "", m.group(1)).lstrip("0") for m in _NUM.finditer(t)}
+        if nums and who.number.lstrip("0") not in nums:
+            return False
+    return True

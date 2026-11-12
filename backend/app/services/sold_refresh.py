@@ -12,6 +12,7 @@ from ..models import Card, CardStatus, PriceSnapshot, SoldCall, SoldSale, utcnow
 from .debuglog import log_event
 from .ebay import EbayItem
 from .grading import normalize_grade, parse_grade
+from .identity import same_card, who_of_card
 from .parallels import parse_parallel
 from .pricing import _JUNK, build_quotes, summarize
 from .refresh import PAUSE_BETWEEN_CARDS
@@ -64,6 +65,13 @@ def recompute_sold(session: Session, card: Card) -> None:
     s = get_settings()
     cutoff = utcnow() - timedelta(days=s.sold_window_days)
     own = normalize_grade(card.grade)
+    who = who_of_card(card)
+    for r in session.exec(select(SoldSale).where(SoldSale.card_id == card.id)).all():
+        junk = bool(_JUNK.search(r.title)) or not same_card(r.title, who)  # a lot, or a look-alike (other player/year/number)
+        if r.junk != junk:
+            r.junk = junk
+            session.add(r)
+    session.flush()
     rows = [r for r in session.exec(select(SoldSale).where(SoldSale.card_id == card.id, SoldSale.junk == False,  # noqa: E712
                                                            SoldSale.grade == own)).all()
             if r.ended_at and r.ended_at >= cutoff and (not card.parallel or parse_parallel(r.title) == card.parallel)]
@@ -147,8 +155,9 @@ async def refresh_sold(session: Session, card: Card, kind: str = "manual") -> di
     have = {r.item_id: r for r in session.exec(select(SoldSale).where(SoldSale.card_id == card.id)).all()}
     groups: dict[str, list[EbayItem]] = {}
     best_offers = new_rows = 0
+    who = who_of_card(card)
     for it in items:
-        junk = bool(_JUNK.search(it.title))
+        junk = bool(_JUNK.search(it.title)) or not same_card(it.title, who)
         g = parse_grade(it.title) or "Raw"  # a title with no grader and grade is a raw card
         when = datetime(it.ended_at.year, it.ended_at.month, it.ended_at.day, tzinfo=UTC) if it.ended_at else None
         row = have.get(it.item_id)

@@ -17,6 +17,7 @@ DECISIONS = {
     "junk": "Looks like a lot, bundle or reprint",
     "unknown_grade": "The title doesn't say a grade",
     "grade_not_requested": "A grade you didn't ask about",
+    "other_card": "A different player, year or card number",
     "excluded": "You unticked it",
     "other_version": "A different version of the card",
     "outlier": "Price far from the rest",

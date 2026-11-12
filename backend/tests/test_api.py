@@ -274,7 +274,7 @@ def test_price_defaults_to_cards_own_grade_and_compares_others():
     q = _query_with("Raw", "PSA 10", "PSA 9")
     with TestClient(app) as c:
         card = c.post("/api/cards", json={"category": "pokemon", "name": "Grade Test",
-                                          "grade": "PSA 9", "search_query": q}).json()
+                                          "grade": "PSA 9", "search_query": q, "id_confidence": 0.2}).json()
         cid = card["id"]
         # no grades asked -> the card's own grade only
         r = c.post(f"/api/cards/{cid}/price").json()
@@ -414,7 +414,7 @@ def test_card_remembers_which_grades_have_listings():
     q = _query_with("Raw", "PSA 10")
     with TestClient(app) as c:
         card = c.post("/api/cards", json={"category": "pokemon", "name": "Counts Card", "grade": "PSA 10",
-                                          "search_query": q}).json()
+                                          "search_query": q, "id_confidence": 0.2}).json()
         assert card["grade_counts"] is None
         c.post(f"/api/cards/{card['id']}/price")
         got = c.get(f"/api/cards/{card['id']}").json()
@@ -1198,11 +1198,11 @@ def test_price_points_for_the_asking_vs_sold_chart(monkeypatch):
     from app.config import get_settings
     from app.services import sold_refresh
     monkeypatch.setattr(get_settings(), "sold_monthly_budget", 50)
-    page = [_sale(i, "Points Card", 50 + i, i * 3, best_offer=(i == 2)) for i in range(1, 7)]
-    monkeypatch.setattr(sold_refresh, "get_sold", lambda: _FakeSold([page]))
     with TestClient(app) as c:
-        card, _ = _priced_card(c, grade="Raw")
+        card, _ = _priced_card(c, grade="Raw", id_confidence=0.9)  # sure of the name, so look-alikes are filtered
         cid = card["id"]
+        page = [_sale(i, f"{card['name']} Raw", 50 + i, i * 3, best_offer=(i == 2)) for i in range(1, 7)]
+        monkeypatch.setattr(sold_refresh, "get_sold", lambda: _FakeSold([page]))
         c.post(f"/api/cards/{cid}/price", json={})
         c.post(f"/api/cards/{cid}/sold/refresh")
         pts = c.get(f"/api/cards/{cid}/price-points", params={"grade": "Raw", "range": "3m"}).json()
@@ -1259,3 +1259,15 @@ def test_portfolio_history_reaches_back_through_sales(monkeypatch):
         series = c.get("/api/portfolio", params={"range": "3m"}).json()["series"]
         assert len(series) > 2 and series[0]["date"] < series[-1]["date"]  # history starts at the oldest sale, not at today
         assert series[-1]["value"] >= 300
+
+
+def test_identity_filter_drops_lookalikes():
+    from app.services.identity import same_card, who_from
+    who = who_from("Patrick Surtain II", "2024", "70")
+    assert same_card("2024 Panini Mosaic Patrick Surtain II White #70 PSA 9", who)
+    assert same_card("Patrick Surtain 2024 Mosaic White Sparkle PSA 9", who)
+    assert not same_card("2024 Panini Mosaic Prizm Stained Glass Josh Jacobs PSA 9 #SG-5", who)
+    assert not same_card("2021 Patrick Surtain II Mosaic Blue Reactive Rookie PSA 9", who)  # wrong year
+    assert not same_card("2024 Mosaic Patrick Surtain II #276 PSA 9", who)  # wrong card number
+    assert same_card("2024-25 Mosaic Patrick Surtain II PSA 9 #70", who_from("Patrick Surtain II", "2025", "70"))
+    assert same_card("anything at all", None) and who_from("", None, None) is None

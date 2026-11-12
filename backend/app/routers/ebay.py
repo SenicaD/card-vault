@@ -12,6 +12,7 @@ from ..db import get_session
 from ..models import ASKING_SOURCES, Card, CardCategory, CardStatus, Listing, ListingSeen, PriceSnapshot, Sale, SoldSale, utcnow
 from ..services.ebay import EbayItem, ListingRequest, get_ebay
 from ..services.grading import grade_sort_key, normalize_grade
+from ..services.identity import who_of_card
 from ..services.parallels import BASE, parse_parallel
 from ..services.pricing import build_quotes, card_image, quote_grades
 from ..services.similarity import score_urls
@@ -54,7 +55,8 @@ async def price_card(card_id: int, body: PriceRequest | None = None,
     trace = Trace("lookup", "manual", query, grades, card.parallel)
     try:
         priced = await quote_grades(query, grades, None if (body and body.text_only) else card_image(card),
-                                    parallel=card.parallel, exclude=excluded_ids(session, card.id), trace=trace)
+                                    parallel=card.parallel, exclude=excluded_ids(session, card.id), trace=trace,
+                                    who=who_of_card(card))
     except Exception as e:
         trace.error = repr(e)[:400]
         save_trace(session, trace, card.id, keep_raw=True)  # a failed lookup is the one you most want to see
