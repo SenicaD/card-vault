@@ -15,6 +15,7 @@ from ..services.grading import grade_sort_key, normalize_grade
 from ..services.parallels import BASE, parse_parallel
 from ..services.pricing import build_quotes, card_image, quote_grades
 from ..services.similarity import score_urls
+from ..services.trace import Trace, save_trace
 from ..services.tracker import track_listings
 from .common import get_card_or_404
 
@@ -50,10 +51,13 @@ async def price_card(card_id: int, body: PriceRequest | None = None,
     own = normalize_grade(card.grade)
     asked = body.grades if body and body.grades else [own]
     grades = list(dict.fromkeys(normalize_grade(g) for g in asked))[:8]
+    trace = Trace("lookup", "manual", query, grades, card.parallel)
     try:
         priced = await quote_grades(query, grades, None if (body and body.text_only) else card_image(card),
-                                    parallel=card.parallel, exclude=excluded_ids(session, card.id))
+                                    parallel=card.parallel, exclude=excluded_ids(session, card.id), trace=trace)
     except Exception as e:
+        trace.error = repr(e)[:400]
+        save_trace(session, trace, card.id, keep_raw=True)  # a failed lookup is the one you most want to see
         raise HTTPException(502, f"eBay search failed: {e}") from e
     quotes, counts, comps, groups = priced.quotes, priced.counts, priced.comps, priced.groups
 
@@ -62,6 +66,8 @@ async def price_card(card_id: int, body: PriceRequest | None = None,
         from ..services.identify.ebay_image import parse_matches
         ident = parse_matches(priced.items)
         if ident.name and ident.confidence >= 0.3 and ident.confidence > (card.id_confidence or 0.0):
+            trace.note(f"The card was re-identified ({round((card.id_confidence or 0) * 100)}% before, {round(ident.confidence * 100)}% now): "
+                       f"was \"{card.name}\", now \"{ident.name}\"; search words are now \"{ident.search_query}\".")
             card.name, card.set_name, card.year = ident.name, ident.set_name, ident.year
             card.card_number, card.variant, card.category = ident.card_number, ident.variant, ident.category
             card.id_confidence, query = ident.confidence, ident.search_query
@@ -81,6 +87,11 @@ async def price_card(card_id: int, body: PriceRequest | None = None,
     card.updated_at = utcnow()
     session.add(card)
     session.commit()
+    trace.query = query
+    try:
+        save_trace(session, trace, card.id, keep_raw=True)
+    except Exception:  # a debugging aid must never break a price lookup
+        session.rollback()
     try:  # after the commit, so a failure here can never lose the price lookup
         await track_listings(session, card.id, groups)
     except Exception:

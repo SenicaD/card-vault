@@ -1,12 +1,20 @@
 export function useApi() {
+  const dbg = useDebug()
   async function api<T>(path: string, opts: Parameters<typeof $fetch>[1] = {}): Promise<T> {
+    const t0 = performance.now()
+    const note = (ok: boolean, error?: string) => {
+      if (!dbg.on.value) return // only recorded while debug mode is on
+      dbg.calls.value = [{ ts: Date.now(), method: String((opts as any).method || 'GET'), path, ok, ms: Math.round(performance.now() - t0), error }, ...dbg.calls.value].slice(0, 100)
+    }
     try {
-      return (await $fetch(path, opts as any)) as T
+      const res = (await $fetch(path, opts as any)) as T
+      note(true)
+      return res
     } catch (e: any) {
       const detail = e?.data?.detail
-      throw new Error(
-        typeof detail === 'string' ? detail : detail ? JSON.stringify(detail) : e?.message || 'Request failed',
-      )
+      const msg = typeof detail === 'string' ? detail : detail ? JSON.stringify(detail) : e?.message || 'Request failed'
+      note(false, msg)
+      throw new Error(msg)
     }
   }
   return { api }

@@ -96,8 +96,9 @@ def test_ebay_image_identifier_prices_from_matches(monkeypatch):
 
     monkeypatch.setattr(scan, "get_identifier", lambda: EbayImageIdentifier(get_ebay()))
     calls = []
-    real = get_ebay().search_active
-    monkeypatch.setattr(get_ebay(), "search_active", lambda *a, **k: calls.append(a) or real(*a, **k))
+    inner = get_ebay()._inner  # the client behind the call-logging wrapper
+    real = inner.search_active
+    monkeypatch.setattr(inner, "search_active", lambda *a, **k: calls.append(a) or real(*a, **k))
 
     with TestClient(app) as c:
         r = c.post("/api/scan", params={"price": "true"},
@@ -842,6 +843,9 @@ def test_bulk_reprice_job(monkeypatch):
         assert st["state"] == "done" and st["done"] == 2 and st["failed"] == 0
         assert st["changed"] == 2  # unpriced -> priced
         assert all(c.get(f"/api/cards/{i}").json()["est_value"] for i in ids)
+        run = c.get("/api/debug/jobs").json()["runs"][0]  # the bulk run is on the job log
+        assert run["kind"] == "bulk" and run["total"] == 2 and run["failed"] == 0 and run["finished_at"]
+        assert c.get(f"/api/cards/{ids[0]}/debug/traces").json()[0]["trigger"] == "bulk"
 
 
 def test_portfolio_totals_cost_and_series():
@@ -923,3 +927,72 @@ def test_sold_compare_asking_vs_gone():
         assert g["gap"] == -25 and g["gap_pct"] == -22.7 and g["days_median"] == 8
         assert len(r["rows"]) == 2 and r["rows"][0]["days_listed"] == 8 and r["source"] == "estimated"
         assert len(c.get(f"/api/cards/{card['id']}/sold-compare", params={"days": 0}).json()["rows"]) == 3
+
+
+def _priced_card(c, **kw):
+    s = c.post("/api/scan", files={"file": ("card.png", io.BytesIO(PNG), "image/png")}).json()
+    i = s["identification"]
+    return c.post("/api/cards", json={"category": i["category"], "name": i["name"], "search_query": i["search_query"],
+                                      "image_path": s["image_path"], **kw}).json(), s
+
+
+def test_price_trace_records_every_step():
+    with TestClient(app) as c:
+        card, _ = _priced_card(c, grade="Raw")
+        c.post(f"/api/cards/{card['id']}/price", json={})
+        traces = c.get(f"/api/cards/{card['id']}/debug/traces").json()
+        assert len(traces) == 1 and traces[0]["trigger"] == "manual" and traces[0]["has_raw"] and traces[0]["calls"] >= 1
+        t = c.get(f"/api/cards/{card['id']}/debug/traces/{traces[0]['id']}").json()
+        assert t["mode"] == "ebay-image" and t["calls"][0]["api"] == "photo search" and t["calls"][0]["returned"] > 0
+        f = t["funnel"][0]
+        assert f["grade"] == "Raw" and f["found"] >= f["used"] > 0
+        assert f["found"] == f["excluded"] + f["other_version"] + f["outliers"] + f["used"]  # every listing accounted for
+        decisions = {r["d"] for r in t["listings"]}
+        assert "used" in decisions and {"median", "low", "high"} <= {r["r"] for r in t["listings"] if r["r"]}
+        # the snapshot price is exactly what the trace says it is
+        assert c.get(f"/api/cards/{card['id']}").json()["est_value"] == f["median"]
+        raw = c.get(f"/api/cards/{card['id']}/debug/traces/{traces[0]['id']}/raw")
+        assert raw.status_code == 200 and raw.json()["listings"]
+
+
+def test_trace_shows_exclusions_and_compares_lookups():
+    with TestClient(app) as c:
+        card, _ = _priced_card(c, grade="Raw")
+        cid = card["id"]
+        c.post(f"/api/cards/{cid}/price", json={})
+        first = c.get(f"/api/cards/{cid}/debug/traces").json()[0]["id"]
+        t1 = c.get(f"/api/cards/{cid}/debug/traces/{first}").json()
+        victim = next(r for r in t1["listings"] if r["d"] == "used")
+        c.post(f"/api/cards/{cid}/matches/exclude", json={"item_ids": [victim["id"]], "excluded": True})
+        c.post(f"/api/cards/{cid}/price", json={})
+        traces = c.get(f"/api/cards/{cid}/debug/traces").json()
+        assert len(traces) == 2 and traces[0]["has_raw"] and not traces[1]["has_raw"]  # raw kept only on the newest
+        t2 = c.get(f"/api/cards/{cid}/debug/traces/{traces[0]['id']}").json()
+        assert next(r for r in t2["listings"] if r["id"] == victim["id"])["d"] == "excluded"
+        assert t2["funnel"][0]["excluded"] == 1
+        cmp = c.get(f"/api/cards/{cid}/debug/compare").json()
+        assert [d["id"] for d in cmp["decision_changed"]] == [victim["id"]] and cmp["decision_changed"][0]["was_decision"] == "used"
+        assert cmp["a"]["id"] == first and cmp["grades"][0]["grade"] == "Raw"
+        assert c.get(f"/api/cards/{cid}/debug/compare", params={"a": first}).status_code in (200, 404, 422)
+
+
+def test_trace_pruning_keeps_listings_for_newest_three():
+    with TestClient(app) as c:
+        card, _ = _priced_card(c, grade="Raw")
+        for _ in range(5):
+            c.post(f"/api/cards/{card['id']}/price", json={})
+        rows = c.get(f"/api/cards/{card['id']}/debug/traces").json()
+        assert [r["has_listings"] for r in rows] == [True, True, True, False, False]
+
+
+def test_identification_trace_and_debug_pages():
+    with TestClient(app) as c:
+        card, s = _priced_card(c)
+        chain = c.get(f"/api/cards/{card['id']}/debug/identification").json()
+        assert len(chain) == 1 and chain[0]["identity"]["identifier"] and chain[0]["identity"]["result"]["name"]
+        health = c.get("/api/debug/health").json()
+        assert health["version"] and health["db"]["tables"]["card"] >= 1 and health["ebay"]["mode"] == "mock"
+        assert c.post("/api/debug/health/ebay-test").json()["ok"] is True
+        ev = c.get("/api/debug/events").json()
+        assert ev["events"] and ev["last_hour"]["calls"] >= 1
+        assert "runs" in c.get("/api/debug/jobs").json()

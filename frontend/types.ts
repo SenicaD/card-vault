@@ -287,3 +287,41 @@ export interface SoldCompare {
   grades: GradeCompare[]
   rows: SoldRow[]
 }
+
+export interface TraceCall { api: string; purpose: string; detail: string; ms: number; returned: number | null; error: string | null }
+export interface TraceFunnel {
+  grade: string; found: number; excluded: number; other_version: number; outliers: number; used: number
+  low: number | null; median: number | null; high: number | null; spread: number | null
+  fences: { q1: number; q3: number; lo: number; hi: number } | null
+}
+export type Decision = 'junk' | 'unknown_grade' | 'grade_not_requested' | 'excluded' | 'other_version' | 'outlier' | 'used'
+export interface TraceListing { id: string; t: string; p: number; g: string | null; v: string | null; d: Decision; r: 'low' | 'median' | 'high' | null; u: string | null }
+export interface TraceSummary {
+  id: number; created_at: string; trigger: string | null; mode: string | null; query: string | null; grades: string[] | null
+  parallel: string | null; duration_ms: number | null; error: string | null; has_listings: boolean; has_raw: boolean
+  calls: number; notes: number; medians: Record<string, number | null>
+}
+export interface Trace extends Omit<TraceSummary, 'calls' | 'notes' | 'medians'> {
+  calls: TraceCall[] | null; funnel: TraceFunnel[] | null; summary: Record<string, any> | null
+  listings: TraceListing[] | null; notes: string[] | null
+}
+export interface TraceCompare {
+  a: { id: number; created_at: string; trigger: string | null; mode: string | null; query: string | null }
+  b: { id: number; created_at: string; trigger: string | null; mode: string | null; query: string | null }
+  search_changed: { query: boolean; mode: boolean; version: boolean }
+  grades: { grade: string; a_median: number | null; b_median: number | null; a_used: number | null; b_used: number | null }[]
+  new: TraceListing[]; gone: TraceListing[]
+  price_changed: (TraceListing & { was: number })[]
+  decision_changed: (TraceListing & { was_decision: Decision })[]
+  unchanged: number
+}
+export interface IdentTraceRow {
+  id: number; created_at: string; trigger: string | null; image_path: string | null; source_image: string | null; notes: string[] | null
+  identity: {
+    identifier: string; photo_kb: number | null; crop: { x: number; y: number; w: number; h: number } | null
+    matches: { id: string; t: string; p: number; u: string | null; read: boolean; junk: boolean }[]
+    matched_total: number; read_limit: number; result: Record<string, any>
+  } | null
+}
+export interface JobRunRow { id: number; kind: 'daily' | 'bulk'; started_at: string; finished_at: string | null; total: number; refreshed: number; failed: number; errors: { card_id: number; query: string; name?: string; error: string }[] | null }
+export interface EbayEvent { ts: string; api: string; purpose: string; detail: string; ms: number; returned: number | null; error: string | null; rate_limited?: boolean }

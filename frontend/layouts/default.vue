@@ -6,18 +6,27 @@ const route = useRoute()
 const theme = useTheme()
 const { mdAndUp, xs } = useDisplay()
 const { api } = useApi()
+const debug = useDebug()
+const showCalls = ref(false)
+onMounted(() => {
+  try { debug.on.value = localStorage.getItem('cv-debug') === '1' } catch {}
+})
+watch(debug.on, (v) => { try { localStorage.setItem('cv-debug', v ? '1' : '0') } catch {} })
 
 const drawer = ref(true)
 const rail = ref(false)
 watch(mdAndUp, (v) => (drawer.value = v), { immediate: true })
 
-const nav = [
+const baseNav = [
   { to: '/', title: 'Inventory', icon: 'mdi-view-dashboard-outline', match: (p: string) => p === '/' || p.startsWith('/cards') },
   { to: '/dashboard', title: 'Portfolio', icon: 'mdi-chart-areaspline', match: (p: string) => p.startsWith('/dashboard') },
   { to: '/review', title: 'Review queue', icon: 'mdi-clipboard-check-outline', match: (p: string) => p.startsWith('/review') },
   { to: '/scan', title: 'Scan cards', icon: 'mdi-camera-outline', match: (p: string) => p.startsWith('/scan') },
   { to: '/locations', title: 'Storage', icon: 'mdi-archive-outline', match: (p: string) => p.startsWith('/locations') },
 ]
+const nav = computed(() => (debug.on.value
+  ? [...baseNav, { to: '/debug', title: 'Debug', icon: 'mdi-bug-outline', match: (p: string) => p.startsWith('/debug') }]
+  : baseNav))
 
 // Integration status, shown in the header so it's always clear whether data is live.
 const modes = ref<Stats['modes'] | null>(null)
@@ -120,6 +129,20 @@ function doSearch() {
       </v-tooltip>
     </v-chip>
     <v-btn
+      icon
+      :color="debug.on.value ? 'warning' : undefined"
+      :variant="debug.on.value ? 'tonal' : 'text'"
+      size="small"
+      class="mr-1"
+      :aria-pressed="debug.on.value"
+      :aria-label="debug.on.value ? 'Turn debug mode off' : 'Turn debug mode on'"
+      @click="debug.on.value = !debug.on.value"
+    >
+      <v-icon :icon="debug.on.value ? 'mdi-bug' : 'mdi-bug-outline'" />
+      <v-tooltip activator="parent" location="bottom">{{ debug.on.value ? 'Debug mode is on. Click to turn off' : 'Debug mode: see how prices are worked out' }}</v-tooltip>
+    </v-btn>
+    <v-btn v-if="debug.on.value" size="small" variant="text" class="mr-1 d-none d-sm-flex" prepend-icon="mdi-lan-pending" @click="showCalls = true">Requests</v-btn>
+    <v-btn
       :icon="isDark ? 'mdi-weather-sunny' : 'mdi-weather-night'"
       variant="text"
       size="small"
@@ -131,6 +154,29 @@ function doSearch() {
       Scan card
     </v-btn>
   </v-app-bar>
+
+  <v-dialog v-model="showCalls" max-width="760" scrollable>
+    <v-card>
+      <div class="card-head">
+        <div><h2><v-icon icon="mdi-lan-pending" size="18" />Requests from this browser</h2><p>The last {{ debug.calls.value.length }} calls this page made to the CardVault server, while debug mode was on.</p></div>
+        <v-btn variant="text" size="small" @click="debug.calls.value = []">Clear</v-btn>
+      </div>
+      <v-card-text>
+        <p v-if="!debug.calls.value.length" class="text-body-2 text-muted-c">Nothing yet. Use the app and the requests appear here.</p>
+        <v-table v-else density="compact">
+          <thead><tr><th>Time</th><th>Request</th><th class="text-right">Took</th><th>Result</th></tr></thead>
+          <tbody>
+            <tr v-for="(c, i) in debug.calls.value" :key="i">
+              <td class="num text-no-wrap">{{ new Date(c.ts).toLocaleTimeString() }}</td>
+              <td style="overflow-wrap: anywhere"><strong>{{ c.method }}</strong> {{ c.path }}</td>
+              <td class="text-right num">{{ c.ms }} ms</td>
+              <td><v-chip size="x-small" :color="c.ok ? 'success' : 'error'" variant="tonal">{{ c.ok ? 'OK' : 'Failed' }}</v-chip><div v-if="c.error" class="text-caption text-error">{{ c.error }}</div></td>
+            </tr>
+          </tbody>
+        </v-table>
+      </v-card-text>
+    </v-card>
+  </v-dialog>
 
   <v-main class="shell-main">
     <div class="page">

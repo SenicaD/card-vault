@@ -250,3 +250,47 @@ class Listing(SQLModel, table=True):
     status: str = "draft"  # draft | published | ended
     url: str | None = None
     created_at: datetime = ts(default_factory=utcnow)
+
+
+# ---------- Debugging: how a price was worked out, and what the background jobs did ----------
+
+class PriceTrace(SQLModel, table=True):
+    """One lookup, recorded step by step: the searches made, what happened to every listing, and the result.
+
+    Cheap parts (calls, funnel) are kept for the newest 20 lookups per card. The per-listing table is kept
+    for the newest 3 and the raw eBay data only for the newest manual lookup, to keep the database small.
+    """
+
+    id: int | None = Field(default=None, primary_key=True)
+    card_id: int | None = Field(default=None, index=True)
+    kind: str = "lookup"  # lookup | identify
+    trigger: str | None = None  # manual | daily | bulk | crop | scan
+    created_at: datetime = ts(default_factory=utcnow)
+    image_path: str | None = Field(default=None, index=True)  # photo used (identify traces)
+    source_image: str | None = None  # the photo a crop was cut from
+    query: str | None = None
+    mode: str | None = None  # ebay-image | ebay-active
+    parallel: str | None = None
+    duration_ms: int | None = None
+    error: str | None = None
+    grades: list[str] | None = Field(default=None, sa_column=Column(JSON, nullable=True))
+    calls: list[dict[str, Any]] | None = Field(default=None, sa_column=Column(JSON, nullable=True))
+    funnel: list[dict[str, Any]] | None = Field(default=None, sa_column=Column(JSON, nullable=True))
+    summary: dict[str, Any] | None = Field(default=None, sa_column=Column(JSON, nullable=True))
+    listings: list[dict[str, Any]] | None = Field(default=None, sa_column=Column(JSON, nullable=True))
+    raw: list[dict[str, Any]] | None = Field(default=None, sa_column=Column(JSON, nullable=True))
+    identity: dict[str, Any] | None = Field(default=None, sa_column=Column(JSON, nullable=True))
+    notes: list[str] | None = Field(default=None, sa_column=Column(JSON, nullable=True))
+
+
+class JobRun(SQLModel, table=True):
+    """A background re-price run (the daily one, or a bulk run you started)."""
+
+    id: int | None = Field(default=None, primary_key=True)
+    kind: str  # daily | bulk
+    started_at: datetime = ts(default_factory=utcnow)
+    finished_at: datetime | None = ts(default=None)
+    total: int = 0
+    refreshed: int = 0
+    failed: int = 0
+    errors: list[dict[str, Any]] | None = Field(default=None, sa_column=Column(JSON, nullable=True))

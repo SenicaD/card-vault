@@ -7,7 +7,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .config import get_settings
 from .db import init_db
-from .routers import cards, ebay, locations, portfolio, sales, scan
+from .routers import cards, debug, ebay, locations, portfolio, sales, scan
 from .services.refresh import refresh_loop
 
 settings = get_settings()
@@ -31,7 +31,7 @@ app = FastAPI(title="CardVault API", version="0.1.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origin_list,
                    allow_methods=["*"], allow_headers=["*"])
 
-for r in (scan.router, scan.price_router, cards.router, locations.router, ebay.router, sales.router, portfolio.router):
+for r in (scan.router, scan.price_router, cards.router, locations.router, ebay.router, sales.router, portfolio.router, debug.router, debug.card_router):
     app.include_router(r)
 
 settings.image_dir.mkdir(parents=True, exist_ok=True)

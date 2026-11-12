@@ -6,6 +6,13 @@ const { api } = useApi()
 const { xs } = useDisplay()
 const route = useRoute()
 const id = Number(route.params.id)
+const debug = useDebug()
+if (route.query.debug) debug.on.value = true // links from the Inventory markers
+function showTrace() {
+  debug.on.value = true
+  nextTick(() => document.getElementById('debug-panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' }))
+}
+onMounted(() => { if (route.query.debug) setTimeout(showTrace, 600) })
 
 const card = ref<Card | null>(null)
 const form = ref<CardFields | null>(null)
@@ -386,6 +393,12 @@ onMounted(() => {
               <div><dt>Added</dt><dd class="num">{{ isoDate(card.created_at) }}</dd></div>
               <div><dt>Updated</dt><dd class="num">{{ isoDate(card.updated_at) }}</dd></div>
               <div v-if="card.notes" class="wide"><dt>Notes</dt><dd>{{ card.notes }}</dd></div>
+              <template v-if="debug.on">
+                <div class="wide"><dt>Search words</dt><dd>{{ card.search_query || '—' }}</dd></div>
+                <div><dt>Priced grade</dt><dd>{{ normalizeGrade(card.grade) }}<span v-if="card.parallel" class="text-muted-c"> · {{ card.parallel }}</span></dd></div>
+                <div><dt>Priced at</dt><dd class="num">{{ card.priced_at ? isoDate(card.priced_at) : 'never' }}</dd></div>
+                <div><dt>Card id / photo</dt><dd class="num">{{ card.id }} · {{ card.image_url?.split('/').pop() || 'none' }}</dd></div>
+              </template>
             </dl>
           </v-card>
         </div>
@@ -407,7 +420,10 @@ onMounted(() => {
 
         <!-- Value KPIs -->
         <v-row dense class="mb-2">
-          <v-col cols="6" sm="3"><StatCard label="Estimate" :value="money(card.est_value)" icon="mdi-currency-usd" color="primary" :sub="card.priced_at ? `Priced ${isoDate(card.priced_at).slice(0, 10)}` : 'Not priced'" /></v-col>
+          <v-col cols="6" sm="3" class="kpi-wrap">
+            <StatCard label="Estimate" :value="money(card.est_value)" icon="mdi-currency-usd" color="primary" :sub="card.priced_at ? `Priced ${isoDate(card.priced_at).slice(0, 10)}` : 'Not priced'" />
+            <v-btn v-if="debug.on" icon="mdi-bug-outline" size="x-small" variant="tonal" color="warning" class="kpi-bug" aria-label="Show how this price was calculated" title="Show how this price was calculated" @click="showTrace" />
+          </v-col>
           <v-col cols="6" sm="3"><StatCard label="Low" :value="money(latest?.low)" icon="mdi-arrow-down" color="info" /></v-col>
           <v-col cols="6" sm="3"><StatCard label="High" :value="money(latest?.high)" icon="mdi-arrow-up" color="warning" /></v-col>
           <v-col cols="6" sm="3"><StatCard label="Sample size" :value="latest?.sample_size ?? '—'" icon="mdi-chart-box-outline" color="success" :sub="latest?.source === 'ebay-image' ? 'Image matches' : 'Active listings'" /></v-col>
@@ -709,6 +725,7 @@ onMounted(() => {
             </v-window-item>
           </v-window>
         </v-card>
+        <PriceTrace v-if="debug.on" :card-id="id" :version="String(card.priced_at) + card.updated_at" class="mt-4" />
       </v-col>
     </v-row>
 
@@ -774,6 +791,8 @@ onMounted(() => {
 .grade-table { background: transparent !important; }
 .d-grid { display: grid; gap: 14px; }
 .gone-title { max-width: 320px; }
+.kpi-wrap { position: relative; }
+.kpi-bug { position: absolute; top: 10px; right: 14px; }
 .sold-scroll { overflow-x: auto; }
 .sold-scroll .gone-title { max-width: 190px; }
 .grade-table :deep(th) { font-size: 11.5px !important; text-transform: uppercase; letter-spacing: 0.04em; color: rgb(var(--v-theme-text-muted)) !important; }

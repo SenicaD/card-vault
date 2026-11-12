@@ -3,6 +3,7 @@ import { useDisplay } from 'vuetify'
 import { CATEGORY_LABELS, STATUS_LABELS, type Card, type Category, type Location, type Stats } from '~/types'
 
 const { api } = useApi()
+const debug = useDebug()
 const { mdAndUp } = useDisplay()
 const route = useRoute()
 const router = useRouter()
@@ -305,7 +306,10 @@ watch(view, (v) => { try { localStorage.setItem('cv-view', v) } catch {} })
         </template>
         <template #item.quantity="{ item }"><span class="num">{{ item.quantity }}</span></template>
         <template #item.status="{ item }"><StatusPill :status="item.status" /></template>
-        <template #item.est_value="{ item }"><span class="num font-weight-semibold text-no-wrap">{{ money(item.est_value) }}</span></template>
+        <template #item.est_value="{ item }">
+          <span class="num font-weight-semibold text-no-wrap">{{ money(item.est_value) }}</span>
+          <v-btn v-if="debug.on" icon="mdi-bug-outline" size="x-small" variant="text" color="warning" :to="`/cards/${item.id}?debug=1`" aria-label="How this price was calculated" title="How this price was calculated" @click.stop />
+        </template>
       </v-data-table>
 
       <!-- Grid -->
@@ -318,6 +322,7 @@ watch(view, (v) => { try { localStorage.setItem('cv-view', v) } catch {} })
               <strong class="truncate">{{ c.name }}</strong>
               <span class="num font-weight-semibold text-no-wrap">{{ money(c.est_value) }}</span>
             </div>
+            <div v-if="debug.on" class="text-caption text-muted-c truncate">#{{ c.id }} · {{ c.priced_at ? isoDate(c.priced_at).slice(0, 10) : 'never priced' }} · {{ c.id_confidence != null ? Math.round(c.id_confidence * 100) + '% match' : 'no match data' }}</div>
             <div class="text-caption text-secondary-c truncate">{{ subline(c) || '—' }}</div>
             <div class="d-flex justify-space-between align-center ga-2 mt-2">
               <span class="text-caption text-muted-c truncate">{{ locName(c.location_id) || 'Unassigned' }}<template v-if="c.slot">, {{ c.slot }}</template></span>

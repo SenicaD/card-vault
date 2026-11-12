@@ -5,12 +5,13 @@ from pydantic import BaseModel, Field
 from sqlmodel import Session, col, func, or_, select
 
 from ..config import get_settings
-from ..db import get_session
+from ..db import engine, get_session
 from ..models import ASKING_SOURCES, Card, CardCategory, CardCreate, CardRead, CardStatus, CardUpdate, PriceSnapshot, utcnow
 from ..services.imagecrop import CropBox, CropError, crop_saved_image
 from ..services.grading import normalize_grade
 from ..services.identify import CardIdentification, build_search_query, get_identifier
 from ..services import refresh as refresh_service
+from ..services.trace import identification_trace, save_trace
 from .common import get_card_or_404, to_read
 
 router = APIRouter(prefix="/api/cards", tags=["cards"])
@@ -241,6 +242,7 @@ async def crop_card_photo(card_id: int, box: CropBox, session: Session = Depends
     card = get_card_or_404(session, card_id)
     if not card.image_path:
         raise HTTPException(422, "This card has no photo")
+    before = card.image_path
     try:
         card.image_path, data = crop_saved_image(card.image_path, box)
     except CropError as e:
@@ -249,7 +251,13 @@ async def crop_card_photo(card_id: int, box: CropBox, session: Session = Depends
     identifier = get_identifier()
     if old < 0.3 and hasattr(identifier, "match"):
         try:
-            ident, _ = await identifier.match(data)
+            ident, found = await identifier.match(data)
+            try:  # its own session, so a failure here can't undo the crop
+                with Session(engine) as trace_session:
+                    save_trace(trace_session, identification_trace(identifier.name, ident, found, card.image_path, before,
+                                                                   box.model_dump(), "crop", len(data)), card.id)
+            except Exception:
+                pass
         except Exception:
             ident = None
         if ident and ident.name and ident.confidence >= 0.3 and ident.confidence > old:

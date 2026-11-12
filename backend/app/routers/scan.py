@@ -3,12 +3,16 @@ import uuid
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field
 
+from sqlmodel import Session
+
 from ..config import get_settings
+from ..db import engine
 from ..models import PriceQuote
 from ..services.ebay import EbayItem
 from ..services.imagecrop import CropBox, CropError, crop_saved_image
 from ..services.identify import CardIdentification, get_identifier
 from ..services.pricing import quote, summarize, top_listings
+from ..services.trace import identification_trace, save_trace
 
 router = APIRouter(prefix="/api/scan", tags=["scan"])
 
@@ -46,7 +50,7 @@ async def scan_card(file: UploadFile = File(...),
     name = f"{uuid.uuid4().hex}.{_ALLOWED[file.content_type]}"
     (settings.image_dir / name).write_bytes(data)
 
-    return await _identify_and_price(data, file.content_type, name, price)
+    return await _identify_and_price(data, file.content_type, name, price, trigger="scan")
 
 
 class CropRequest(BaseModel):
@@ -62,10 +66,12 @@ async def rescan_cropped(body: CropRequest) -> ScanResult:
         name, data = crop_saved_image(body.image_path, body.box)
     except CropError as e:
         raise HTTPException(422, str(e)) from e
-    return await _identify_and_price(data, "image/jpeg", name, body.price)
+    return await _identify_and_price(data, "image/jpeg", name, body.price, source_image=body.image_path,
+                                     crop=body.box.model_dump(), trigger="crop")
 
 
-async def _identify_and_price(data: bytes, content_type: str, name: str, price: bool) -> ScanResult:
+async def _identify_and_price(data: bytes, content_type: str, name: str, price: bool, source_image: str | None = None,
+                              crop: dict | None = None, trigger: str = "scan") -> ScanResult:
     identifier = get_identifier()
     matches = None  # eBay image matching returns the matched listings too
     try:
@@ -78,6 +84,12 @@ async def _identify_and_price(data: bytes, content_type: str, name: str, price: 
 
     result = ScanResult(image_path=name, image_url=f"/images/{name}",
                         identifier=identifier.name, identification=ident)
+    try:  # a debugging aid must never break a scan
+        with Session(engine) as session:
+            save_trace(session, identification_trace(identifier.name, ident, matches, name, source_image, crop,
+                                                     trigger, len(data)))
+    except Exception:
+        pass
     if price and matches is not None:
         # Price straight from the visual matches: no second eBay call.
         usable = [m for m in matches if m.price > 0]

@@ -12,9 +12,10 @@ from sqlmodel import Session, col, select
 
 from ..config import get_settings
 from ..db import engine
-from ..models import ASKING_SOURCES, Card, ListingSeen, CardStatus, PriceSnapshot, utcnow
+from ..models import ASKING_SOURCES, Card, JobRun, ListingSeen, CardStatus, PriceSnapshot, utcnow
 from .grading import grade_sort_key, normalize_grade
 from .pricing import card_image, quote_grades
+from .trace import Trace, save_trace
 from .tracker import track_listings
 
 log = logging.getLogger("cardvault.refresh")
@@ -34,12 +35,23 @@ def _plan(session: Session, c: Card) -> tuple:
     return (c.id, c.search_query or c.name, own, ([own] + others)[:MAX_TRACKED_GRADES], card_image(c), c.parallel)
 
 
-async def reprice_card(card_id: int, query: str, own: str, tracked: list[str], image, parallel) -> bool:
+async def reprice_card(card_id: int, query: str, own: str, tracked: list[str], image, parallel,
+                       trigger: str = "daily") -> bool:
     """Price one card on eBay and record it. True if any grade got a price. Raises if the search fails."""
     with Session(engine) as session:
         skip = set(session.exec(select(ListingSeen.item_id).where(
             ListingSeen.card_id == card_id, ListingSeen.excluded == True)).all())  # noqa: E712
-    priced = await quote_grades(query, tracked, image, parallel=parallel, exclude=skip)
+    trace = Trace("lookup", trigger, query, tracked, parallel)
+    try:
+        priced = await quote_grades(query, tracked, image, parallel=parallel, exclude=skip, trace=trace)
+    except Exception as e:
+        trace.error = repr(e)[:400]
+        try:
+            with Session(engine) as session:
+                save_trace(session, trace, card_id)
+        except Exception:
+            log.exception("could not save the trace for card %s", card_id)
+        raise
     quotes, counts, groups = priced.quotes, priced.counts, priced.groups
     quotes = [q for q in quotes if q.median is not None]  # don't record empty points
     ok = False
@@ -55,6 +67,11 @@ async def reprice_card(card_id: int, query: str, own: str, tracked: list[str], i
             session.add(card)
             session.commit()
             ok = bool(quotes)
+            try:
+                save_trace(session, trace, card_id)
+            except Exception:  # a debugging aid must never break pricing
+                log.exception("could not save the trace for card %s", card_id)
+                session.rollback()
             try:  # after the commit, so a failure here can never lose the prices
                 await track_listings(session, card_id, groups)
             except Exception:
@@ -73,6 +90,8 @@ async def refresh_due(max_age: timedelta | None = None, pause: float = PAUSE_BET
         max_age = timedelta(hours=get_settings().price_refresh_hours)
     cutoff = utcnow() - max_age
     refreshed = failed = 0
+    started = utcnow()
+    errors: list[dict] = []
 
     with Session(engine) as session:
         cards = session.exec(select(Card).where(col(Card.status) != CardStatus.sold)).all()
@@ -93,12 +112,29 @@ async def refresh_due(max_age: timedelta | None = None, pause: float = PAUSE_BET
                 refreshed += 1
         except Exception as e:  # keep going: one bad query shouldn't stop the round
             failed += 1
+            errors.append({"card_id": plan[0], "query": plan[1], "error": repr(e)[:300]})
             log.warning("re-price failed for card %s (%r): %s", plan[0], plan[1], e)
         await asyncio.sleep(pause)
 
     if due:
         log.info("re-priced %d of %d due cards (%d failed)", refreshed, len(due), failed)
+        record_run("daily", started, len(due), refreshed, failed, errors)
     return refreshed, failed
+
+
+def record_run(kind: str, started, total: int, refreshed: int, failed: int, errors: list[dict]) -> None:
+    """Keep a line for the Debug page's job log (the newest 100 runs)."""
+    try:
+        with Session(engine) as session:
+            session.add(JobRun(kind=kind, started_at=started, finished_at=utcnow(), total=total, refreshed=refreshed,
+                               failed=failed, errors=errors[:50]))
+            session.commit()
+            old = session.exec(select(JobRun).order_by(col(JobRun.id).desc()).offset(100)).all()
+            for r in old:
+                session.delete(r)
+            session.commit()
+    except Exception:
+        log.exception("could not record the job run")
 
 
 async def refresh_loop() -> None:
@@ -121,6 +157,7 @@ class RepriceJob:
     started_at: datetime = field(default_factory=utcnow)
     finished_at: datetime | None = None
     changes: list[dict] = field(default_factory=list)  # [{id, name, before, after}]
+    errors: list[dict] = field(default_factory=list)
 
     def snapshot(self) -> dict:
         moved = [c for c in self.changes if c["before"] != c["after"]]
@@ -162,15 +199,17 @@ async def _run_job(job: RepriceJob, plans: list[tuple], pause: float) -> None:
     try:
         for plan, name, before in plans:
             try:
-                await reprice_card(*plan)
+                await reprice_card(*plan, trigger="bulk")
                 with Session(engine) as session:
                     card = session.get(Card, plan[0])
                     job.changes.append({"id": plan[0], "name": name, "before": before,
                                         "after": card.est_value if card else before})
             except Exception as e:
                 job.failed += 1
+                job.errors.append({"card_id": plan[0], "query": plan[1], "name": name, "error": repr(e)[:300]})
                 log.warning("bulk re-price failed for card %s (%r): %s", plan[0], plan[1], e)
             job.done += 1
             await asyncio.sleep(pause)
     finally:
         job.state, job.finished_at = "done", utcnow()
+        record_run("bulk", job.started_at, job.total, job.done - job.failed, job.failed, job.errors)
