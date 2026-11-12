@@ -1271,3 +1271,18 @@ def test_identity_filter_drops_lookalikes():
     assert not same_card("2024 Mosaic Patrick Surtain II #276 PSA 9", who)  # wrong card number
     assert same_card("2024-25 Mosaic Patrick Surtain II PSA 9 #70", who_from("Patrick Surtain II", "2025", "70"))
     assert same_card("anything at all", None) and who_from("", None, None) is None
+
+
+def test_a_check_that_matches_nothing_clears_the_old_estimate():
+    with TestClient(app) as c:
+        card = c.post("/api/cards", json={"category": "sports", "name": "Zzqx Nobodyson", "year": "2024", "card_number": "70",
+                                          "grade": "PSA 9", "search_query": "grade probe 1", "id_confidence": 0.9, "est_value": 99}).json()
+        cid = card["id"]
+        from app.db import engine
+        from app.models import Card
+        from sqlmodel import Session
+        with Session(engine) as s:
+            k = s.get(Card, cid); k.est_value = 99.0; s.add(k); s.commit()
+        r = c.post(f"/api/cards/{cid}/price").json()
+        assert r["snapshot"]["median"] is None  # no listing names this player
+        assert c.get(f"/api/cards/{cid}").json()["est_value"] is None

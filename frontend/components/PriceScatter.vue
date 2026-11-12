@@ -22,33 +22,60 @@ const M = { t: 12, r: 14, b: 28, l: 56 }
 const day = (d: string) => Date.parse(d + 'T00:00:00Z')
 
 const empty = computed(() => !props.data || (!props.data.sales.length && !props.data.listings.length && !props.data.asking_line.length))
-const xs = computed(() => {
+// The scale follows only what is switched on, so hiding the one expensive series zooms in on the rest.
+const visible = computed(() => {
   const d = props.data
-  if (!d) return { lo: 0, hi: 1 }
-  const all = [...d.sales.map((s) => day(s.date)), ...d.listings.flatMap((l) => [day(l.first), day(l.last)]),
-    ...d.asking_line.map((p) => day(p.date)), ...d.sold_line.map((p) => day(p.date))]
-  const lo = Math.min(...all), hi = Math.max(...all)
-  return { lo, hi: hi === lo ? lo + 86400000 : hi }
+  const t: number[] = [], v: number[] = []
+  if (!d) return { t, v }
+  if (show.sold) d.sales.forEach((x) => { t.push(day(x.date)); v.push(x.price) })
+  if (show.asking) d.listings.forEach((l) => { t.push(day(l.first), day(l.last)); v.push(l.price) })
+  if (show.lines) {
+    d.asking_line.forEach((p) => { t.push(day(p.date)); v.push(p.median, p.low ?? p.median, p.high ?? p.median) })
+    d.sold_line.forEach((p) => { t.push(day(p.date)); v.push(p.median) })
+  }
+  return { t, v }
 })
-const ys = computed(() => {
-  const d = props.data
-  const v = d ? [...d.sales.map((s) => s.price), ...d.listings.map((l) => l.price), ...d.asking_line.flatMap((p) => [p.median, p.low ?? p.median, p.high ?? p.median])] : []
-  if (!v.length) return { min: 0, max: 1, ticks: [0, 1] }
+const nothingOn = computed(() => !visible.value.v.length)
+const target = computed(() => {
+  const { t, v } = visible.value
+  if (!v.length) return null
+  let tl = Math.min(...t), th = Math.max(...t)
+  if (th === tl) th = tl + 86400000
   let lo = Math.min(...v), hi = Math.max(...v)
   const pad = (hi - lo) * 0.08 || hi * 0.1 || 1
   lo = Math.max(0, lo - pad); hi += pad
   const raw = (hi - lo) / 4
   const mag = 10 ** Math.floor(Math.log10(raw))
-  const step = [1, 2, 2.5, 5, 10].map((m) => m * mag).find((s) => s >= raw) || raw
+  const step = [1, 2, 2.5, 5, 10].map((m) => m * mag).find((x) => x >= raw) || raw
   const min = Math.floor(lo / step) * step, max = Math.ceil(hi / step) * step
   const ticks: number[] = []
-  for (let t = min; t <= max + step / 2; t += step) ticks.push(+t.toFixed(4))
-  return { min, max, ticks }
+  for (let k = min; k <= max + step / 2; k += step) ticks.push(+k.toFixed(4))
+  return { tl, th, min, max, ticks }
 })
+
+// The drawn scale glides to the new one instead of jumping (skipped when the viewer prefers less motion).
+const view = reactive({ tl: 0, th: 1, min: 0, max: 1 })
+let raf = 0
+watch(target, (to) => {
+  if (!to) return
+  cancelAnimationFrame(raf)
+  const reduce = typeof matchMedia !== 'undefined' && matchMedia('(prefers-reduced-motion: reduce)').matches
+  const fresh = view.th - view.tl <= 1 && view.max <= 1  // first draw: nothing to glide from
+  if (reduce || fresh) { Object.assign(view, { tl: to.tl, th: to.th, min: to.min, max: to.max }); return }
+  const from = { ...view }, t0 = performance.now(), ms = 320
+  const step = (now: number) => {
+    const k = Math.min(1, (now - t0) / ms), e = 1 - (1 - k) ** 3
+    for (const key of ['tl', 'th', 'min', 'max'] as const) view[key] = from[key] + (to[key] - from[key]) * e
+    if (k < 1) raf = requestAnimationFrame(step)
+  }
+  raf = requestAnimationFrame(step)
+}, { immediate: true })
+onBeforeUnmount(() => cancelAnimationFrame(raf))
+const ticks = computed(() => target.value?.ticks ?? [])
 const pw = computed(() => Math.max(10, width.value - M.l - M.r))
 const ph = computed(() => H.value - M.t - M.b)
-const X = (d: string) => M.l + ((day(d) - xs.value.lo) / (xs.value.hi - xs.value.lo)) * pw.value
-const Y = (v: number) => M.t + ph.value - ((v - ys.value.min) / (ys.value.max - ys.value.min || 1)) * ph.value
+const X = (d: string) => M.l + ((day(d) - view.tl) / (view.th - view.tl || 1)) * pw.value
+const Y = (v: number) => M.t + ph.value - ((v - view.min) / (view.max - view.min || 1)) * ph.value
 const fmt = (v: number) => (v >= 1000 ? '$' + +(v / 1000).toFixed(1) + 'k' : '$' + Math.round(v))
 const path = (pts: { date: string; median: number }[]) => pts.map((p, i) => `${i ? 'L' : 'M'}${X(p.date).toFixed(1)},${Y(p.median).toFixed(1)}`).join('')
 const band = computed(() => {
@@ -58,7 +85,7 @@ const band = computed(() => {
 })
 const xTicks = computed(() => {
   const n = 4
-  return Array.from({ length: n + 1 }, (_, i) => new Date(xs.value.lo + ((xs.value.hi - xs.value.lo) * i) / n).toISOString().slice(0, 10))
+  return Array.from({ length: n + 1 }, (_, i) => new Date(view.tl + ((view.th - view.tl) * i) / n).toISOString().slice(0, 10))
 })
 const gap = computed(() => {
   const d = props.data
@@ -79,8 +106,9 @@ const gap = computed(() => {
       <v-chip size="small" :variant="show.lines ? 'flat' : 'outlined'" @click="show.lines = !show.lines">Median lines</v-chip>
     </div>
     <p v-if="empty" class="thin">Nothing on record for this grade and range yet. Look up the price, and press "Check sold prices" to add real sales.</p>
+    <p v-else-if="nothingOn" class="thin">Everything is switched off. Turn a series back on above.</p>
     <svg v-else :width="width" :height="H" role="img" aria-label="Asking and sold prices over time">
-      <g v-for="t in ys.ticks" :key="t">
+      <g v-for="t in ticks" :key="t">
         <line :x1="M.l" :x2="width - M.r" :y1="Y(t)" :y2="Y(t)" class="grid" />
         <text :x="M.l - 8" :y="Y(t) + 4" text-anchor="end" class="axis">{{ fmt(t) }}</text>
       </g>
@@ -103,7 +131,7 @@ const gap = computed(() => {
     </svg>
     <p v-if="!empty" class="text-caption text-muted-c mt-1 mb-0">
       Each orange dot is one sale; hollow dots are Best Offer sales, shown at their asking price. Blue bars are asking listings, from the first day seen to the last (faded when the listing is gone).
-      Hover a dot or bar for the listing.
+      Hover a dot or bar for the listing. The scale zooms to whatever is switched on.
     </p>
   </div>
 </template>

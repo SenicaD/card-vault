@@ -54,6 +54,7 @@ async def reprice_card(card_id: int, query: str, own: str, tracked: list[str], i
             log.exception("could not save the trace for card %s", card_id)
         raise
     quotes, counts, groups = priced.quotes, priced.counts, priced.groups
+    own_empty = any(q.grade == own and q.median is None for q in quotes)  # the search ran but nothing matched
     quotes = [q for q in quotes if q.median is not None]  # don't record empty points
     ok = False
     with Session(engine) as session:
@@ -65,6 +66,8 @@ async def reprice_card(card_id: int, query: str, own: str, tracked: list[str], i
                 if q.grade == own:  # the estimate follows only the card's own grade
                     card.est_value = q.median
                     card.priced_at = utcnow()
+            if own_empty and not any(q.grade == own for q in quotes):
+                card.est_value, card.priced_at = None, utcnow()  # no matching listings: don't keep an old, wrong number
             session.add(card)
             session.commit()
             ok = bool(quotes)

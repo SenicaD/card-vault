@@ -86,6 +86,8 @@ async def price_card(card_id: int, body: PriceRequest | None = None,
     if own_snap and own_snap.median is not None:
         card.est_value = own_snap.median
         card.priced_at = utcnow()
+    elif own_snap:  # the search ran but nothing matched this card: don't keep an old, wrong number
+        card.est_value, card.priced_at = None, utcnow()
     card.updated_at = utcnow()
     session.add(card)
     session.commit()
