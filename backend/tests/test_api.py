@@ -1286,3 +1286,20 @@ def test_a_check_that_matches_nothing_clears_the_old_estimate():
         r = c.post(f"/api/cards/{cid}/price").json()
         assert r["snapshot"]["median"] is None  # no listing names this player
         assert c.get(f"/api/cards/{cid}").json()["est_value"] is None
+
+
+def test_renaming_a_card_rechecks_which_sales_are_look_alikes(monkeypatch):
+    from app.config import get_settings
+    from app.services import sold_refresh
+    monkeypatch.setattr(get_settings(), "sold_monthly_budget", 50)
+    mine = [_sale(i, "2024 Mosaic Renamed Player PSA 9", 50 + i, i) for i in range(1, 5)]
+    other = [_sale(10 + i, "2024 Mosaic Someone Else PSA 9", 900, i) for i in range(1, 4)]
+    monkeypatch.setattr(sold_refresh, "get_sold", lambda: _FakeSold([mine + other]))
+    with TestClient(app) as c:
+        card = c.post("/api/cards", json={"category": "sports", "name": "2024 Mosaic", "grade": "PSA 9",
+                                          "search_query": "renamed player 2024 mosaic", "id_confidence": 0.9}).json()
+        c.post(f"/api/cards/{card['id']}/sold/refresh")
+        assert c.get(f"/api/cards/{card['id']}").json()["sold_count"] == 7  # "Mosaic" is in every title
+        c.patch(f"/api/cards/{card['id']}", json={"name": "Renamed Player"})
+        got = c.get(f"/api/cards/{card['id']}").json()
+        assert got["sold_count"] == 4 and got["sold_value"] < 100

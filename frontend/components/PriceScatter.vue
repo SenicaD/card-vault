@@ -29,10 +29,9 @@ const visible = computed(() => {
   if (!d) return { t, v }
   if (show.sold) d.sales.forEach((x) => { t.push(day(x.date)); v.push(x.price) })
   if (show.asking) d.listings.forEach((l) => { t.push(day(l.first), day(l.last)); v.push(l.price) })
-  if (show.lines) {
-    d.asking_line.forEach((p) => { t.push(day(p.date)); v.push(p.median, p.low ?? p.median, p.high ?? p.median) })
-    d.sold_line.forEach((p) => { t.push(day(p.date)); v.push(p.median) })
-  }
+  // Median lines belong to their series: hiding the asking listings hides the asking line and band with them.
+  if (show.lines && show.asking) d.asking_line.forEach((p) => { t.push(day(p.date)); v.push(p.median, p.low ?? p.median, p.high ?? p.median) })
+  if (show.lines && show.sold) d.sold_line.forEach((p) => { t.push(day(p.date)); v.push(p.median) })
   return { t, v }
 })
 const nothingOn = computed(() => !visible.value.v.length)
@@ -113,7 +112,7 @@ const gap = computed(() => {
         <text :x="M.l - 8" :y="Y(t) + 4" text-anchor="end" class="axis">{{ fmt(t) }}</text>
       </g>
       <text v-for="(d, i) in xTicks" :key="d" :x="M.l + (pw * i) / 4" :y="H - 8" :text-anchor="i === 0 ? 'start' : i === 4 ? 'end' : 'middle'" class="axis">{{ d.slice(5) }}</text>
-      <path v-if="show.lines && band" :d="band" class="band" />
+      <path v-if="show.lines && show.asking && band" :d="band" class="band" />
       <template v-if="show.asking">
         <g v-for="(l, i) in data!.listings" :key="'l' + i">
           <line :x1="X(l.first)" :x2="Math.max(X(l.last), X(l.first) + 3)" :y1="Y(l.price)" :y2="Y(l.price)" :class="['seg', l.status]">
@@ -121,8 +120,8 @@ const gap = computed(() => {
           </line>
         </g>
       </template>
-      <path v-if="show.lines && data!.asking_line.length > 1" :d="path(data!.asking_line)" class="ln ask" />
-      <path v-if="show.lines && data!.sold_line.length > 1" :d="path(data!.sold_line)" class="ln sold" />
+      <path v-if="show.lines && show.asking && data!.asking_line.length > 1" :d="path(data!.asking_line)" class="ln ask" />
+      <path v-if="show.lines && show.sold && data!.sold_line.length > 1" :d="path(data!.sold_line)" class="ln sold" />
       <template v-if="show.sold">
         <circle v-for="(s, i) in data!.sales" :key="'s' + i" :cx="X(s.date)" :cy="Y(s.price)" r="4.5" :class="['dot', { bo: s.best_offer }]">
           <title>Sold {{ money(s.price) }}{{ s.best_offer ? ' (best offer: asking price, real sale was probably lower)' : '' }} · {{ s.date }} · {{ s.title }}</title>

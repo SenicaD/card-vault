@@ -222,6 +222,9 @@ def apply_update(session: Session, card: Card, changes: dict) -> None:
             col(PriceSnapshot.median).is_not(None)).order_by(col(PriceSnapshot.created_at).desc()).limit(1)).first()
         card.est_value, card.priced_at = (snap.median, snap.created_at) if snap else (None, None)
         recompute_sold(session, card)  # the sold-based value belongs to the grade and version too
+    elif {"name", "year", "card_number", "id_confidence"} & changes.keys():
+        session.flush()
+        recompute_sold(session, card)  # who the card is decides which sales are look-alikes
     card.updated_at = utcnow()
     session.add(card)
 
