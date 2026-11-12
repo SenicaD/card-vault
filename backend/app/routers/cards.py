@@ -3,10 +3,10 @@ from sqlmodel import Session, col, func, or_, select
 
 from ..config import get_settings
 from ..db import get_session
-from ..models import Card, CardCategory, CardCreate, CardRead, CardStatus, CardUpdate, PriceSnapshot, utcnow
+from ..models import ASKING_SOURCES, Card, CardCategory, CardCreate, CardRead, CardStatus, CardUpdate, PriceSnapshot, utcnow
 from ..services.imagecrop import CropBox, CropError, crop_saved_image
 from ..services.grading import normalize_grade
-from ..services.identify import CardIdentification, build_search_query
+from ..services.identify import CardIdentification, build_search_query, get_identifier
 from .common import get_card_or_404, to_read
 
 router = APIRouter(prefix="/api/cards", tags=["cards"])
@@ -90,7 +90,7 @@ def update_card(card_id: int, body: CardUpdate, session: Session = Depends(get_s
         # The estimate belonged to the old grade. Use the newest price we already have for the new one,
         # or clear it until the card is priced, rather than keep showing the old grade's value.
         snap = session.exec(select(PriceSnapshot).where(
-            PriceSnapshot.card_id == card.id, PriceSnapshot.source == "ebay-active", PriceSnapshot.grade == new_grade,
+            PriceSnapshot.card_id == card.id, col(PriceSnapshot.source).in_(ASKING_SOURCES), PriceSnapshot.grade == new_grade,
             col(PriceSnapshot.median).is_not(None)).order_by(col(PriceSnapshot.created_at).desc()).limit(1)).first()
         card.est_value, card.priced_at = (snap.median, snap.created_at) if snap else (None, None)
     card.updated_at = utcnow()
@@ -108,15 +108,30 @@ def delete_card(card_id: int, session: Session = Depends(get_session)):
 
 
 @router.post("/{card_id}/crop", response_model=CardRead)
-def crop_card_photo(card_id: int, box: CropBox, session: Session = Depends(get_session)):
-    """Replace the card's photo with a crop of it, so photo-based eBay pricing sees only the card."""
+async def crop_card_photo(card_id: int, box: CropBox, session: Session = Depends(get_session)):
+    """Replace the card's photo with a crop of it, so photo-based eBay pricing sees only the card.
+
+    If the old identification was poor (under 30%) and the cropped photo identifies clearly better,
+    the name, set, year, number, variant and search words are replaced by what the crop identified.
+    """
     card = get_card_or_404(session, card_id)
     if not card.image_path:
         raise HTTPException(422, "This card has no photo")
     try:
-        card.image_path, _ = crop_saved_image(card.image_path, box)
+        card.image_path, data = crop_saved_image(card.image_path, box)
     except CropError as e:
         raise HTTPException(422, str(e)) from e
+    old = card.id_confidence or 0.0
+    identifier = get_identifier()
+    if old < 0.3 and hasattr(identifier, "match"):
+        try:
+            ident, _ = await identifier.match(data)
+        except Exception:
+            ident = None
+        if ident and ident.name and ident.confidence >= 0.3 and ident.confidence > old:
+            card.name, card.set_name, card.year = ident.name, ident.set_name, ident.year
+            card.card_number, card.variant, card.search_query = ident.card_number, ident.variant, ident.search_query
+            card.category, card.id_confidence = ident.category, ident.confidence
     card.updated_at = utcnow()
     session.add(card)
     session.commit()

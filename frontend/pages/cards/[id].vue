@@ -52,7 +52,7 @@ const gradeOptions = computed(() => sortGrades([...new Set([
 ])]))
 // history is newest first, so the first match is the latest asking price for that grade
 const byGrade = computed(() => selectedGrades.value.map((grade) => ({
-  grade, snap: history.value.find((s) => s.source === 'ebay-active' && s.grade === grade) ?? null,
+  grade, snap: history.value.find((s) => (s.source === 'ebay-active' || s.source === 'ebay-image') && s.grade === grade) ?? null,
 })))
 const lowConfidence = (n: number) => n > 0 && n < 5
 

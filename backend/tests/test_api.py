@@ -160,7 +160,7 @@ def test_trend_ranges_and_sold_flag():
                 s.add(PriceSnapshot(card_id=card["id"], query="q", source="ebay-active", grade="Raw", sample_size=5,
                                     low=med - 5, median=med, mean=med, high=med + 5,
                                     created_at=now - timedelta(days=days_ago)))
-            s.add(PriceSnapshot(card_id=card["id"], query="q", source="ebay-image", grade="Raw", sample_size=5,
+            s.add(PriceSnapshot(card_id=card["id"], query="q", source="ebay-image", grade=None, sample_size=5,
                                 low=1, median=1, mean=1, high=1, created_at=now))
             s.commit()
 
@@ -654,3 +654,14 @@ def test_crop_changes_the_photo(tmp_path):
         card = c.post("/api/cards", json={"category": "sports", "name": "X", "image_path": s["image_path"]}).json()
         out = c.post(f"/api/cards/{card['id']}/crop", json={"x": 0, "y": 0, "w": .5, "h": .5})
         assert out.status_code == 200 and out.json()["image_url"] != card["image_url"]
+
+
+def test_image_priced_snapshots_count_as_asking_prices_in_the_trend():
+    with TestClient(app) as c:
+        s = c.post("/api/scan", files={"file": ("card.png", io.BytesIO(PNG), "image/png")}).json()
+        i = s["identification"]
+        card = c.post("/api/cards", json={"category": i["category"], "name": i["name"], "search_query": i["search_query"],
+                                          "image_path": s["image_path"], "grade": "Raw"}).json()
+        assert c.post(f"/api/cards/{card['id']}/price", json={}).status_code == 200
+        t = c.get(f"/api/cards/{card['id']}/trend?range=1m&grades=Raw").json()
+        assert t["asking"] and t["asking"][0]["points"]

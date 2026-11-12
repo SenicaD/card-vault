@@ -8,7 +8,7 @@ from sqlmodel import Session, col, select
 
 from ..config import get_settings
 from ..db import get_session
-from ..models import Card, CardCategory, CardStatus, Listing, ListingSeen, PriceSnapshot, Sale, utcnow
+from ..models import ASKING_SOURCES, Card, CardCategory, CardStatus, Listing, ListingSeen, PriceSnapshot, Sale, utcnow
 from ..services.ebay import EbayItem, ListingRequest, get_ebay
 from ..services.grading import grade_sort_key, normalize_grade
 from ..services.pricing import card_image, quote_grades
@@ -147,7 +147,7 @@ def price_trend(card_id: int, range: str = Query("1m", pattern="^(7d|1m|3m|1y|al
     wanted = list(dict.fromkeys(normalize_grade(g) for g in (grades or [card.grade])))[:MAX_TREND_GRADES]
     snaps = session.exec(select(PriceSnapshot).where(PriceSnapshot.card_id == card_id)
                          .order_by(col(PriceSnapshot.created_at))).all()
-    asking_all = [s for s in snaps if s.source == "ebay-active" and s.grade]
+    asking_all = [s for s in snaps if s.source in ASKING_SOURCES and s.grade]
     sold_all = [s for s in snaps if s.source == "ebay-sold" and s.grade]
     days = _RANGE_DAYS[range]
     cutoff = utcnow() - timedelta(days=days) if days else None

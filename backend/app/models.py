@@ -101,6 +101,10 @@ class Card(CardBase, table=True):
     updated_at: datetime = ts(default_factory=utcnow)
 
 
+# Snapshot sources that are asking prices (text search, or the card photo through eBay image search)
+ASKING_SOURCES = ("ebay-active", "ebay-image")
+
+
 class PriceQuote(SQLModel):
     """A price summary not yet tied to a card (scan-time lookup, or a re-price before saving)."""
     query: str

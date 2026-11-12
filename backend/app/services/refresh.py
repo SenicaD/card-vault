@@ -11,7 +11,7 @@ from sqlmodel import Session, col, select
 
 from ..config import get_settings
 from ..db import engine
-from ..models import Card, CardStatus, PriceSnapshot, utcnow
+from ..models import ASKING_SOURCES, Card, CardStatus, PriceSnapshot, utcnow
 from .grading import grade_sort_key, normalize_grade
 from .pricing import card_image, quote_grades
 from .tracker import track_listings
@@ -39,7 +39,7 @@ async def refresh_due(max_age: timedelta | None = None, pause: float = PAUSE_BET
         due: list[tuple[int, str, str, list[str]]] = []
         for c in cards:
             rows = session.exec(select(PriceSnapshot.grade, PriceSnapshot.created_at).where(
-                PriceSnapshot.card_id == c.id, PriceSnapshot.source == "ebay-active",
+                PriceSnapshot.card_id == c.id, col(PriceSnapshot.source).in_(ASKING_SOURCES),
                 col(PriceSnapshot.grade).is_not(None))).all()
             # A search that found nothing still counts as a check, or a card with no listings
             # for its grade would be searched again every hour.
