@@ -188,6 +188,13 @@ function cancelEdit() {
   editing.value = false
 }
 
+const cropping = ref(false)
+const cropCard = (box: { x: number; y: number; w: number; h: number }) => run('crop', async () => {
+  card.value = await api<Card>(`/api/cards/${id}/crop`, { method: 'POST', body: box })
+  cropping.value = false
+  await lookUp() // the new photo drives a fresh eBay image search
+})
+
 const lookUp = () => run('price', async () => {
   const res = await api<PriceResult>(`/api/cards/${id}/price`, {
     method: 'POST', body: { query: form.value?.search_query || null, grades: selectedGrades.value },
@@ -273,8 +280,16 @@ onMounted(() => {
       <v-col cols="12" md="4" lg="3">
         <div class="side">
           <v-card>
-            <div class="card-body photo"><CardThumb :src="card.image_url" :alt="card.name" :foil="!!card.est_value && card.est_value >= 100" /></div>
+            <div class="card-body photo">
+              <CardThumb :src="card.image_url" :alt="card.name" :foil="!!card.est_value && card.est_value >= 100" />
+              <v-btn v-if="card.image_url" block size="small" variant="outlined" class="mt-2" prepend-icon="mdi-crop" @click="cropping = true">Crop photo</v-btn>
+            </div>
           </v-card>
+          <v-alert v-if="card.id_confidence != null && card.id_confidence < 0.3" type="warning" variant="tonal" density="compact">
+            This photo didn't match clearly ({{ Math.round(card.id_confidence * 100) }}%), so the listings may be for the wrong card.
+            Crop the photo to just the card, then press Refresh value.
+          </v-alert>
+          <CropDialog v-model="cropping" :src="card.image_url" :busy="busy === 'crop'" @apply="cropCard" />
 
           <v-card>
             <div class="card-head">

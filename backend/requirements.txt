@@ -6,3 +6,4 @@ pydantic-settings==2.6.1
 httpx==0.28.1
 anthropic==0.42.0
 pytest==8.3.4
+Pillow==11.0.0

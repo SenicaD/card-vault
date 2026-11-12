@@ -69,6 +69,39 @@ export function useScanQueue() {
     for (const i of next) process(i.key)
   }
 
+  function applyScan(cur: ScanItem, res: ScanResult, keep?: CardFields | null) {
+    const i = res.identification
+    cur.scan = res
+    cur.quote = res.quote
+    cur.comps = res.comps
+    cur.priceError = res.price_error || ''
+    cur.form = {
+      category: i.category, name: i.name, set_name: i.set_name, year: i.year,
+      card_number: i.card_number, variant: i.variant, grade: i.grade, condition: i.condition,
+      quantity: keep?.quantity ?? 1, location_id: keep ? keep.location_id : defaultLocation.value,
+      slot: keep?.slot ?? null, notes: keep?.notes ?? null,
+      search_query: res.quote?.query || i.search_query,
+    }
+  }
+
+  // Crop the saved photo to the card, then identify and price the cropped photo.
+  async function recrop(key: number, box: { x: number; y: number; w: number; h: number }) {
+    const it = find(key)
+    if (!it?.scan) return
+    it.repricing = true
+    it.priceError = ''
+    try {
+      const res = await api<ScanResult>('/api/scan/crop', { method: 'POST', body: { image_path: it.scan.image_path, box } })
+      applyScan(it, res, it.form)
+      URL.revokeObjectURL(it.preview)
+      it.preview = res.image_url
+    } catch (e: any) {
+      it.priceError = e.message
+    } finally {
+      it.repricing = false
+    }
+  }
+
   async function process(key: number) {
     const it = find(key)
     if (!it?.file) return
@@ -81,20 +114,10 @@ export function useScanQueue() {
       const res = await api<ScanResult>('/api/scan', { method: 'POST', body: fd, query: { price: 'true' } })
       const cur = find(key)
       if (!cur) return // removed while in flight
-      const i = res.identification
-      cur.scan = res
-      cur.quote = res.quote
-      cur.comps = res.comps
-      cur.priceError = res.price_error || ''
-      cur.form = {
-        category: i.category, name: i.name, set_name: i.set_name, year: i.year,
-        card_number: i.card_number, variant: i.variant, grade: i.grade, condition: i.condition,
-        quantity: 1, location_id: defaultLocation.value, slot: null, notes: null,
-        search_query: res.quote?.query || i.search_query,
-      }
+      applyScan(cur, res)
       cur.file = null
       cur.status = 'ready'
-      if (autoAdd.value && i.confidence >= AUTO_ADD_THRESHOLD && cur.quote) save(key)
+      if (autoAdd.value && res.identification.confidence >= AUTO_ADD_THRESHOLD && cur.quote) save(key)
     } catch (e: any) {
       const cur = find(key)
       if (cur) {
@@ -178,5 +201,5 @@ export function useScanQueue() {
     for (const i of items.value) if (i.form && i.status !== 'added' && i.form.location_id === prev) i.form.location_id = loc
   })
 
-  return { items, counts, readyValue, addedValue, defaultLocation, autoAdd, addFiles, retry, reprice, save, saveAll, remove, clearAdded }
+  return { items, counts, readyValue, addedValue, defaultLocation, autoAdd, addFiles, retry, reprice, recrop, save, saveAll, remove, clearAdded }
 }

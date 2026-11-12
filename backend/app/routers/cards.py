@@ -1,9 +1,10 @@
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlmodel import Session, col, func, or_, select
 
 from ..config import get_settings
 from ..db import get_session
 from ..models import Card, CardCategory, CardCreate, CardRead, CardStatus, CardUpdate, PriceSnapshot, utcnow
+from ..services.imagecrop import CropBox, CropError, crop_saved_image
 from ..services.grading import normalize_grade
 from ..services.identify import CardIdentification, build_search_query
 from .common import get_card_or_404, to_read
@@ -104,3 +105,20 @@ def delete_card(card_id: int, session: Session = Depends(get_session)):
     card = get_card_or_404(session, card_id)
     session.delete(card)
     session.commit()
+
+
+@router.post("/{card_id}/crop", response_model=CardRead)
+def crop_card_photo(card_id: int, box: CropBox, session: Session = Depends(get_session)):
+    """Replace the card's photo with a crop of it, so photo-based eBay pricing sees only the card."""
+    card = get_card_or_404(session, card_id)
+    if not card.image_path:
+        raise HTTPException(422, "This card has no photo")
+    try:
+        card.image_path, _ = crop_saved_image(card.image_path, box)
+    except CropError as e:
+        raise HTTPException(422, str(e)) from e
+    card.updated_at = utcnow()
+    session.add(card)
+    session.commit()
+    session.refresh(card)
+    return to_read(card)

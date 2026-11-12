@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 from ..config import get_settings
 from ..models import PriceQuote
 from ..services.ebay import EbayItem
+from ..services.imagecrop import CropBox, CropError, crop_saved_image
 from ..services.identify import CardIdentification, get_identifier
 from ..services.pricing import quote, summarize, top_listings
 
@@ -45,13 +46,33 @@ async def scan_card(file: UploadFile = File(...),
     name = f"{uuid.uuid4().hex}.{_ALLOWED[file.content_type]}"
     (settings.image_dir / name).write_bytes(data)
 
+    return await _identify_and_price(data, file.content_type, name, price)
+
+
+class CropRequest(BaseModel):
+    image_path: str
+    box: CropBox
+    price: bool = True
+
+
+@router.post("/crop", response_model=ScanResult)
+async def rescan_cropped(body: CropRequest) -> ScanResult:
+    """Crop an already-saved scan photo to the card and identify and price the cropped photo."""
+    try:
+        name, data = crop_saved_image(body.image_path, body.box)
+    except CropError as e:
+        raise HTTPException(422, str(e)) from e
+    return await _identify_and_price(data, "image/jpeg", name, body.price)
+
+
+async def _identify_and_price(data: bytes, content_type: str, name: str, price: bool) -> ScanResult:
     identifier = get_identifier()
     matches = None  # eBay image matching returns the matched listings too
     try:
         if hasattr(identifier, "match"):
             ident, matches = await identifier.match(data)
         else:
-            ident = await identifier.identify(data, file.content_type)
+            ident = await identifier.identify(data, content_type)
     except Exception as e:  # surface identifier failures without losing the saved photo
         raise HTTPException(502, f"Identification failed ({identifier.name}): {e}") from e
 

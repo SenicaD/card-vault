@@ -2,10 +2,13 @@
 import { useDisplay } from 'vuetify'
 import type { Location } from '~/types'
 import type { ScanItem } from '~/composables/useScanQueue'
+import type { CropBoxFrac } from '~/components/CropDialog.vue'
 
 const { mdAndUp } = useDisplay()
 const props = defineProps<{ item: ScanItem | null; locations: Location[] }>()
-const emit = defineEmits<{ close: []; reprice: [key: number]; save: [key: number] }>()
+const emit = defineEmits<{ close: []; reprice: [key: number]; save: [key: number]; crop: [key: number, box: CropBoxFrac] }>()
+const cropping = ref(false)
+const lowConfidence = computed(() => pct.value < 30)
 
 const pct = computed(() => Math.round((props.item?.scan?.identification.confidence ?? 0) * 100))
 const IDENTIFIERS: Record<string, string> = { 'ebay-image': 'eBay image match', claude: 'Claude', mock: 'demo identifier' }
@@ -26,8 +29,16 @@ const stale = computed(() => !!props.item?.quote && props.item.quote.query !== p
       </div>
 
       <v-card-text class="pa-0">
+        <v-alert v-if="lowConfidence" type="warning" variant="tonal" density="compact" class="ma-4 mb-0">
+          This photo didn't match clearly ({{ pct }}%), so the details and prices below may be for the wrong card.
+          Crop the photo to just the card, or type the card's details yourself and re-price.
+          <template #append><v-btn size="small" variant="flat" prepend-icon="mdi-crop" :disabled="!item.scan" @click="cropping = true">Crop photo</v-btn></template>
+        </v-alert>
         <div class="layout">
-          <div class="photo"><CardThumb :src="item.preview" :alt="item.form.name" /></div>
+          <div class="photo">
+            <CardThumb :src="item.preview" :alt="item.form.name" />
+            <v-btn block size="small" variant="outlined" class="mt-2" prepend-icon="mdi-crop" :disabled="!item.scan" @click="cropping = true">Crop photo</v-btn>
+          </div>
 
           <div class="form"><CardForm v-model="item.form" :locations="locations" /></div>
 
@@ -80,6 +91,7 @@ const stale = computed(() => !!props.item?.quote && props.item.quote.query !== p
         </v-btn>
       </div>
     </v-card>
+    <CropDialog v-model="cropping" :src="item?.scan?.image_url ?? null" :busy="item?.repricing" @apply="(b) => { if (item) emit('crop', item.key, b); cropping = false }" />
   </v-dialog>
 </template>
 

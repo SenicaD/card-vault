@@ -245,7 +245,7 @@ function openRow(_: unknown, row: { item: ScanItem }) {
       @click="camera?.click()"
     />
 
-    <ScanItemDialog :item="editing" :locations="locations" @close="editingKey = null" @reprice="q.reprice" @save="q.save" />
+    <ScanItemDialog :item="editing" :locations="locations" @close="editingKey = null" @reprice="q.reprice" @save="q.save" @crop="q.recrop" />
   </div>
 </template>
 

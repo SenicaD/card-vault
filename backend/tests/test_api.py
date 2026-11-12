@@ -629,3 +629,28 @@ def test_price_uses_photo_even_when_the_query_is_sent_and_text_only_opts_out():
         assert {x["source"] for x in photo["snapshots"]} == {"ebay-image"}
         words = c.post(f"/api/cards/{card['id']}/price", json={"text_only": True, "grades": grades}).json()
         assert {x["source"] for x in words["snapshots"]} == {"ebay-active"}
+
+
+def test_crop_a_scan_and_a_saved_card():
+    with TestClient(app) as c:
+        s = c.post("/api/scan", files={"file": ("card.png", io.BytesIO(PNG), "image/png")}).json()
+        # PNG fixture is tiny: too-small crops are refused rather than producing a useless image
+        bad = c.post("/api/scan/crop", json={"image_path": s["image_path"], "box": {"x": 0, "y": 0, "w": 1, "h": 1}})
+        assert bad.status_code == 422
+        assert c.post("/api/scan/crop", json={"image_path": "../etc/passwd", "box": {"x": 0, "y": 0, "w": 1, "h": 1}}).status_code == 422
+        assert c.post("/api/scan/crop", json={"image_path": s["image_path"], "box": {"x": 0, "y": 0, "w": 2, "h": 1}}).status_code == 422
+        card = c.post("/api/cards", json={"category": "sports", "name": "X", "image_path": s["image_path"]}).json()
+        assert c.post(f"/api/cards/{card['id']}/crop", json={"x": 0, "y": 0, "w": 1, "h": 1}).status_code == 422
+
+
+def test_crop_changes_the_photo(tmp_path):
+    from PIL import Image
+    buf = io.BytesIO(); Image.new("RGB", (400, 600), "red").save(buf, "PNG")
+    with TestClient(app) as c:
+        s = c.post("/api/scan", files={"file": ("big.png", io.BytesIO(buf.getvalue()), "image/png")}).json()
+        r = c.post("/api/scan/crop", json={"image_path": s["image_path"], "box": {"x": .1, "y": .1, "w": .5, "h": .5}})
+        assert r.status_code == 200 and r.json()["image_path"] != s["image_path"]
+        assert c.get(r.json()["image_url"]).status_code == 200
+        card = c.post("/api/cards", json={"category": "sports", "name": "X", "image_path": s["image_path"]}).json()
+        out = c.post(f"/api/cards/{card['id']}/crop", json={"x": 0, "y": 0, "w": .5, "h": .5})
+        assert out.status_code == 200 and out.json()["image_url"] != card["image_url"]
