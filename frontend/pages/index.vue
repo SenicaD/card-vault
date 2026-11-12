@@ -311,7 +311,7 @@ watch(view, (v) => { try { localStorage.setItem('cv-view', v) } catch {} })
         <template #item.est_value="{ item }"><span class="num text-muted-c text-no-wrap">{{ money(item.est_value) }}</span></template>
         <template #item.value="{ item }">
           <span class="num font-weight-semibold text-no-wrap">{{ money(item.value) }}</span>
-          <v-chip v-if="item.value_basis" size="x-small" :color="item.value_basis === 'sold' ? 'success' : undefined" variant="tonal" class="ml-1" :title="item.value_basis === 'sold' ? `Median of ${item.sold_count} recent sales` : 'Too few sales, so this is the asking-price estimate'">{{ item.value_basis === 'sold' ? `sold ${item.sold_count}` : 'asking' }}</v-chip>
+          <v-chip v-if="item.value_basis" size="x-small" :color="item.value_basis === 'sold' ? 'success' : item.value_basis === 'manual' ? 'primary' : undefined" variant="tonal" class="ml-1" :title="item.value_basis === 'manual' ? 'A value you set yourself' : item.value_basis === 'sold' ? `Median of ${item.sold_count} recent sales` : 'Too few sales, so this is the asking-price estimate'">{{ item.value_basis === 'manual' ? 'manual' : item.value_basis === 'sold' ? `sold ${item.sold_count}` : 'asking' }}</v-chip>
           <v-btn v-if="debug.on" icon="mdi-bug-outline" size="x-small" variant="text" color="warning" :to="`/cards/${item.id}?debug=1`" aria-label="How this price was calculated" title="How this price was calculated" @click.stop />
         </template>
       </v-data-table>
@@ -326,7 +326,7 @@ watch(view, (v) => { try { localStorage.setItem('cv-view', v) } catch {} })
               <strong class="truncate">{{ c.name }}</strong>
               <span class="num font-weight-semibold text-no-wrap">{{ money(c.value) }}</span>
             </div>
-            <div v-if="c.value_basis" class="text-caption text-muted-c num">{{ c.value_basis === 'sold' ? `sold, ${c.sold_count} sales` : 'asking price' }}<template v-if="c.value_basis === 'sold' && c.est_value != null"> · asking {{ money(c.est_value) }}</template></div>
+            <div v-if="c.value_basis" class="text-caption text-muted-c num">{{ c.value_basis === 'manual' ? 'your value' : c.value_basis === 'sold' ? `sold, ${c.sold_count} sales` : 'asking price' }}<template v-if="c.value_basis === 'sold' && c.est_value != null"> · asking {{ money(c.est_value) }}</template></div>
             <div v-if="debug.on" class="text-caption text-muted-c truncate">#{{ c.id }} · {{ c.priced_at ? isoDate(c.priced_at).slice(0, 10) : 'never priced' }} · {{ c.id_confidence != null ? Math.round(c.id_confidence * 100) + '% match' : 'no match data' }}</div>
             <div class="text-caption text-secondary-c truncate">{{ subline(c) || '—' }}</div>
             <div class="d-flex justify-space-between align-center ga-2 mt-2">

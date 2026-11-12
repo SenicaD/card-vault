@@ -16,7 +16,7 @@ from ..services.trace import identification_trace, save_trace
 from .common import get_card_or_404, to_read
 
 router = APIRouter(prefix="/api/cards", tags=["cards"])
-VALUE = func.coalesce(Card.sold_value, Card.est_value)  # the value shown for a card: sold when known, else asking
+VALUE = func.coalesce(Card.manual_value, Card.sold_value, Card.est_value)  # the value shown: yours, else sold, else asking
 
 
 def filtered(stmt, q=None, category=None, status=None, location_id=None, grade=None, min_value=None,
@@ -98,8 +98,12 @@ def stats(session: Session = Depends(get_session)):
                                         func.coalesce(func.sum(func.coalesce(Card.est_value, 0) * Card.quantity), 0)).where(live)).one()
     sv, n, ask_of_sold = session.exec(select(func.coalesce(func.sum(Card.sold_value * Card.quantity), 0), func.count(),
                                              func.coalesce(func.sum(func.coalesce(Card.est_value, 0) * Card.quantity), 0))
-                                      .where(col(Card.sold_value).is_not(None), live)).one()
-    fallback = session.exec(select(func.count()).where(col(Card.sold_value).is_(None), col(Card.est_value).is_not(None), live)).one()
+                                      .where(col(Card.sold_value).is_not(None), col(Card.manual_value).is_(None), live)).one()
+    fallback = session.exec(select(func.count()).where(col(Card.manual_value).is_(None), col(Card.sold_value).is_(None),
+                                                       col(Card.est_value).is_not(None), live)).one()
+    mv, mn = session.exec(select(func.coalesce(func.sum(Card.manual_value * Card.quantity), 0), func.count())
+                          .where(col(Card.manual_value).is_not(None), live)).one()
+    out["manual_value"], out["manual_cards"] = round(mv, 2), mn
     out["total_value"], out["asking_value"] = round(total, 2), round(asking, 2)  # headline value; the asking-only total beside it
     out["sold_value"], out["sold_cards"], out["asking_value_of_sold_cards"] = round(sv, 2), n, round(ask_of_sold, 2)
     out["asking_cards"] = fallback  # cards still valued at their asking estimate for lack of sales
@@ -138,7 +142,7 @@ class BulkIds(BaseModel):
 
 
 # Fields a bulk edit may set. Identity fields (name, number, search query) stay per-card on purpose.
-BULK_FIELDS = {"status", "location_id", "slot", "grade", "condition", "parallel", "category", "cost", "quantity", "reviewed", "notes"}
+BULK_FIELDS = {"status", "location_id", "slot", "grade", "condition", "parallel", "category", "cost", "manual_value", "quantity", "reviewed", "notes"}
 
 
 @router.post("/bulk/update")

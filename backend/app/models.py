@@ -85,6 +85,7 @@ class CardBase(SQLModel):
     notes: str | None = None
     search_query: str | None = None  # query used for eBay lookup
     cost: float | None = None  # what you paid for ONE copy; None = not recorded
+    manual_value: float | None = None  # a value you set yourself for ONE copy; it overrides sold and asking values
     batch: str | None = None  # name of the scan session it was added in, e.g. "Box 3 lot"
 
 
@@ -165,6 +166,7 @@ class CardUpdate(SQLModel):
     parallel: str | None = None
     status: CardStatus | None = None
     cost: float | None = None
+    manual_value: float | None = None
     batch: str | None = None
     reviewed: bool | None = None
 
@@ -187,7 +189,7 @@ class CardRead(CardBase):
     sold_at: datetime | None = None
     # The value to show: the sold value when the card has enough sales, otherwise the asking-based estimate
     value: float | None = None
-    value_basis: str | None = None  # "sold" | "asking" | None (no price yet)
+    value_basis: str | None = None  # "manual" | "sold" | "asking" | None (no price yet)
     created_at: datetime
     updated_at: datetime
 

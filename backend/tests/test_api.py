@@ -1303,3 +1303,23 @@ def test_renaming_a_card_rechecks_which_sales_are_look_alikes(monkeypatch):
         c.patch(f"/api/cards/{card['id']}", json={"name": "Renamed Player"})
         got = c.get(f"/api/cards/{card['id']}").json()
         assert got["sold_count"] == 4 and got["sold_value"] < 100
+
+
+def test_manual_value_overrides_and_can_be_cleared():
+    with TestClient(app) as c:
+        card = c.post("/api/cards", json={"category": "sports", "name": "Manual Player", "grade": "PSA 9", "quantity": 2}).json()
+        cid = card["id"]
+        assert card["value"] is None
+        before = c.get("/api/cards/stats").json()
+        got = c.patch(f"/api/cards/{cid}", json={"manual_value": 120}).json()
+        assert got["value"] == 120 and got["value_basis"] == "manual"
+        s = c.get("/api/cards/stats").json()
+        assert round(s["total_value"] - before["total_value"], 2) == 240 and s["manual_cards"] >= 1
+        p = c.get("/api/portfolio").json()
+        assert p["totals"]["manual_cards"] >= 1 and p["totals"]["manual_value"] >= 240
+        assert any(t["id"] == cid and t["basis"] == "manual" for t in p["top_cards"]) or p["totals"]["value"] >= 240
+        assert c.get("/api/cards", params={"min_value": 100}).json()
+        c.post("/api/cards/bulk/update", json={"ids": [cid], "changes": {"manual_value": 150}})
+        assert c.get(f"/api/cards/{cid}").json()["value"] == 150
+        got = c.patch(f"/api/cards/{cid}", json={"manual_value": None}).json()
+        assert got["value"] is None and got["value_basis"] is None

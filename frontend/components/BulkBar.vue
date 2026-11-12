@@ -13,7 +13,7 @@ const error = ref('')
 const notice = ref('')
 
 const KEEP = '__keep__'
-const blank = () => ({ location_id: KEEP as number | string | null, status: KEEP as string, grade: null as string | null, parallel: '', cost: '' as string | number, condition: KEEP as string | null })
+const blank = () => ({ location_id: KEEP as number | string | null, status: KEEP as string, grade: null as string | null, parallel: '', cost: '' as string | number, manual_value: '' as string | number, condition: KEEP as string | null })
 const f = ref(blank())
 
 const locationItems = computed(() => [
@@ -31,6 +31,7 @@ const changes = computed(() => {
   if (f.value.grade) c.grade = f.value.grade
   if (f.value.parallel.trim()) c.parallel = f.value.parallel.trim()
   if (f.value.cost !== '' && f.value.cost != null) c.cost = Number(f.value.cost)
+  if (f.value.manual_value !== '' && f.value.manual_value != null) c.manual_value = Number(f.value.manual_value)
   return c
 })
 
@@ -78,6 +79,7 @@ const remove = () => run(async () => {
             <v-col cols="12" sm="6"><v-select v-model="f.condition" :items="conditionItems" label="Condition" /></v-col>
             <v-col cols="12" sm="6"><v-text-field v-model="f.parallel" label="Version" placeholder="Leave as is" /></v-col>
             <v-col cols="12" sm="6"><v-text-field v-model="f.cost" label="Paid per card" type="number" min="0" step="0.01" prefix="$" /></v-col>
+            <v-col cols="12" sm="6"><v-text-field v-model="f.manual_value" label="Your value per card" type="number" min="0" step="0.01" prefix="$" hint="Overrides sold and asking" /></v-col>
           </v-row>
         </v-card-text>
         <v-card-actions>

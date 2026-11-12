@@ -36,7 +36,8 @@ export interface Card extends CardFields {
   sold_high?: number | null
   sold_at?: string | null
   value?: number | null // the value to show: sold when enough sales, else the asking estimate
-  value_basis?: 'sold' | 'asking' | null
+  manual_value?: number | null // set by hand; overrides sold and asking
+  value_basis?: 'manual' | 'sold' | 'asking' | null
   created_at: string
   updated_at: string
 }
@@ -252,7 +253,7 @@ export interface Portfolio {
   range: string
   totals: {
     cards: number; distinct: number; value: number; unpriced: number
-    sold_value: number; sold_cards: number; asking_value_of_sold_cards: number; asking_value: number; asking_cards: number
+    sold_value: number; sold_cards: number; asking_value_of_sold_cards: number; asking_value: number; asking_cards: number; manual_value?: number; manual_cards?: number
     cost: number; costed_cards: number; uncosted_cards: number; gain: number | null; gain_pct: number | null
   }
   series: { date: string; value: number }[]

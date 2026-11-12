@@ -178,8 +178,8 @@ const subline = computed(() => {
 })
 
 function fieldsOf(c: Card): CardFields {
-  const { category, name, set_name, year, card_number, variant, grade, condition, quantity, location_id, slot, notes, search_query, cost } = c
-  return { category, name, set_name, year, card_number, variant, grade, condition, quantity, location_id, slot, notes, search_query, cost }
+  const { category, name, set_name, year, card_number, variant, grade, condition, quantity, location_id, slot, notes, search_query, cost, manual_value } = c
+  return { category, name, set_name, year, card_number, variant, grade, condition, quantity, location_id, slot, notes, search_query, cost, manual_value }
 }
 
 function defaultTitle(c: Card) {
@@ -216,7 +216,8 @@ async function run(label: string, fn: () => Promise<void>) {
 
 const save = () => run('save', async () => {
   const before = ownGrade.value
-  card.value = await api<Card>(`/api/cards/${id}`, { method: 'PATCH', body: { ...form.value, cost: form.value!.cost === '' || form.value!.cost == null ? null : Number(form.value!.cost) } })
+  card.value = await api<Card>(`/api/cards/${id}`, { method: 'PATCH', body: { ...form.value, cost: form.value!.cost === '' || form.value!.cost == null ? null : Number(form.value!.cost),
+    manual_value: form.value!.manual_value === '' || form.value!.manual_value == null ? null : Number(form.value!.manual_value) } })
   form.value = fieldsOf(card.value)
   // The card's grade changed: move the grade selection (chips, price table, trend) over to the new grade.
   const after = normalizeGrade(card.value.grade)
@@ -442,8 +443,8 @@ onMounted(() => {
         <!-- Value KPIs -->
         <v-row dense class="mb-2">
           <v-col cols="6" sm="3" class="kpi-wrap">
-            <StatCard :label="card.value_basis === 'sold' ? 'Sold value' : 'Value (asking)'" :value="money(card.value)" icon="mdi-currency-usd" color="primary"
-              :sub="card.value_basis === 'sold' ? `Median of ${card.sold_count} sales, last 90 days · asking ${money(card.est_value)}` : card.value_basis === 'asking' ? `Asking price${card.sold_count ? `: only ${card.sold_count} sales, too few` : ': no sold data yet'}${card.priced_at ? ` · priced ${isoDate(card.priced_at).slice(0, 10)}` : ''}` : 'Not priced'" />
+            <StatCard :label="card.value_basis === 'manual' ? 'Your value' : card.value_basis === 'sold' ? 'Sold value' : 'Value (asking)'" :value="money(card.value)" icon="mdi-currency-usd" color="primary"
+              :sub="card.value_basis === 'manual' ? `Set by you · ${card.sold_value != null ? 'sold ' + money(card.sold_value) : 'no sold value'} · asking ${money(card.est_value)}` : card.value_basis === 'sold' ? `Median of ${card.sold_count} sales, last 90 days · asking ${money(card.est_value)}` : card.value_basis === 'asking' ? `Asking price${card.sold_count ? `: only ${card.sold_count} sales, too few` : ': no sold data yet'}${card.priced_at ? ` · priced ${isoDate(card.priced_at).slice(0, 10)}` : ''}` : 'Not priced'" />
             <v-btn v-if="debug.on" icon="mdi-bug-outline" size="x-small" variant="tonal" color="warning" class="kpi-bug" aria-label="Show how this price was calculated" title="Show how this price was calculated" @click="showTrace" />
           </v-col>
           <v-col cols="6" sm="3"><StatCard :label="card.value_basis === 'sold' ? 'Lowest sale' : 'Low'" :value="money(card.value_basis === 'sold' ? card.sold_low : latest?.low)" icon="mdi-arrow-down" color="info" /></v-col>

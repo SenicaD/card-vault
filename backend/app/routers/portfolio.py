@@ -101,7 +101,9 @@ def portfolio(span: str = Query("1m", alias="range", pattern="^(7d|1m|3m|1y|all)
             bucket[key]["value"] += worth(c)
 
     def value_at(c: Card, d: date) -> float | None:
-        """The card's value on a past day: sold if the sales then supported it, otherwise the asking price then."""
+        """The card's value on a past day: your own value if set, else sold if the sales then supported it, else the asking price then."""
+        if c.manual_value is not None:
+            return c.manual_value
         v = _sold_at(sales.get(c.id), d, s.sold_window_days, s.sold_min_sales)
         return v if v is not None else _asking_at(hist.get(c.id, []), d)
 
@@ -135,13 +137,15 @@ def portfolio(span: str = Query("1m", alias="range", pattern="^(7d|1m|3m|1y|all)
                            "change": round((now - before) * c.quantity, 2), "pct": round((now - before) / before * 100, 1)})
     movers.sort(key=lambda m: m["change"])
     top = sorted(cards, key=worth, reverse=True)[:8]
-    with_sold = [c for c in cards if c.sold_value is not None]
+    with_sold = [c for c in cards if val[c.id][1] == "sold"]
+    manual = [c for c in cards if val[c.id][1] == "manual"]
 
     return {
         "totals": {"cards": sum(c.quantity for c in cards), "distinct": len(cards), "value": round(value, 2),
                    "asking_value": round(sum((c.est_value or 0) * c.quantity for c in cards), 2),
                    "sold_value": round(sum(c.sold_value * c.quantity for c in with_sold), 2), "sold_cards": len(with_sold),
                    "asking_value_of_sold_cards": round(sum((c.est_value or 0) * c.quantity for c in with_sold), 2),
+                   "manual_value": round(sum(c.manual_value * c.quantity for c in manual), 2), "manual_cards": len(manual),
                    "asking_cards": sum(1 for c in cards if val[c.id][1] == "asking"),
                    "unpriced": sum(1 for c in cards if val[c.id][0] is None),
                    "cost": round(cost, 2), "costed_cards": len(costed), "uncosted_cards": len(cards) - len(costed),

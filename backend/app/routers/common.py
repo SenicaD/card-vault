@@ -5,7 +5,10 @@ from ..models import Card, CardRead
 
 
 def card_value(card: Card) -> tuple[float | None, str | None]:
-    """The value to show for a card: what it sold for when there are enough sales, else the asking-based estimate."""
+    """The value to show for a card: the one you set by hand, else what it sold for when there are enough sales,
+    else the asking-based estimate."""
+    if card.manual_value is not None:
+        return card.manual_value, "manual"
     if card.sold_value is not None:
         return card.sold_value, "sold"
     if card.est_value is not None:

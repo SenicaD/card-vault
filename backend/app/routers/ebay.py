@@ -350,7 +350,7 @@ async def create_listing(card_id: int, body: ListingCreate, session: Session = D
     card = get_card_or_404(session, card_id)
     if card.status == CardStatus.sold:
         raise HTTPException(409, "This card is marked sold")
-    price = body.price or card.est_value
+    price = body.price or card.est_value or card.manual_value
     if not price:
         raise HTTPException(422, "Set a price, or look up the card's value first")
 
