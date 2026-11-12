@@ -160,6 +160,7 @@ export interface EbayItem {
   condition: string | null
   url: string | null
   image_url?: string | null
+  grade?: string | null
 }
 
 export interface Listing {

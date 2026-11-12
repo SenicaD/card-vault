@@ -1,3 +1,6 @@
+from pathlib import Path
+
+from ..config import get_settings
 import re
 import statistics
 
@@ -68,20 +71,71 @@ def group_by_grade(items: list[EbayItem]) -> dict[str, list[EbayItem]]:
     return groups
 
 
-async def quote_grades(query: str, grades: list[str]) -> tuple[list[PriceQuote], dict[str, int], list[EbayItem], dict[str, list[EbayItem]]]:
+def card_image(card) -> bytes | None:
+    """The card's saved photo, for eBay image search; None if it has none or the file is gone."""
+    if not card.image_path:
+        return None
+    path = get_settings().image_dir / Path(card.image_path).name
+    try:
+        return path.read_bytes()
+    except OSError:
+        return None
+
+
+MIN_PER_GRADE = 5
+
+
+async def _top_up_graded(items: list[EbayItem], groups: dict[str, list[EbayItem]], grades: list[str]) -> None:
+    """A raw photo mostly matches raw copies, so graded copies of the same card are thin in the image results.
+
+    For each requested graded grade with few listings, search for the card the photo matched,
+    named from the matched listings' own titles (not the form fields), plus that grade.
+    """
+    thin = [g for g in grades if g not in ("Raw", "Unknown") and len(groups.get(g, [])) < MIN_PER_GRADE][:3]
+    if not thin:
+        return
+    from .identify.ebay_image import parse_matches
+    base = parse_matches(items).search_query
+    if not base:
+        return
+    seen = {i.item_id for i in items}
+    for g in thin:
+        try:
+            found = await get_ebay().search_active(f"{base} {g}", limit=100)
+        except Exception:
+            continue
+        for i in found:
+            if i.item_id not in seen and parse_grade(i.title, i.condition) == g:
+                seen.add(i.item_id)
+                groups.setdefault(g, []).append(i)
+
+
+async def quote_grades(query: str, grades: list[str], image: bytes | None = None) -> tuple[list[PriceQuote], dict[str, int], list[EbayItem], dict[str, list[EbayItem]]]:
     """One eBay search, priced separately for each requested grade.
 
     Returns (a quote per grade in the order asked, how many listings eBay showed for every grade,
-    the cheapest 25 listings across the requested grades, every listing grouped by grade). Asking for more grades costs no extra
+    the first 100 listings of the requested grades, in eBay's best-match order, every listing grouped by grade). Asking for more grades costs no extra
     API calls, because the grade is read from the same results.
     """
-    items = await get_ebay().search_active(query, limit=200)
+    source = "ebay-active"
+    items = []
+    if image:  # the card's own photo finds the right card far better than words do
+        try:
+            items = await get_ebay().search_by_image(image, limit=200)
+            source = "ebay-image"
+        except Exception:
+            items = []
+    if not items:
+        source = "ebay-active"
+        items = await get_ebay().search_active(query, limit=200)
     groups = group_by_grade(items)
+    if source == "ebay-image":
+        await _top_up_graded(items, groups, grades)
     quotes = []
     for g in grades:
         group = groups.get(g, [])
-        quotes.append(PriceQuote(query=query, source="ebay-active", grade=g,
+        quotes.append(PriceQuote(query=query, source=source, grade=g,
                                  top_listings=top_listings(group), **summarize(group)))
-    wanted = [i for g in grades for i in groups.get(g, [])]
+    wanted = [i.model_copy(update={"grade": g}) for g in grades for i in groups.get(g, [])]
     counts = {g: len(v) for g, v in sorted(groups.items(), key=lambda kv: grade_sort_key(kv[0]) if kv[0] != "Unknown" else (9, "", 0))}
-    return quotes, counts, sorted(wanted, key=lambda c: c.price)[:25], groups
+    return quotes, counts, wanted[:100], groups

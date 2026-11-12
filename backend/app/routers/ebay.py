@@ -11,7 +11,7 @@ from ..db import get_session
 from ..models import Card, CardCategory, CardStatus, Listing, ListingSeen, PriceSnapshot, Sale, utcnow
 from ..services.ebay import EbayItem, ListingRequest, get_ebay
 from ..services.grading import grade_sort_key, normalize_grade
-from ..services.pricing import quote_grades
+from ..services.pricing import card_image, quote_grades
 from ..services.tracker import track_listings
 from .common import get_card_or_404
 
@@ -25,12 +25,13 @@ _CCG_SINGLES = "183454"
 class PriceResult(BaseModel):
     snapshot: PriceSnapshot  # the card's own grade if it was priced, otherwise the first grade asked for
     snapshots: list[PriceSnapshot]  # one per grade asked for
-    comps: list[EbayItem]  # cheapest listings across the grades asked for
+    comps: list[EbayItem]  # listings of the grades asked for, best match first
     grade_counts: dict[str, int]  # listings eBay showed per grade, including grades not asked for
 
 
 class PriceRequest(BaseModel):
     query: str | None = None  # override the card's stored search query
+    text_only: bool = False  # search by words instead of the card's photo
     grades: list[str] | None = None  # grades to price; default is the card's own grade (Raw if none)
 
 
@@ -43,7 +44,7 @@ async def price_card(card_id: int, body: PriceRequest | None = None,
     asked = body.grades if body and body.grades else [own]
     grades = list(dict.fromkeys(normalize_grade(g) for g in asked))[:8]
     try:
-        quotes, counts, comps, groups = await quote_grades(query, grades)
+        quotes, counts, comps, groups = await quote_grades(query, grades, None if (body and body.text_only) else card_image(card))
     except Exception as e:
         raise HTTPException(502, f"eBay search failed: {e}") from e
 

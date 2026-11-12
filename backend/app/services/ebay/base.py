@@ -11,6 +11,7 @@ class EbayItem(BaseModel):
     condition: str | None = None
     url: str | None = None
     image_url: str | None = None
+    grade: str | None = None  # filled in when listings are grouped by grade
 
 
 class ListingRequest(BaseModel):

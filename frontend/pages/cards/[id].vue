@@ -219,10 +219,22 @@ const remove = () => run('delete', async () => {
   await navigateTo('/')
 })
 
+const compSearch = ref('')
+const shownComps = computed(() => {
+  const q = (compSearch.value || '').toLowerCase().trim()
+  return q ? comps.value.filter((c) => `${c.title} ${c.grade ?? ''} ${c.condition ?? ''}`.toLowerCase().includes(q)) : comps.value
+})
+// How far a listing's price sits from the median for its own grade, in percent.
+function vsMedian(c: EbayItem): number | null {
+  const m = history.value.find((s) => s.grade === c.grade && s.median)?.median
+  return m ? Math.round(((c.price - m) / m) * 100) : null
+}
 const compHeaders = computed(() => [
+  { title: '', key: 'image_url', sortable: false, width: 64 },
   { title: 'Listing', key: 'title' },
-  ...(xs.value ? [] : [{ title: 'Condition', key: 'condition' }]),
+  ...(xs.value ? [] : [{ title: 'Grade', key: 'grade' }, { title: 'Condition', key: 'condition' }]),
   { title: 'Price', key: 'price', align: 'end' as const },
+  ...(xs.value ? [] : [{ title: 'vs median', key: 'vs', align: 'end' as const, sortable: false }]),
 ])
 const historyHeaders = [
   { title: 'Date (UTC)', key: 'created_at' },
@@ -451,14 +463,29 @@ onMounted(() => {
 
               <template v-if="comps.length">
                 <v-divider />
-                <div class="px-5 pt-4 pb-2 text-body-2 font-weight-medium">Comparable listings ({{ comps.length }})</div>
-                <v-data-table :headers="compHeaders" :items="comps" density="compact" items-per-page="10" class="no-pointer">
-                  <template #item.title="{ item }">
-                    <a v-if="item.url" :href="item.url" target="_blank" rel="noopener" class="comp-link">{{ item.title }}</a>
-                    <span v-else>{{ item.title }}</span>
+                <div class="px-5 pt-4 pb-2 d-flex flex-wrap align-center justify-space-between ga-2">
+                  <span class="text-body-2 font-weight-medium">All matching listings ({{ shownComps.length }}<template v-if="shownComps.length !== comps.length"> of {{ comps.length }}</template>)</span>
+                  <v-text-field v-model="compSearch" placeholder="Filter listings" prepend-inner-icon="mdi-magnify" clearable hide-details density="compact" style="max-width: 240px" />
+                </div>
+                <v-data-table :headers="compHeaders" :items="shownComps" density="comfortable" :items-per-page="10" :sort-by="[]" class="no-pointer comp-table">
+                  <template #item.image_url="{ item }">
+                    <a :href="item.url || undefined" target="_blank" rel="noopener" class="comp-thumb">
+                      <img v-if="item.image_url" :src="item.image_url" alt="" loading="lazy" />
+                      <v-icon v-else icon="mdi-image-off-outline" size="small" />
+                    </a>
                   </template>
+                  <template #item.title="{ item }">
+                    <a v-if="item.url" :href="item.url" target="_blank" rel="noopener" class="comp-link comp-title">{{ item.title }}</a>
+                    <span v-else class="comp-title">{{ item.title }}</span>
+                    <div v-if="xs" class="text-caption text-muted-c">{{ [item.grade, item.condition].filter(Boolean).join(' · ') }}</div>
+                  </template>
+                  <template #item.grade="{ item }"><v-chip size="x-small" variant="tonal">{{ item.grade || '—' }}</v-chip></template>
                   <template #item.condition="{ item }">{{ item.condition || '—' }}</template>
-                  <template #item.price="{ item }"><span class="num text-no-wrap">{{ money(item.price) }}</span></template>
+                  <template #item.price="{ item }"><span class="num text-no-wrap font-weight-semibold">{{ money(item.price) }}</span></template>
+                  <template #item.vs="{ item }">
+                    <span v-if="vsMedian(item) !== null" class="num text-no-wrap text-caption" :class="vsMedian(item)! > 0 ? 'text-muted-c' : 'text-success'">{{ vsMedian(item)! > 0 ? '+' : '' }}{{ vsMedian(item) }}%</span>
+                    <span v-else>—</span>
+                  </template>
                 </v-data-table>
               </template>
             </v-window-item>
@@ -585,6 +612,9 @@ onMounted(() => {
 .footer-actions { display: flex; gap: 8px; padding: 12px 18px; background: rgb(var(--v-theme-surface-chrome)); }
 .font-weight-semibold { font-weight: 600; }
 .comp-link { color: rgb(var(--v-theme-primary)); text-decoration: none; }
+.comp-thumb { width: 48px; height: 48px; border-radius: 6px; overflow: hidden; display: grid; place-items: center; background: rgb(var(--v-theme-surface-sunken)); color: rgb(var(--v-theme-text-muted)); }
+.comp-thumb img { width: 100%; height: 100%; object-fit: cover; }
+.comp-title { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; max-width: 460px; white-space: normal; }
 .comp-link:hover { text-decoration: underline; }
 .no-pointer :deep(tbody tr) { cursor: default; }
 .grade-table { background: transparent !important; }

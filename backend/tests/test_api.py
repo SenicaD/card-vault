@@ -36,6 +36,7 @@ def test_full_flow():
 
         price = c.post(f"/api/cards/{card['id']}/price").json()
         assert price["snapshot"]["median"] > 0
+        assert price["snapshot"]["source"] == "ebay-image"  # the card photo drives the search
         assert c.get(f"/api/cards/{card['id']}").json()["est_value"] == price["snapshot"]["median"]
 
         listing = c.post(f"/api/cards/{card['id']}/listings", json={"publish": True})
@@ -615,3 +616,16 @@ def test_changing_the_grade_moves_the_estimate_to_the_new_grade():
         assert c.patch(f"/api/cards/{cid}", json={"notes": "hello"}).json()["est_value"] == keep
         # "PSA 9" and "psa 9" are the same grade, so retyping it doesn't reset anything
         assert c.patch(f"/api/cards/{cid}", json={"grade": "psa 9"}).json()["est_value"] == keep
+
+
+def test_price_uses_photo_even_when_the_query_is_sent_and_text_only_opts_out():
+    with TestClient(app) as c:
+        s = c.post("/api/scan", files={"file": ("card.png", io.BytesIO(PNG), "image/png")}).json()
+        ident = s["identification"]
+        card = c.post("/api/cards", json={"category": ident["category"], "name": ident["name"], "grade": None,
+                                          "search_query": ident["search_query"], "image_path": s["image_path"]}).json()
+        grades = ["Raw", "PSA 9"]
+        photo = c.post(f"/api/cards/{card['id']}/price", json={"query": ident["search_query"], "grades": grades}).json()
+        assert {x["source"] for x in photo["snapshots"]} == {"ebay-image"}
+        words = c.post(f"/api/cards/{card['id']}/price", json={"text_only": True, "grades": grades}).json()
+        assert {x["source"] for x in words["snapshots"]} == {"ebay-active"}

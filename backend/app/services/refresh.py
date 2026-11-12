@@ -13,7 +13,7 @@ from ..config import get_settings
 from ..db import engine
 from ..models import Card, CardStatus, PriceSnapshot, utcnow
 from .grading import grade_sort_key, normalize_grade
-from .pricing import quote_grades
+from .pricing import card_image, quote_grades
 from .tracker import track_listings
 
 log = logging.getLogger("cardvault.refresh")
@@ -47,11 +47,11 @@ async def refresh_due(max_age: timedelta | None = None, pause: float = PAUSE_BET
             if last is None or last < cutoff:
                 own = normalize_grade(c.grade)
                 others = sorted({g for g, _ in rows} - {own}, key=grade_sort_key)
-                due.append((c.id, c.search_query or c.name, own, ([own] + others)[:MAX_TRACKED_GRADES]))
+                due.append((c.id, c.search_query or c.name, own, ([own] + others)[:MAX_TRACKED_GRADES], card_image(c)))
 
-    for card_id, query, own, tracked in due:
+    for card_id, query, own, tracked, image in due:
         try:
-            quotes, counts, _, groups = await quote_grades(query, tracked)
+            quotes, counts, _, groups = await quote_grades(query, tracked, image)
         except Exception as e:  # keep going: one bad query shouldn't stop the round
             failed += 1
             log.warning("re-price failed for card %s (%r): %s", card_id, query, e)
