@@ -859,3 +859,24 @@ def test_portfolio_totals_cost_and_series():
         sold = c.post("/api/cards", json={"name": "Folio Sold", "category": "sports"}).json()
         c.patch(f"/api/cards/{sold['id']}", json={"status": "sold"})
         assert c.get("/api/portfolio").json()["totals"]["distinct"] == t["distinct"]  # sold cards leave the portfolio
+
+
+def test_crop_straightens_a_tilted_card():
+    from PIL import Image, ImageDraw
+    img = Image.new("RGB", (600, 600), "blue")
+    quad = [(200, 80), (420, 140), (370, 470), (150, 410)]  # a tilted card, TL TR BR BL
+    ImageDraw.Draw(img).polygon(quad, fill="red")
+    buf = io.BytesIO(); img.save(buf, "PNG")
+    with TestClient(app) as c:
+        s = c.post("/api/scan", files={"file": ("tilt.png", io.BytesIO(buf.getvalue()), "image/png")}).json()
+        corners = [[x / 600, y / 600] for x, y in quad]
+        r = c.post("/api/scan/crop", json={"image_path": s["image_path"], "box": {"x": .2, "y": .1, "w": .5, "h": .7, "corners": corners}})
+        assert r.status_code == 200, r.text
+        out = Image.open(io.BytesIO(c.get(r.json()["image_url"]).content)).convert("RGB")
+        w, h = out.size
+        assert h > w  # card shape, not the tilted bounding box
+        px = [out.getpixel((int(w * fx), int(h * fy))) for fx in (.1, .5, .9) for fy in (.1, .5, .9)]
+        assert all(p[0] > 200 and p[2] < 60 for p in px)  # all red: no blue background left in the cut-out
+        # bad shapes are refused
+        assert c.post("/api/scan/crop", json={"image_path": s["image_path"], "box": {"x": 0, "y": 0, "w": 1, "h": 1, "corners": [[0, 0], [0, 0], [0, 0], [0, 0]]}}).status_code == 422
+        assert c.post("/api/scan/crop", json={"image_path": s["image_path"], "box": {"x": 0, "y": 0, "w": 1, "h": 1, "corners": [[0, 0], [1, 0], [1, 1]]}}).status_code == 422
