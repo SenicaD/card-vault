@@ -26,6 +26,7 @@ export interface Card extends CardFields {
   priced_at: string | null
   grade_counts?: Record<string, number> | null
   grade_counts_at?: string | null
+  parallel?: string | null
   created_at: string
   updated_at: string
 }
@@ -87,7 +88,30 @@ export interface PriceSnapshot {
   top_listings?: EbayItem[] | null
   price_refs?: { low?: EbayItem; median?: EbayItem; high?: EbayItem } | null
   grade?: string | null
+  parallel?: string | null
+  spread?: number | null
+  trimmed?: number | null
   created_at: string
+}
+
+export interface MatchRow {
+  item_id: string
+  title: string
+  price: number
+  currency: string
+  grade: string
+  parallel: string
+  condition: string | null
+  url: string | null
+  image_url: string | null
+  excluded: boolean
+}
+
+export interface SimilarityResult {
+  scores: Record<string, number>
+  suggested_parallel: string | null
+  votes: number
+  of: number
 }
 
 export interface TrendPoint {

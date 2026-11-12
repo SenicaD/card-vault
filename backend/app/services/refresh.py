@@ -11,7 +11,7 @@ from sqlmodel import Session, col, select
 
 from ..config import get_settings
 from ..db import engine
-from ..models import ASKING_SOURCES, Card, CardStatus, PriceSnapshot, utcnow
+from ..models import ASKING_SOURCES, Card, ListingSeen, CardStatus, PriceSnapshot, utcnow
 from .grading import grade_sort_key, normalize_grade
 from .pricing import card_image, quote_grades
 from .tracker import track_listings
@@ -36,7 +36,7 @@ async def refresh_due(max_age: timedelta | None = None, pause: float = PAUSE_BET
 
     with Session(engine) as session:
         cards = session.exec(select(Card).where(col(Card.status) != CardStatus.sold)).all()
-        due: list[tuple[int, str, str, list[str]]] = []
+        due: list[tuple] = []
         for c in cards:
             rows = session.exec(select(PriceSnapshot.grade, PriceSnapshot.created_at).where(
                 PriceSnapshot.card_id == c.id, col(PriceSnapshot.source).in_(ASKING_SOURCES),
@@ -47,11 +47,15 @@ async def refresh_due(max_age: timedelta | None = None, pause: float = PAUSE_BET
             if last is None or last < cutoff:
                 own = normalize_grade(c.grade)
                 others = sorted({g for g, _ in rows} - {own}, key=grade_sort_key)
-                due.append((c.id, c.search_query or c.name, own, ([own] + others)[:MAX_TRACKED_GRADES], card_image(c)))
+                due.append((c.id, c.search_query or c.name, own, ([own] + others)[:MAX_TRACKED_GRADES], card_image(c), c.parallel))
 
-    for card_id, query, own, tracked, image in due:
+    for card_id, query, own, tracked, image, parallel in due:
         try:
-            quotes, counts, _, groups = await quote_grades(query, tracked, image)
+            with Session(engine) as session:
+                skip = set(session.exec(select(ListingSeen.item_id).where(
+                    ListingSeen.card_id == card_id, ListingSeen.excluded == True)).all())  # noqa: E712
+            priced = await quote_grades(query, tracked, image, parallel=parallel, exclude=skip)
+            quotes, counts, groups = priced.quotes, priced.counts, priced.groups
         except Exception as e:  # keep going: one bad query shouldn't stop the round
             failed += 1
             log.warning("re-price failed for card %s (%r): %s", card_id, query, e)

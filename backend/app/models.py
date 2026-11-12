@@ -97,6 +97,8 @@ class Card(CardBase, table=True):
     # Lets the card page suggest grades that do have listings without making a new search.
     grade_counts: dict[str, int] | None = Field(default=None, sa_column=Column(JSON, nullable=True))
     grade_counts_at: datetime | None = ts(default=None)
+    # The colour/print-run version of the card ("Green /99", "Base") prices are limited to; None = all pooled.
+    parallel: str | None = None
     created_at: datetime = ts(default_factory=utcnow)
     updated_at: datetime = ts(default_factory=utcnow)
 
@@ -121,6 +123,11 @@ class PriceQuote(SQLModel):
     price_refs: dict[str, dict[str, Any]] | None = None
     # Grade this quote covers ("Raw", "PSA 10", ...). None = every listing pooled together (older data).
     grade: str | None = None
+    # Version of the card the quote was limited to (None = all), and how spread out the prices were:
+    # (Q3 - Q1) / median, plus how many outlier listings were left out of the numbers.
+    parallel: str | None = None
+    spread: float | None = None
+    trimmed: int | None = None
 
 
 class CardCreate(CardBase):
@@ -144,6 +151,7 @@ class CardUpdate(SQLModel):
     slot: str | None = None
     notes: str | None = None
     search_query: str | None = None
+    parallel: str | None = None
     status: CardStatus | None = None
 
 
@@ -156,6 +164,7 @@ class CardRead(CardBase):
     priced_at: datetime | None
     grade_counts: dict[str, int] | None = None
     grade_counts_at: datetime | None = None
+    parallel: str | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -176,6 +185,9 @@ class PriceSnapshot(SQLModel, table=True):
     top_listings: list[dict[str, Any]] | None = Field(default=None, sa_column=Column(JSON, nullable=True))
     price_refs: dict[str, dict[str, Any]] | None = Field(default=None, sa_column=Column(JSON, nullable=True))
     grade: str | None = Field(default=None, index=True)
+    parallel: str | None = None
+    spread: float | None = None
+    trimmed: int | None = None
     created_at: datetime = ts(default_factory=utcnow)
 
 
@@ -213,6 +225,7 @@ class ListingSeen(SQLModel, table=True):
     status: str = "active"  # active | gone
     gone_at: datetime | None = ts(default=None)
     verdict: str | None = None  # why we think it's gone: "not_found" | "out_of_stock"
+    excluded: bool = False  # you marked it as not your card; left out of this card's prices
 
 
 # ---------- Listings ----------

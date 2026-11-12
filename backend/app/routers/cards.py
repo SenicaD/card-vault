@@ -83,14 +83,14 @@ def get_card(card_id: int, session: Session = Depends(get_session)):
 @router.patch("/{card_id}", response_model=CardRead)
 def update_card(card_id: int, body: CardUpdate, session: Session = Depends(get_session)):
     card = get_card_or_404(session, card_id)
-    old_grade = normalize_grade(card.grade)
+    old_grade, old_parallel = normalize_grade(card.grade), card.parallel
     card.sqlmodel_update(body.model_dump(exclude_unset=True))
     new_grade = normalize_grade(card.grade)
-    if new_grade != old_grade:
-        # The estimate belonged to the old grade. Use the newest price we already have for the new one,
+    if new_grade != old_grade or card.parallel != old_parallel:
+        # The estimate belonged to the old grade or version. Use the newest price we already have for the new one,
         # or clear it until the card is priced, rather than keep showing the old grade's value.
         snap = session.exec(select(PriceSnapshot).where(
-            PriceSnapshot.card_id == card.id, col(PriceSnapshot.source).in_(ASKING_SOURCES), PriceSnapshot.grade == new_grade,
+            PriceSnapshot.card_id == card.id, col(PriceSnapshot.source).in_(ASKING_SOURCES), PriceSnapshot.grade == new_grade, PriceSnapshot.parallel == card.parallel,
             col(PriceSnapshot.median).is_not(None)).order_by(col(PriceSnapshot.created_at).desc()).limit(1)).first()
         card.est_value, card.priced_at = (snap.median, snap.created_at) if snap else (None, None)
     card.updated_at = utcnow()

@@ -307,7 +307,7 @@ def test_grade_groups_never_mix_listings():
 
     async def run():
         items = await get_ebay().search_active(mix_q, limit=200)
-        quotes, counts, comps, groups = await quote_grades(mix_q, ["Raw", "PSA 10", "PSA 9"])
+        quotes, counts, comps, groups, *_ = await quote_grades(mix_q, ["Raw", "PSA 10", "PSA 9"])
         return items, quotes, counts, comps
 
     items, quotes, counts, comps = asyncio.run(run())
@@ -665,3 +665,118 @@ def test_image_priced_snapshots_count_as_asking_prices_in_the_trend():
         assert c.post(f"/api/cards/{card['id']}/price", json={}).status_code == 200
         t = c.get(f"/api/cards/{card['id']}/trend?range=1m&grades=Raw").json()
         assert t["asking"] and t["asking"][0]["points"]
+
+
+def _items(*specs):
+    from app.services.ebay import EbayItem
+    return [EbayItem(item_id=f"i{n}", title=t, price=p, condition="Ungraded") for n, (t, p) in enumerate(specs)]
+
+
+def test_parallel_is_read_from_titles():
+    from app.services.parallels import parse_parallel
+    assert parse_parallel("2026 Obsidian King Miller Red Orbital RPA /99") == "Red /99"
+    assert parse_parallel("Obsidian Orbital Lava Flow auto /7") == "Lava Flow /7"
+    assert parse_parallel("Obsidian Orbital Auto Patch /49") == "/49"
+    assert parse_parallel("2022-23 Topps Chrome 12/150 Rookie") == "Base"  # a set number is not a print run
+
+
+def test_summary_drops_outliers_and_reports_spread():
+    from app.services.pricing import summarize
+    items = _items(*[("Card A", p) for p in (20, 21, 22, 23, 24, 25, 26, 27, 2, 900)])
+    s = summarize(items)
+    assert s["trimmed"] == 2 and s["low"] == 20 and s["high"] == 27
+    assert 0 < s["spread"] < 0.5
+    assert summarize(_items(("Card A", 5)))["trimmed"] == 0  # too few listings to call anything an outlier
+
+
+def test_pricing_can_be_limited_to_one_parallel_and_skip_excluded_listings():
+    from app.services.pricing import build_quotes, group_by_grade
+    items = _items(("King Miller Green /99 auto", 100), ("King Miller Green /99 auto", 110), ("King Miller Green /99 auto", 120),
+                   ("King Miller Red /49 auto", 500), ("King Miller Red /49 auto", 520))
+    groups = group_by_grade(items)
+    allq, _ = build_quotes(groups, ["Raw"], "q", "ebay-image")
+    green, used = build_quotes(groups, ["Raw"], "q", "ebay-image", parallel="Green /99")
+    assert green[0].median == 110 and green[0].parallel == "Green /99" and len(used) == 3
+    assert allq[0].median > green[0].median
+    no_one, _ = build_quotes(groups, ["Raw"], "q", "ebay-image", parallel="Green /99", exclude={"i1"})
+    assert no_one[0].median == 110 and no_one[0].sample_size == 2
+
+
+def test_matches_are_kept_and_excluding_one_reprices_without_a_new_search():
+    with TestClient(app) as c:
+        s = c.post("/api/scan", files={"file": ("card.png", io.BytesIO(PNG), "image/png")}).json()
+        i = s["identification"]
+        card = c.post("/api/cards", json={"category": i["category"], "name": i["name"], "search_query": i["search_query"],
+                                          "image_path": s["image_path"], "grade": "Raw"}).json()
+        c.post(f"/api/cards/{card['id']}/price", json={})
+        rows = c.get(f"/api/cards/{card['id']}/matches", params={"grades": ["Raw"]}).json()
+        assert rows and {"parallel", "excluded", "grade"} <= set(rows[0])
+        top = max(rows, key=lambda r: r["price"])
+        before = c.get(f"/api/cards/{card['id']}").json()["est_value"]
+        out = c.post(f"/api/cards/{card['id']}/matches/exclude", json={"item_ids": [top["item_id"]]}).json()
+        assert out["snapshot"]["sample_size"] <= len(rows) - 1
+        again = c.get(f"/api/cards/{card['id']}/matches", params={"grades": ["Raw"]}).json()
+        assert [r["excluded"] for r in again if r["item_id"] == top["item_id"]] == [True]
+        back = c.post(f"/api/cards/{card['id']}/matches/exclude", json={"item_ids": [top["item_id"]], "excluded": False}).json()
+        assert back["snapshot"]["median"] == before
+
+
+def test_card_parallel_limits_prices_and_trend(monkeypatch):
+    with TestClient(app) as c:
+        s = c.post("/api/scan", files={"file": ("card.png", io.BytesIO(PNG), "image/png")}).json()
+        i = s["identification"]
+        card = c.post("/api/cards", json={"category": i["category"], "name": i["name"], "search_query": i["search_query"],
+                                          "image_path": s["image_path"], "grade": "Raw"}).json()
+        c.post(f"/api/cards/{card['id']}/price", json={})
+        r = c.patch(f"/api/cards/{card['id']}", json={"parallel": "Green /99"})
+        assert r.json()["parallel"] == "Green /99" and r.json()["est_value"] is None  # no price for that version yet
+        out = c.post(f"/api/cards/{card['id']}/price", json={}).json()
+        assert out["snapshot"]["parallel"] == "Green /99"
+        t = c.get(f"/api/cards/{card['id']}/trend", params={"range": "1m", "grades": ["Raw"]}).json()
+        assert len(t["asking"][0]["points"]) <= 1  # only this version's snapshots are on the line
+
+
+def test_rank_by_look_suggests_the_version_most_lookalikes_share(monkeypatch):
+    from app.routers import ebay as router
+    with TestClient(app) as c:
+        s = c.post("/api/scan", files={"file": ("card.png", io.BytesIO(PNG), "image/png")}).json()
+        i = s["identification"]
+        card = c.post("/api/cards", json={"category": i["category"], "name": i["name"], "search_query": i["search_query"],
+                                          "image_path": s["image_path"], "grade": "Raw"}).json()
+        c.post(f"/api/cards/{card['id']}/price", json={})
+        rows = c.get(f"/api/cards/{card['id']}/matches").json()
+        # no network: pretend the first listings look just like the photo and carry a "Green /99" title
+        from sqlmodel import Session
+        from app.db import engine
+        from app.models import ListingSeen
+        with Session(engine) as session:
+            for r in session.exec(__import__("sqlmodel").select(ListingSeen).where(ListingSeen.card_id == card["id"])).all()[:5]:
+                r.title, r.image_url = f"King Miller Green /99 {r.item_id}", f"https://i.ebayimg.com/{r.item_id}.jpg"
+                session.add(r)
+            session.commit()
+
+        async def fake(photo, urls):
+            return {u: 95 for u in urls[:5]} | {u: 10 for u in urls[5:]}
+        monkeypatch.setattr(router, "score_urls", fake)
+        out = c.post(f"/api/cards/{card['id']}/matches/similarity", json={}).json()
+        assert out["suggested_parallel"] == "Green /99" and out["votes"] >= 3
+        assert max(out["scores"].values()) == 95
+
+
+def test_a_poorly_identified_card_takes_its_name_from_what_the_photo_matched(monkeypatch):
+    with TestClient(app) as c:
+        s = c.post("/api/scan", files={"file": ("card.png", io.BytesIO(PNG), "image/png")}).json()
+        card = c.post("/api/cards", json={"category": "sports", "name": "Wild", "search_query": "wild auto", "id_confidence": 0.08,
+                                          "image_path": s["image_path"], "grade": "Raw"}).json()
+        out = c.post(f"/api/cards/{card['id']}/price", json={"query": "wild auto"}).json()
+        after = c.get(f"/api/cards/{card['id']}").json()
+        assert after["search_query"] != "wild auto" and after["name"] != "Wild"
+        assert out["snapshot"]["query"] == after["search_query"]
+
+
+def test_new_columns_are_added_to_an_existing_database():
+    from sqlalchemy import inspect
+    from app.db import engine
+    with engine.connect() as conn:
+        assert "parallel" in {c["name"] for c in inspect(conn).get_columns("card")}
+        assert {"excluded"} <= {c["name"] for c in inspect(conn).get_columns("listingseen")}

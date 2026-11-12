@@ -1,4 +1,5 @@
 import uuid
+from collections import Counter
 from datetime import timedelta
 from statistics import median as _median
 
@@ -11,7 +12,9 @@ from ..db import get_session
 from ..models import ASKING_SOURCES, Card, CardCategory, CardStatus, Listing, ListingSeen, PriceSnapshot, Sale, utcnow
 from ..services.ebay import EbayItem, ListingRequest, get_ebay
 from ..services.grading import grade_sort_key, normalize_grade
-from ..services.pricing import card_image, quote_grades
+from ..services.parallels import BASE, parse_parallel
+from ..services.pricing import build_quotes, card_image, quote_grades
+from ..services.similarity import score_urls
 from ..services.tracker import track_listings
 from .common import get_card_or_404
 
@@ -35,6 +38,10 @@ class PriceRequest(BaseModel):
     grades: list[str] | None = None  # grades to price; default is the card's own grade (Raw if none)
 
 
+def excluded_ids(session: Session, card_id: int) -> set[str]:
+    return set(session.exec(select(ListingSeen.item_id).where(ListingSeen.card_id == card_id, ListingSeen.excluded == True)).all())  # noqa: E712
+
+
 @router.post("/price", response_model=PriceResult)
 async def price_card(card_id: int, body: PriceRequest | None = None,
                      session: Session = Depends(get_session)):
@@ -44,9 +51,22 @@ async def price_card(card_id: int, body: PriceRequest | None = None,
     asked = body.grades if body and body.grades else [own]
     grades = list(dict.fromkeys(normalize_grade(g) for g in asked))[:8]
     try:
-        quotes, counts, comps, groups = await quote_grades(query, grades, None if (body and body.text_only) else card_image(card))
+        priced = await quote_grades(query, grades, None if (body and body.text_only) else card_image(card),
+                                    parallel=card.parallel, exclude=excluded_ids(session, card.id))
     except Exception as e:
         raise HTTPException(502, f"eBay search failed: {e}") from e
+    quotes, counts, comps, groups = priced.quotes, priced.counts, priced.comps, priced.groups
+
+    # A card whose first identification was poor takes its name and search words from what the photo matched.
+    if priced.source == "ebay-image" and (card.id_confidence or 0.0) < 0.3:
+        from ..services.identify.ebay_image import parse_matches
+        ident = parse_matches(priced.items)
+        if ident.name and ident.confidence >= 0.3 and ident.confidence > (card.id_confidence or 0.0):
+            card.name, card.set_name, card.year = ident.name, ident.set_name, ident.year
+            card.card_number, card.variant, card.category = ident.card_number, ident.variant, ident.category
+            card.id_confidence, query = ident.confidence, ident.search_query
+            for q in quotes:
+                q.query = query
 
     snaps = [PriceSnapshot(card_id=card.id, **q.model_dump()) for q in quotes]
     session.add_all(snaps)
@@ -68,6 +88,107 @@ async def price_card(card_id: int, body: PriceRequest | None = None,
     for s in snaps:  # tracking commits too, which expires these; reload them before they are serialised
         session.refresh(s)
     return PriceResult(snapshot=primary, snapshots=snaps, comps=comps, grade_counts=counts)
+
+
+class MatchRow(BaseModel):
+    item_id: str
+    title: str
+    price: float
+    currency: str
+    grade: str
+    parallel: str
+    condition: str | None
+    url: str | None
+    image_url: str | None
+    excluded: bool
+
+
+def _active_rows(session: Session, card_id: int, grades: list[str] | None = None) -> list[ListingSeen]:
+    rows = session.exec(select(ListingSeen).where(ListingSeen.card_id == card_id, ListingSeen.status == "active")
+                        .order_by(col(ListingSeen.id))).all()
+    wanted = {normalize_grade(g) for g in grades} if grades else None
+    return [r for r in rows if wanted is None or r.grade in wanted]
+
+
+@router.get("/matches", response_model=list[MatchRow])
+def matches(card_id: int, grades: list[str] | None = Query(None), session: Session = Depends(get_session)):
+    """Every listing currently matched to this card (kept between visits), for the listings table."""
+    get_card_or_404(session, card_id)
+    return [MatchRow(item_id=r.item_id, title=r.title, price=r.price, currency=r.currency, grade=r.grade,
+                     parallel=parse_parallel(r.title), condition=r.condition, url=r.url, image_url=r.image_url,
+                     excluded=r.excluded) for r in _active_rows(session, card_id, grades)]
+
+
+class ExcludeRequest(BaseModel):
+    item_ids: list[str] = Field(min_length=1, max_length=200)
+    excluded: bool = True  # False puts them back
+    grades: list[str] | None = None  # grades to re-price; default is the card's own
+
+
+@router.post("/matches/exclude", response_model=PriceResult)
+def exclude_matches(card_id: int, body: ExcludeRequest, session: Session = Depends(get_session)):
+    """Mark listings as "not my card" (or put them back) and re-price from the listings already saved.
+
+    No new eBay search: the numbers are rebuilt from the matched listings, so this is instant and the
+    choice also applies to later refreshes.
+    """
+    card = get_card_or_404(session, card_id)
+    ids = set(body.item_ids)
+    for r in session.exec(select(ListingSeen).where(ListingSeen.card_id == card_id)).all():
+        if r.item_id in ids:
+            r.excluded = body.excluded
+            session.add(r)
+    own = normalize_grade(card.grade)
+    grades = list(dict.fromkeys(normalize_grade(g) for g in (body.grades or [own])))[:8]
+    rows = _active_rows(session, card_id)
+    groups: dict[str, list[EbayItem]] = {}
+    for r in rows:
+        groups.setdefault(r.grade, []).append(EbayItem(item_id=r.item_id, title=r.title, price=r.price, currency=r.currency,
+                                                       condition=r.condition, url=r.url, image_url=r.image_url))
+    quotes, _ = build_quotes(groups, grades, card.search_query or card.name, "ebay-image", card.parallel,
+                             {r.item_id for r in rows if r.excluded})
+    snaps = [PriceSnapshot(card_id=card.id, **q.model_dump()) for q in quotes]
+    session.add_all(snaps)
+    own_snap = next((s for s in snaps if s.grade == own), None)
+    if own_snap and own_snap.median is not None:
+        card.est_value, card.priced_at = own_snap.median, utcnow()
+    card.updated_at = utcnow()
+    session.add(card)
+    session.commit()
+    for s in snaps:
+        session.refresh(s)
+    return PriceResult(snapshot=next((s for s in snaps if s.grade == own), snaps[0]), snapshots=snaps, comps=[],
+                       grade_counts=card.grade_counts or {})
+
+
+class SimilarityRequest(BaseModel):
+    grades: list[str] | None = None
+
+
+class SimilarityResult(BaseModel):
+    scores: dict[str, int]  # item id -> 0-100 colour similarity to your photo
+    suggested_parallel: str | None  # the version the most look-alike listings are
+    votes: int = 0  # how many of the closest listings are that version
+    of: int = 0
+
+
+@router.post("/matches/similarity", response_model=SimilarityResult)
+async def rank_by_look(card_id: int, body: SimilarityRequest | None = None, session: Session = Depends(get_session)):
+    """Compare each matched listing's picture with your photo by colour, and suggest which version you have."""
+    card = get_card_or_404(session, card_id)
+    photo = card_image(card)
+    if not photo:
+        raise HTTPException(422, "This card has no photo to compare")
+    rows = [r for r in _active_rows(session, card_id, body.grades if body else None) if r.image_url][:40]
+    scores_by_url = await score_urls(photo, [r.image_url for r in rows])
+    scores = {r.item_id: scores_by_url[r.image_url] for r in rows if r.image_url in scores_by_url}
+    top = sorted((r for r in rows if r.item_id in scores), key=lambda r: -scores[r.item_id])[:8]
+    votes = Counter(parse_parallel(r.title) for r in top)
+    votes.pop(BASE, None)
+    suggested, n = votes.most_common(1)[0] if votes else (None, 0)
+    if n < 3:
+        suggested, n = None, 0
+    return SimilarityResult(scores=scores, suggested_parallel=suggested, votes=n, of=len(top))
 
 
 @router.get("/prices", response_model=list[PriceSnapshot])
@@ -147,8 +268,9 @@ def price_trend(card_id: int, range: str = Query("1m", pattern="^(7d|1m|3m|1y|al
     wanted = list(dict.fromkeys(normalize_grade(g) for g in (grades or [card.grade])))[:MAX_TREND_GRADES]
     snaps = session.exec(select(PriceSnapshot).where(PriceSnapshot.card_id == card_id)
                          .order_by(col(PriceSnapshot.created_at))).all()
-    asking_all = [s for s in snaps if s.source in ASKING_SOURCES and s.grade]
-    sold_all = [s for s in snaps if s.source == "ebay-sold" and s.grade]
+    mine = lambda s: (s.parallel or None) == (card.parallel or None)  # noqa: E731  only this version's prices
+    asking_all = [s for s in snaps if s.source in ASKING_SOURCES and s.grade and mine(s)]
+    sold_all = [s for s in snaps if s.source == "ebay-sold" and s.grade and mine(s)]
     days = _RANGE_DAYS[range]
     cutoff = utcnow() - timedelta(days=days) if days else None
     in_range = lambda d: cutoff is None or d >= cutoff  # noqa: E731

@@ -59,7 +59,7 @@ async def track_listings(session: Session, card_id: int, groups: dict[str, list[
             verdict = await ebay.get_item_status(row.item_id)
         except Exception as e:  # can't tell: leave it active and look again next time
             stats["unknown"] += 1
-            log.warning("could not check listing %s: %s", row.item_id, e)
+            log.warning("could not check listing %s: %r", row.item_id, e)
             continue
         stats["checked"] += 1
         if verdict == "active":  # still up, it just ranked below the results we fetched

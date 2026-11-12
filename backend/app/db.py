@@ -27,8 +27,10 @@ def init_db() -> None:
 def _add_missing_columns() -> None:
     """create_all never alters existing tables. Add columns introduced after a database was first created."""
     additions = {
-        "pricesnapshot": {"top_listings": "JSON", "grade": "VARCHAR", "price_refs": "JSON"},
-        "card": {"grade_counts": "JSON", "grade_counts_at": "DATETIME"},
+        "pricesnapshot": {"top_listings": "JSON", "grade": "VARCHAR", "price_refs": "JSON",
+                          "parallel": "VARCHAR", "spread": "FLOAT", "trimmed": "INTEGER"},
+        "card": {"grade_counts": "JSON", "grade_counts_at": "DATETIME", "parallel": "VARCHAR"},
+        "listingseen": {"excluded": "BOOLEAN DEFAULT 0"},
     }
     with engine.begin() as conn:
         for table, cols in additions.items():

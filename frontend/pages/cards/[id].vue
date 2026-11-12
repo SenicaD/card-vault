@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useDisplay } from 'vuetify'
-import { CATEGORY_LABELS, type Card, type CardFields, type EbayItem, type Listing, type Location, type GoneListing, type PriceResult, type PriceSnapshot, type Sale, type Trend, type TrendRange } from '~/types'
+import { CATEGORY_LABELS, type Card, type CardFields, type Listing, type Location, type MatchRow, type SimilarityResult, type GoneListing, type PriceResult, type PriceSnapshot, type Sale, type Trend, type TrendRange } from '~/types'
 
 const { api } = useApi()
 const { xs } = useDisplay()
@@ -11,7 +11,10 @@ const card = ref<Card | null>(null)
 const form = ref<CardFields | null>(null)
 const locations = ref<Location[]>([])
 const history = ref<PriceSnapshot[]>([])
-const comps = ref<EbayItem[]>([])
+const matches = ref<MatchRow[]>([])
+const scores = ref<Record<string, number>>({})
+const suggestion = ref<SimilarityResult | null>(null)
+const showAllVersions = ref(false)
 const listings = ref<Listing[]>([])
 const editing = ref(false)
 const busy = ref('')
@@ -26,7 +29,9 @@ const ownGrade = computed(() => normalizeGrade(card.value?.grade))
 // The estimate and the KPI cards follow the card's own grade; older pooled snapshots are the fallback.
 // Never fall back to another grade's snapshot: that would show, say, PSA 10 figures on a PSA 9 card.
 // Only snapshots from before grades existed (no grade) stand in.
-const latest = computed(() => history.value.find((s) => s.grade === ownGrade.value) ?? history.value.find((s) => !s.grade) ?? null)
+// Prices only count for the version of the card you picked (all versions together when none is picked).
+const mine = (s: PriceSnapshot) => (s.parallel ?? null) === (card.value?.parallel ?? null)
+const latest = computed(() => history.value.find((s) => s.grade === ownGrade.value && mine(s)) ?? history.value.find((s) => !s.grade) ?? null)
 
 // Grades to price and plot. Colour slots follow the grade, never its position, so removing one
 // grade doesn't repaint the others (the chart plots at most 4).
@@ -52,7 +57,7 @@ const gradeOptions = computed(() => sortGrades([...new Set([
 ])]))
 // history is newest first, so the first match is the latest asking price for that grade
 const byGrade = computed(() => selectedGrades.value.map((grade) => ({
-  grade, snap: history.value.find((s) => (s.source === 'ebay-active' || s.source === 'ebay-image') && s.grade === grade) ?? null,
+  grade, snap: history.value.find((s) => (s.source === 'ebay-active' || s.source === 'ebay-image') && s.grade === grade && mine(s)) ?? null,
 })))
 const lowConfidence = (n: number) => n > 0 && n < 5
 
@@ -158,6 +163,7 @@ async function load() {
     listPrice.value = card.value.est_value
     gradeCounts.value = card.value.grade_counts ?? {}
     if (!selectedGrades.value.length) selectedGrades.value = [normalizeGrade(card.value.grade)]
+    loadMatches()
   } catch (e: any) {
     error.value = e.message
   }
@@ -199,11 +205,14 @@ const lookUp = () => run('price', async () => {
   const res = await api<PriceResult>(`/api/cards/${id}/price`, {
     method: 'POST', body: { query: form.value?.search_query || null, grades: selectedGrades.value },
   })
-  comps.value = res.comps
   gradeCounts.value = res.grade_counts
   history.value = [...res.snapshots, ...history.value]
   loadGone()
   card.value = await api<Card>(`/api/cards/${id}`)
+  if (!editing.value) form.value = fieldsOf(card.value) // a poor first identification may have been replaced
+  loadMatches()
+  scores.value = {}
+  suggestion.value = null
   if (!listPrice.value) listPrice.value = res.snapshot.median
   loadTrend()
 })
@@ -226,23 +235,82 @@ const remove = () => run('delete', async () => {
   await navigateTo('/')
 })
 
+// ----- Matched listings: kept between visits, with your own include/exclude choices -----
 const compSearch = ref('')
+async function loadMatches() {
+  matches.value = await api<MatchRow[]>(`/api/cards/${id}/matches`, { query: { grades: selectedGrades.value } }).catch(() => [])
+}
+watch(selectedGrades, () => { if (card.value) loadMatches() }, { deep: true })
+
+// The versions ("parallels") seen among the listings of the selected grades, most common first.
+const parallelCounts = computed(() => {
+  const n: Record<string, number> = {}
+  for (const m of matches.value) n[m.parallel] = (n[m.parallel] ?? 0) + 1
+  const mineP = card.value?.parallel
+  if (mineP && !(mineP in n)) n[mineP] = 0
+  return Object.entries(n).sort((a, b) => b[1] - a[1]).slice(0, 12)
+})
+const setParallel = (p: string | null) => run('parallel', async () => {
+  card.value = await api<Card>(`/api/cards/${id}`, { method: 'PATCH', body: { parallel: p } })
+  suggestion.value = null
+  await lookUp() // price the version you picked
+})
+
 const shownComps = computed(() => {
   const q = (compSearch.value || '').toLowerCase().trim()
-  return q ? comps.value.filter((c) => `${c.title} ${c.grade ?? ''} ${c.condition ?? ''}`.toLowerCase().includes(q)) : comps.value
+  const want = showAllVersions.value ? null : card.value?.parallel
+  return matches.value
+    .filter((m) => !want || m.parallel === want)
+    .filter((m) => !q || `${m.title} ${m.grade} ${m.parallel} ${m.condition ?? ''}`.toLowerCase().includes(q))
+    .map((m) => ({ ...m, look: scores.value[m.item_id] ?? null, included: !m.excluded }))
 })
+const hasScores = computed(() => Object.keys(scores.value).length > 0)
+
+// Leave a listing out of (or put it back into) the prices, without a new eBay search.
+const toggleInclude = (m: MatchRow) => run('exclude', async () => {
+  const res = await api<PriceResult>(`/api/cards/${id}/matches/exclude`, {
+    method: 'POST', body: { item_ids: [m.item_id], excluded: !m.excluded, grades: selectedGrades.value },
+  })
+  history.value = [...res.snapshots, ...history.value]
+  card.value = await api<Card>(`/api/cards/${id}`)
+  await loadMatches()
+})
+
+const rankByLook = () => run('rank', async () => {
+  const res = await api<SimilarityResult>(`/api/cards/${id}/matches/similarity`, { method: 'POST', body: { grades: selectedGrades.value } })
+  scores.value = res.scores
+  suggestion.value = res.suggested_parallel && res.suggested_parallel !== card.value?.parallel ? res : null
+  if (!Object.keys(res.scores).length) error.value = "Couldn't load the listing pictures to compare."
+})
+
 // How far a listing's price sits from the median for its own grade, in percent.
-function vsMedian(c: EbayItem): number | null {
-  const m = history.value.find((s) => s.grade === c.grade && s.median)?.median
+function vsMedian(c: { price: number; grade?: string | null }): number | null {
+  const m = history.value.find((s) => s.grade === c.grade && s.median && mine(s))?.median
   return m ? Math.round(((c.price - m) / m) * 100) : null
 }
 const compHeaders = computed(() => [
-  { title: '', key: 'image_url', sortable: false, width: 64 },
+  { title: 'Use', key: 'included', sortable: false, width: 48 },
+  ...(xs.value ? [] : [{ title: '', key: 'image_url', sortable: false, width: 64 }]),
   { title: 'Listing', key: 'title' },
-  ...(xs.value ? [] : [{ title: 'Grade', key: 'grade' }, { title: 'Condition', key: 'condition' }]),
+  ...(xs.value ? [] : [{ title: 'Grade', key: 'grade' }, { title: 'Version', key: 'parallel' }]),
+  ...(hasScores.value ? [{ title: 'Look', key: 'look', align: 'end' as const }] : []),
   { title: 'Price', key: 'price', align: 'end' as const },
   ...(xs.value ? [] : [{ title: 'vs median', key: 'vs', align: 'end' as const, sortable: false }]),
 ])
+// When the last refresh found the same numbers as the ones before it, say since when.
+const unchangedSince = computed(() => {
+  const rows = history.value.filter((s) => s.grade === ownGrade.value && mine(s))
+  const first = rows[0]
+  if (!first || rows.length < 2) return null
+  let since = first
+  for (const r of rows.slice(1)) {
+    if (r.median === first.median && r.sample_size === first.sample_size) since = r
+    else break
+  }
+  return since === first ? null : since.created_at
+})
+const lastChecked = computed(() => latest.value?.created_at ?? null)
+const when = (s: string | null | undefined) => isoDate(s).replace('T', ' ').replace(/:\d\dZ$/, 'Z')
 const historyHeaders = [
   { title: 'Date (UTC)', key: 'created_at' },
   { title: 'Grade', key: 'grade' },
@@ -363,6 +431,22 @@ onMounted(() => {
                   <v-icon icon="mdi-star" size="11" /> is this card's grade. The estimate follows it; other grades are for comparison. Each grade you price is re-priced daily.
                 </p>
 
+                <!-- Which version (colour / print run) of the card is yours -->
+                <template v-if="parallelCounts.length">
+                  <div class="text-body-2 font-weight-medium mt-4 mb-1">Your version</div>
+                  <div class="d-flex flex-wrap ga-2">
+                    <v-chip :variant="!card.parallel ? 'flat' : 'outlined'" :color="!card.parallel ? 'primary' : undefined" size="small" :disabled="busy === 'parallel'" @click="card.parallel && setParallel(null)">All versions</v-chip>
+                    <v-chip v-for="[p, n] in parallelCounts" :key="p" :variant="card.parallel === p ? 'flat' : 'outlined'" :color="card.parallel === p ? 'primary' : undefined" size="small" :disabled="busy === 'parallel'" @click="card.parallel !== p && setParallel(p)">
+                      {{ p }}<span class="ml-1 opacity-70">· {{ n }}</span>
+                    </v-chip>
+                  </div>
+                  <p class="text-caption text-muted-c mt-1 mb-0">Colours and print runs sell for very different prices. Pick yours and prices, the trend and the daily refresh use only that version.</p>
+                  <v-alert v-if="suggestion" type="info" variant="tonal" density="compact" class="mt-3" icon="mdi-palette-outline">
+                    Your photo looks most like <strong>{{ suggestion.suggested_parallel }}</strong> ({{ suggestion.votes }} of the {{ suggestion.of }} closest listings).
+                    <template #append><v-btn size="small" variant="flat" :loading="busy === 'parallel'" @click="setParallel(suggestion.suggested_parallel)">Use it</v-btn></template>
+                  </v-alert>
+                </template>
+
                 <!-- No grade set: it is being priced as Raw -->
                 <v-alert v-if="!card.grade" type="warning" variant="tonal" density="compact" class="mt-4" icon="mdi-alert-outline">
                   <div>This card has no grade, so it's priced as <strong>Raw</strong>. If it's in a graded slab, set its grade so the estimate uses the right listings.</div>
@@ -386,9 +470,15 @@ onMounted(() => {
                 </v-alert>
 
                 <v-alert v-if="latest" type="info" variant="tonal" density="compact" class="mt-4" icon="mdi-information-outline">
-                  {{ latest.grade || 'All grades' }}: {{ latest.sample_size }} {{ latest.source === 'ebay-image' ? 'listings matched by photo' : 'active listings' }} at {{ isoDate(latest.created_at) }}. Asking prices run higher than sold prices.
+                  {{ latest.grade || 'All grades' }}<template v-if="latest.parallel"> · {{ latest.parallel }}</template>: {{ latest.sample_size }} {{ latest.source === 'ebay-image' ? 'listings matched by photo' : 'active listings' }}, checked {{ when(lastChecked) }}.
+                  <template v-if="unchangedSince"> Unchanged since {{ when(unchangedSince) }}.</template>
+                  <template v-if="latest.trimmed"> {{ latest.trimmed }} outlier {{ latest.trimmed === 1 ? 'price was' : 'prices were' }} left out.</template>
+                  Asking prices run higher than sold prices.
                 </v-alert>
-                <p v-else class="text-body-2 text-secondary-c mt-4 mb-0">No value yet. Look it up to see what similar cards are listed for.</p>
+                <v-alert v-if="latest && !card.parallel && (latest.spread ?? 0) >= 0.8" type="warning" variant="tonal" density="compact" class="mt-3" icon="mdi-chart-bell-curve">
+                  These prices vary a lot (the middle half spans {{ Math.round((latest.spread ?? 0) * 100) }}% of the median), which usually means several versions of this card are mixed together. Pick your version above, or use the listings table to leave out ones that aren't yours.
+                </v-alert>
+                <p v-if="!latest" class="text-body-2 text-secondary-c mt-4 mb-0">No value yet. Look it up to see what similar cards are listed for.</p>
               </div>
 
               <!-- Asking price per selected grade -->
@@ -422,7 +512,10 @@ onMounted(() => {
                 <v-divider />
                 <div class="px-5 pt-4 pb-2 d-flex flex-wrap align-baseline justify-space-between ga-x-2">
                   <span class="text-body-2 font-weight-medium">Top eBay listings<template v-if="selectedGrades.length > 1"> · {{ r.grade }}</template></span>
-                  <span class="text-caption text-muted-c truncate" style="max-width: 100%">Best matches for “{{ r.snap?.query }}”</span>
+                  <span class="text-caption text-muted-c truncate" style="max-width: 100%">
+                    <template v-if="r.snap?.source === 'ebay-image'">Closest to your photo<template v-if="r.snap?.parallel"> · {{ r.snap.parallel }}</template></template>
+                    <template v-else>Best matches for “{{ r.snap?.query }}”</template>
+                  </span>
                 </div>
                 <div class="top-grid px-5 pb-4">
                   <a v-for="l in (r.snap?.top_listings ?? []).slice(0, 4)" :key="l.item_id" :href="l.url || undefined" target="_blank" rel="noopener" class="top-item">
@@ -476,27 +569,38 @@ onMounted(() => {
                 <div class="pb-3" />
               </template>
 
-              <template v-if="comps.length">
+              <template v-if="matches.length">
                 <v-divider />
                 <div class="px-5 pt-4 pb-2 d-flex flex-wrap align-center justify-space-between ga-2">
-                  <span class="text-body-2 font-weight-medium">All matching listings ({{ shownComps.length }}<template v-if="shownComps.length !== comps.length"> of {{ comps.length }}</template>)</span>
-                  <v-text-field v-model="compSearch" placeholder="Filter listings" prepend-inner-icon="mdi-magnify" clearable hide-details density="compact" style="max-width: 240px" />
+                  <span class="text-body-2 font-weight-medium">Matching listings ({{ shownComps.length }}<template v-if="shownComps.length !== matches.length"> of {{ matches.length }}</template>)</span>
+                  <div class="d-flex flex-wrap align-center ga-2">
+                    <v-btn size="small" variant="outlined" prepend-icon="mdi-palette-swatch-outline" :loading="busy === 'rank'" :disabled="!card.image_url" @click="rankByLook">Rank by look-alike</v-btn>
+                    <v-text-field v-model="compSearch" placeholder="Filter listings" prepend-inner-icon="mdi-magnify" clearable hide-details density="compact" style="max-width: 220px" />
+                  </div>
                 </div>
-                <v-data-table :headers="compHeaders" :items="shownComps" density="comfortable" :items-per-page="10" :sort-by="[]" class="no-pointer comp-table">
+                <p class="text-caption text-muted-c px-5 mb-2">
+                  Untick a listing that isn't your card and the prices update straight away, and stay that way after each refresh.
+                  <template v-if="card.parallel"><v-switch v-model="showAllVersions" density="compact" hide-details color="primary" :label="`Show other versions too (not just ${card.parallel})`" class="mt-1" /></template>
+                </p>
+                <v-data-table :headers="compHeaders" :items="shownComps" density="comfortable" :items-per-page="10" :sort-by="hasScores ? [{ key: 'look', order: 'desc' }] : []" class="no-pointer comp-table">
+                  <template #item.included="{ item }">
+                    <v-checkbox-btn :model-value="item.included" density="compact" :aria-label="`Use this listing in the prices: ${item.title}`" :disabled="busy === 'exclude'" @update:model-value="toggleInclude(item)" />
+                  </template>
                   <template #item.image_url="{ item }">
-                    <a :href="item.url || undefined" target="_blank" rel="noopener" class="comp-thumb">
+                    <a :href="item.url || undefined" target="_blank" rel="noopener" class="comp-thumb" :class="{ dim: !item.included }">
                       <img v-if="item.image_url" :src="item.image_url" alt="" loading="lazy" />
                       <v-icon v-else icon="mdi-image-off-outline" size="small" />
                     </a>
                   </template>
                   <template #item.title="{ item }">
-                    <a v-if="item.url" :href="item.url" target="_blank" rel="noopener" class="comp-link comp-title">{{ item.title }}</a>
-                    <span v-else class="comp-title">{{ item.title }}</span>
-                    <div v-if="xs" class="text-caption text-muted-c">{{ [item.grade, item.condition].filter(Boolean).join(' · ') }}</div>
+                    <a v-if="item.url" :href="item.url" target="_blank" rel="noopener" class="comp-link comp-title" :class="{ dim: !item.included }">{{ item.title }}</a>
+                    <span v-else class="comp-title" :class="{ dim: !item.included }">{{ item.title }}</span>
+                    <div v-if="xs" class="text-caption text-muted-c">{{ [item.grade, item.parallel !== 'Base' ? item.parallel : null, item.condition].filter(Boolean).join(' · ') }}</div>
                   </template>
-                  <template #item.grade="{ item }"><v-chip size="x-small" variant="tonal">{{ item.grade || '—' }}</v-chip></template>
-                  <template #item.condition="{ item }">{{ item.condition || '—' }}</template>
-                  <template #item.price="{ item }"><span class="num text-no-wrap font-weight-semibold">{{ money(item.price) }}</span></template>
+                  <template #item.grade="{ item }"><v-chip size="x-small" variant="tonal">{{ item.grade }}</v-chip></template>
+                  <template #item.parallel="{ item }"><v-chip size="x-small" variant="outlined" :color="item.parallel === card.parallel ? 'primary' : undefined">{{ item.parallel }}</v-chip></template>
+                  <template #item.look="{ item }"><span v-if="item.look != null" class="num text-caption">{{ item.look }}%</span><span v-else>—</span></template>
+                  <template #item.price="{ item }"><span class="num text-no-wrap font-weight-semibold" :class="{ dim: !item.included }">{{ money(item.price) }}</span></template>
                   <template #item.vs="{ item }">
                     <span v-if="vsMedian(item) !== null" class="num text-no-wrap text-caption" :class="vsMedian(item)! > 0 ? 'text-muted-c' : 'text-success'">{{ vsMedian(item)! > 0 ? '+' : '' }}{{ vsMedian(item) }}%</span>
                     <span v-else>—</span>
@@ -630,6 +734,7 @@ onMounted(() => {
 .comp-thumb { width: 48px; height: 48px; border-radius: 6px; overflow: hidden; display: grid; place-items: center; background: rgb(var(--v-theme-surface-sunken)); color: rgb(var(--v-theme-text-muted)); }
 .comp-thumb img { width: 100%; height: 100%; object-fit: cover; }
 .comp-title { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; max-width: 460px; white-space: normal; }
+.dim { opacity: 0.4; text-decoration: line-through; }
 .comp-link:hover { text-decoration: underline; }
 .no-pointer :deep(tbody tr) { cursor: default; }
 .grade-table { background: transparent !important; }

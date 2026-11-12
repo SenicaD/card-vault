@@ -3,10 +3,12 @@ from pathlib import Path
 from ..config import get_settings
 import re
 import statistics
+from typing import NamedTuple
 
 from ..models import PriceQuote
 from .ebay import EbayItem, get_ebay
 from .grading import grade_sort_key, parse_grade
+from .parallels import parse_parallel
 
 # Titles that are clearly not a single copy of the card
 _JUNK = re.compile(r"\b(lot|lots|bundle|set of|choose|pick|you pick|reprint|proxy|custom|digital)\b", re.I)
@@ -28,17 +30,29 @@ def top_listings(items: list[EbayItem], n: int = 4) -> list[dict]:
 def summarize(items: list[EbayItem]) -> dict:
     """Low / median / mean / high over the usable listings, plus the listing behind each of the three.
 
+    Outliers are left out first: with 8 or more listings, any price more than 1.5 interquartile
+    ranges outside the middle half (the usual box-plot rule) is dropped, so a $2 junk listing or a
+    $5,000 one can't drag the numbers. `trimmed` says how many were dropped and `spread` how wide the
+    middle half of what remains is, as a share of the median: a big spread means "many different cards".
+
     price_refs lets the UI link a price to a real listing: low and high are exact, and the median
     points at the listing priced closest to it (the true median can fall between two listings).
     """
     usable = sorted((i for i in items if not _JUNK.search(i.title)), key=lambda i: i.price)
-    if len(usable) >= 10:  # trim 10% each side to blunt outliers
-        k = len(usable) // 10
-        usable = usable[k:-k]
+    trimmed = 0
+    if len(usable) >= 8:
+        q1, _, q3 = statistics.quantiles([i.price for i in usable], n=4)
+        lo, hi = q1 - 1.5 * (q3 - q1), q3 + 1.5 * (q3 - q1)
+        kept = [i for i in usable if lo <= i.price <= hi]
+        trimmed, usable = len(usable) - len(kept), kept
     if not usable:
-        return dict(sample_size=0, low=None, median=None, mean=None, high=None, price_refs=None)
+        return dict(sample_size=0, low=None, median=None, mean=None, high=None, price_refs=None, spread=None, trimmed=None)
     prices = [i.price for i in usable]
     median = round(statistics.median(prices), 2)
+    spread = None
+    if len(prices) >= 4 and median > 0:
+        q1, _, q3 = statistics.quantiles(prices, n=4)
+        spread = round((q3 - q1) / median, 2)
     return dict(
         sample_size=len(prices),
         low=prices[0],
@@ -47,6 +61,8 @@ def summarize(items: list[EbayItem]) -> dict:
         high=prices[-1],
         price_refs={"low": usable[0].model_dump(), "high": usable[-1].model_dump(),
                     "median": min(usable, key=lambda i: abs(i.price - median)).model_dump()},
+        spread=spread,
+        trimmed=trimmed,
     )
 
 
@@ -110,12 +126,38 @@ async def _top_up_graded(items: list[EbayItem], groups: dict[str, list[EbayItem]
                 groups.setdefault(g, []).append(i)
 
 
-async def quote_grades(query: str, grades: list[str], image: bytes | None = None) -> tuple[list[PriceQuote], dict[str, int], list[EbayItem], dict[str, list[EbayItem]]]:
+class Priced(NamedTuple):
+    quotes: list[PriceQuote]  # one per grade asked for, in the order asked
+    counts: dict[str, int]  # listings eBay showed per grade (every grade, every version of the card)
+    comps: list[EbayItem]  # the first 100 listings used for the quotes, best match first
+    groups: dict[str, list[EbayItem]]  # every listing found, by grade
+    items: list[EbayItem]  # what the search returned, in eBay's order
+    source: str  # "ebay-image" or "ebay-active"
+
+
+def build_quotes(groups: dict[str, list[EbayItem]], grades: list[str], query: str, source: str,
+                 parallel: str | None = None, exclude: set[str] = frozenset()) -> tuple[list[PriceQuote], list[EbayItem]]:
+    """Price each grade from already-fetched listings, leaving out the versions and listings you ruled out.
+
+    parallel limits a card to one colour/print-run version ("Green /99"); exclude holds item ids you
+    marked as "not my card". Returns the quotes and the listings they were built from.
+    """
+    quotes, used = [], []
+    for g in grades:
+        group = [i for i in groups.get(g, []) if i.item_id not in exclude
+                 and (not parallel or parse_parallel(i.title) == parallel)]
+        quotes.append(PriceQuote(query=query, source=source, grade=g, parallel=parallel,
+                                 top_listings=top_listings(group), **summarize(group)))
+        used += [i.model_copy(update={"grade": g}) for i in group]
+    return quotes, used
+
+
+async def quote_grades(query: str, grades: list[str], image: bytes | None = None,
+                       parallel: str | None = None, exclude: set[str] = frozenset()) -> Priced:
     """One eBay search, priced separately for each requested grade.
 
-    Returns (a quote per grade in the order asked, how many listings eBay showed for every grade,
-    the first 100 listings of the requested grades, in eBay's best-match order, every listing grouped by grade). Asking for more grades costs no extra
-    API calls, because the grade is read from the same results.
+    Asking for more grades costs no extra API calls, because the grade is read from the same results.
+    With a photo, eBay's image search is used (falling back to words if it finds nothing).
     """
     source = "ebay-active"
     items = []
@@ -131,11 +173,6 @@ async def quote_grades(query: str, grades: list[str], image: bytes | None = None
     groups = group_by_grade(items)
     if source == "ebay-image":
         await _top_up_graded(items, groups, grades)
-    quotes = []
-    for g in grades:
-        group = groups.get(g, [])
-        quotes.append(PriceQuote(query=query, source=source, grade=g,
-                                 top_listings=top_listings(group), **summarize(group)))
-    wanted = [i.model_copy(update={"grade": g}) for g in grades for i in groups.get(g, [])]
+    quotes, used = build_quotes(groups, grades, query, source, parallel, exclude)
     counts = {g: len(v) for g, v in sorted(groups.items(), key=lambda kv: grade_sort_key(kv[0]) if kv[0] != "Unknown" else (9, "", 0))}
-    return quotes, counts, wanted[:100], groups
+    return Priced(quotes, counts, used[:100], groups, items, source)
