@@ -45,8 +45,10 @@ const locationItems = computed(() => [
     <v-row dense>
       <v-col cols="12" sm="6"><v-select v-model="model.location_id" :items="locationItems" label="Stored in" /></v-col>
       <v-col cols="12" sm="6"><v-text-field v-model="model.slot" label="Slot" placeholder="Page 3, pocket 5" /></v-col>
-      <v-col cols="12" sm="4"><v-text-field v-model.number="model.quantity" label="Quantity" type="number" min="1" /></v-col>
-      <v-col cols="12" sm="8"><v-text-field v-model="model.search_query" label="eBay search" prepend-inner-icon="mdi-magnify" /></v-col>
+      <v-col cols="6" sm="4"><v-text-field v-model.number="model.quantity" label="Quantity" type="number" min="1" /></v-col>
+      <v-col cols="6" sm="4"><v-text-field v-model.number="model.cost" label="Paid per card" type="number" min="0" step="0.01" prefix="$" hint="Optional; powers gain/loss" /></v-col>
+      <v-col cols="12" sm="4" class="d-none d-sm-block" />
+      <v-col cols="12"><v-text-field v-model="model.search_query" label="eBay search" prepend-inner-icon="mdi-magnify" /></v-col>
       <v-col cols="12"><v-textarea v-model="model.notes" label="Notes" /></v-col>
     </v-row>
   </div>

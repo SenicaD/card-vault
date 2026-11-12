@@ -13,6 +13,8 @@ watch(mdAndUp, (v) => (drawer.value = v), { immediate: true })
 
 const nav = [
   { to: '/', title: 'Inventory', icon: 'mdi-view-dashboard-outline', match: (p: string) => p === '/' || p.startsWith('/cards') },
+  { to: '/dashboard', title: 'Portfolio', icon: 'mdi-chart-areaspline', match: (p: string) => p.startsWith('/dashboard') },
+  { to: '/review', title: 'Review queue', icon: 'mdi-clipboard-check-outline', match: (p: string) => p.startsWith('/review') },
   { to: '/scan', title: 'Scan cards', icon: 'mdi-camera-outline', match: (p: string) => p.startsWith('/scan') },
   { to: '/locations', title: 'Storage', icon: 'mdi-archive-outline', match: (p: string) => p.startsWith('/locations') },
 ]

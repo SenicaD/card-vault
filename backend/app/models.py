@@ -84,6 +84,7 @@ class CardBase(SQLModel):
     slot: str | None = None  # page/pocket or row, e.g. "p3-5"
     notes: str | None = None
     search_query: str | None = None  # query used for eBay lookup
+    cost: float | None = None  # what you paid for ONE copy; None = not recorded
 
 
 class Card(CardBase, table=True):
@@ -99,6 +100,8 @@ class Card(CardBase, table=True):
     grade_counts_at: datetime | None = ts(default=None)
     # The colour/print-run version of the card ("Green /99", "Base") prices are limited to; None = all pooled.
     parallel: str | None = None
+    # True once you've looked the card over in the review queue, so it stops being offered there.
+    reviewed: bool = False
     created_at: datetime = ts(default_factory=utcnow)
     updated_at: datetime = ts(default_factory=utcnow)
 
@@ -153,6 +156,8 @@ class CardUpdate(SQLModel):
     search_query: str | None = None
     parallel: str | None = None
     status: CardStatus | None = None
+    cost: float | None = None
+    reviewed: bool | None = None
 
 
 class CardRead(CardBase):
@@ -165,6 +170,7 @@ class CardRead(CardBase):
     grade_counts: dict[str, int] | None = None
     grade_counts_at: datetime | None = None
     parallel: str | None = None
+    reviewed: bool = False
     created_at: datetime
     updated_at: datetime
 

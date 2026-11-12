@@ -139,8 +139,8 @@ const subline = computed(() => {
 })
 
 function fieldsOf(c: Card): CardFields {
-  const { category, name, set_name, year, card_number, variant, grade, condition, quantity, location_id, slot, notes, search_query } = c
-  return { category, name, set_name, year, card_number, variant, grade, condition, quantity, location_id, slot, notes, search_query }
+  const { category, name, set_name, year, card_number, variant, grade, condition, quantity, location_id, slot, notes, search_query, cost } = c
+  return { category, name, set_name, year, card_number, variant, grade, condition, quantity, location_id, slot, notes, search_query, cost }
 }
 
 function defaultTitle(c: Card) {
@@ -177,7 +177,7 @@ async function run(label: string, fn: () => Promise<void>) {
 
 const save = () => run('save', async () => {
   const before = ownGrade.value
-  card.value = await api<Card>(`/api/cards/${id}`, { method: 'PATCH', body: form.value })
+  card.value = await api<Card>(`/api/cards/${id}`, { method: 'PATCH', body: { ...form.value, cost: form.value!.cost === '' || form.value!.cost == null ? null : Number(form.value!.cost) } })
   form.value = fieldsOf(card.value)
   // The card's grade changed: move the grade selection (chips, price table, trend) over to the new grade.
   const after = normalizeGrade(card.value.grade)

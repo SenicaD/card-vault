@@ -1,4 +1,7 @@
+from datetime import timedelta
+
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
 from sqlmodel import Session, col, func, or_, select
 
 from ..config import get_settings
@@ -7,21 +10,16 @@ from ..models import ASKING_SOURCES, Card, CardCategory, CardCreate, CardRead, C
 from ..services.imagecrop import CropBox, CropError, crop_saved_image
 from ..services.grading import normalize_grade
 from ..services.identify import CardIdentification, build_search_query, get_identifier
+from ..services import refresh as refresh_service
 from .common import get_card_or_404, to_read
 
 router = APIRouter(prefix="/api/cards", tags=["cards"])
 
 
-@router.get("", response_model=list[CardRead])
-def list_cards(
-    q: str | None = None,
-    category: CardCategory | None = None,
-    status: CardStatus | None = None,
-    location_id: int | None = None,
-    sort: str = Query("recent", pattern="^(recent|value|name)$"),
-    session: Session = Depends(get_session),
-):
-    stmt = select(Card)
+def filtered(stmt, q=None, category=None, status=None, location_id=None, grade=None, min_value=None,
+             max_value=None, unpriced=False, stale_days=None, low_confidence=False, no_photo=False,
+             no_cost=False, needs_review=False):
+    """Narrow a card query. Every filter given must hold (they stack)."""
     if q:
         like = f"%{q}%"
         stmt = stmt.where(or_(col(Card.name).ilike(like), col(Card.set_name).ilike(like),
@@ -32,9 +30,54 @@ def list_cards(
         stmt = stmt.where(Card.status == status)
     if location_id is not None:
         stmt = stmt.where(Card.location_id == location_id)
+    if grade:
+        stmt = stmt.where(Card.grade == grade) if grade != "Raw" else stmt.where(or_(Card.grade == "Raw", col(Card.grade).is_(None)))
+    if min_value is not None:
+        stmt = stmt.where(col(Card.est_value) >= min_value)
+    if max_value is not None:
+        stmt = stmt.where(col(Card.est_value) <= max_value)
+    if unpriced:
+        stmt = stmt.where(col(Card.est_value).is_(None))
+    if stale_days:
+        stmt = stmt.where(or_(col(Card.priced_at).is_(None), col(Card.priced_at) < utcnow() - timedelta(days=stale_days)))
+    if low_confidence:
+        stmt = stmt.where(col(Card.id_confidence) < LOW_CONFIDENCE)
+    if no_photo:
+        stmt = stmt.where(col(Card.image_path).is_(None))
+    if no_cost:
+        stmt = stmt.where(col(Card.cost).is_(None))
+    if needs_review:  # not yet looked over, and either poorly identified or without a price
+        stmt = stmt.where(col(Card.reviewed) == False, or_(col(Card.id_confidence) < LOW_CONFIDENCE, col(Card.est_value).is_(None)))  # noqa: E712
+    return stmt
+
+
+LOW_CONFIDENCE = 0.3
+
+
+@router.get("", response_model=list[CardRead])
+def list_cards(
+    q: str | None = None,
+    category: CardCategory | None = None,
+    status: CardStatus | None = None,
+    location_id: int | None = None,
+    grade: str | None = None,
+    min_value: float | None = None,
+    max_value: float | None = None,
+    unpriced: bool = False,
+    stale_days: int | None = Query(None, ge=1),
+    low_confidence: bool = False,
+    no_photo: bool = False,
+    no_cost: bool = False,
+    needs_review: bool = False,
+    sort: str = Query("recent", pattern="^(recent|value|name|oldest_price)$"),
+    session: Session = Depends(get_session),
+):
+    stmt = filtered(select(Card), q, category, status, location_id, normalize_grade(grade) if grade else None,
+                    min_value, max_value, unpriced, stale_days, low_confidence, no_photo, no_cost, needs_review)
     order = {"recent": col(Card.created_at).desc(),
              "value": col(Card.est_value).desc().nulls_last(),
-             "name": col(Card.name).asc()}[sort]
+             "name": col(Card.name).asc(),
+             "oldest_price": col(Card.priced_at).asc().nulls_first()}[sort]
     return [to_read(c) for c in session.exec(stmt.order_by(order)).all()]
 
 
@@ -75,16 +118,67 @@ def create_card(body: CardCreate, session: Session = Depends(get_session)):
     return to_read(card)
 
 
+class BulkEdit(BaseModel):
+    ids: list[int] = Field(min_length=1, max_length=5000)
+    changes: CardUpdate
+
+
+class BulkIds(BaseModel):
+    ids: list[int] = Field(min_length=1, max_length=5000)
+
+
+# Fields a bulk edit may set. Identity fields (name, number, search query) stay per-card on purpose.
+BULK_FIELDS = {"status", "location_id", "slot", "grade", "condition", "parallel", "category", "cost", "quantity", "reviewed", "notes"}
+
+
+@router.post("/bulk/update")
+def bulk_update(body: BulkEdit, session: Session = Depends(get_session)):
+    changes = body.changes.model_dump(exclude_unset=True)
+    bad = set(changes) - BULK_FIELDS
+    if bad:
+        raise HTTPException(422, f"Can't bulk-edit: {', '.join(sorted(bad))}")
+    if not changes:
+        raise HTTPException(422, "Nothing to change")
+    cards = session.exec(select(Card).where(col(Card.id).in_(body.ids))).all()
+    for c in cards:
+        apply_update(session, c, changes)
+    session.commit()
+    return {"updated": len(cards), "missing": len(set(body.ids)) - len(cards)}
+
+
+@router.post("/bulk/delete")
+def bulk_delete(body: BulkIds, session: Session = Depends(get_session)):
+    cards = session.exec(select(Card).where(col(Card.id).in_(body.ids))).all()
+    for c in cards:
+        session.delete(c)
+    session.commit()
+    return {"deleted": len(cards)}
+
+
+@router.post("/bulk/reprice", status_code=202)
+async def bulk_reprice(body: BulkIds | None = None):
+    """Start re-pricing these cards (or every unsold card when no ids are given) in the background."""
+    job = refresh_service.start_job(body.ids if body else None)
+    if job is None:
+        raise HTTPException(409, "A re-price is already running")
+    return job.snapshot()
+
+
+@router.get("/bulk/reprice")
+def bulk_reprice_status():
+    job = refresh_service.current_job()
+    return job.snapshot() if job else {"state": "idle"}
+
+
 @router.get("/{card_id}", response_model=CardRead)
 def get_card(card_id: int, session: Session = Depends(get_session)):
     return to_read(get_card_or_404(session, card_id))
 
 
-@router.patch("/{card_id}", response_model=CardRead)
-def update_card(card_id: int, body: CardUpdate, session: Session = Depends(get_session)):
-    card = get_card_or_404(session, card_id)
+def apply_update(session: Session, card: Card, changes: dict) -> None:
+    """Apply field changes to a card (single edit or bulk)."""
     old_grade, old_parallel = normalize_grade(card.grade), card.parallel
-    card.sqlmodel_update(body.model_dump(exclude_unset=True))
+    card.sqlmodel_update(changes)
     new_grade = normalize_grade(card.grade)
     if new_grade != old_grade or card.parallel != old_parallel:
         # The estimate belonged to the old grade or version. Use the newest price we already have for the new one,
@@ -95,6 +189,12 @@ def update_card(card_id: int, body: CardUpdate, session: Session = Depends(get_s
         card.est_value, card.priced_at = (snap.median, snap.created_at) if snap else (None, None)
     card.updated_at = utcnow()
     session.add(card)
+
+
+@router.patch("/{card_id}", response_model=CardRead)
+def update_card(card_id: int, body: CardUpdate, session: Session = Depends(get_session)):
+    card = get_card_or_404(session, card_id)
+    apply_update(session, card, body.model_dump(exclude_unset=True))
     session.commit()
     session.refresh(card)
     return to_read(card)

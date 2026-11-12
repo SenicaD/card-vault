@@ -11,7 +11,21 @@ const q = ref((route.query.q as string) || '')
 const category = ref<string | null>(null)
 const status = ref<string | null>(null)
 const locationId = ref<number | null>(route.query.location ? Number(route.query.location) : null)
-const sort = ref<'recent' | 'value' | 'name'>('recent')
+const sort = ref<'recent' | 'value' | 'name' | 'oldest_price'>('recent')
+const grade = ref<string | null>(null)
+const minValue = ref<string>('')
+const maxValue = ref<string>('')
+// Problem filters stack: a card must match every one that is switched on.
+const FLAGS = [
+  { key: 'unpriced', label: 'No price' },
+  { key: 'stale_days', label: 'Price over 7 days old' },
+  { key: 'low_confidence', label: 'Weak match' },
+  { key: 'no_photo', label: 'No photo' },
+  { key: 'no_cost', label: 'No cost' },
+] as const
+const flags = ref<string[]>([])
+const selected = ref<number[]>([])
+const reprice = ref<{ start: (ids: number[] | null) => Promise<void> } | null>(null)
 const view = ref<'table' | 'grid'>('table')
 // The 7-column table needs desktop width; below md the grid is the only view.
 const showTable = computed(() => mdAndUp.value && view.value === 'table')
@@ -33,6 +47,7 @@ const sortItems = [
   { value: 'recent', title: 'Newest first' },
   { value: 'value', title: 'Highest value' },
   { value: 'name', title: 'Name A–Z' },
+  { value: 'oldest_price', title: 'Oldest price first' },
 ]
 
 const headers = [
@@ -57,12 +72,35 @@ const mix = computed(() => {
     .map((k) => ({ key: k, label: CATEGORY_LABELS[k], count: by[k], pct: total ? (by[k] / total) * 100 : 0, color: CAT_COLORS[k] }))
 })
 
-const hasFilters = computed(() => !!(q.value || category.value || status.value || locationId.value))
+const hasFilters = computed(() => !!(q.value || category.value || status.value || locationId.value || grade.value || minValue.value || maxValue.value || flags.value.length))
 function clearFilters() {
   q.value = ''
-  category.value = status.value = null
+  category.value = status.value = grade.value = null
+  minValue.value = maxValue.value = ''
+  flags.value = []
   locationId.value = null
 }
+
+// Saved views: a named set of filters, kept in this browser.
+interface View { name: string; f: Record<string, any> }
+const views = ref<View[]>([])
+const viewName = ref('')
+const saving = ref(false)
+const snapshot = () => ({ q: q.value, category: category.value, status: status.value, locationId: locationId.value, grade: grade.value,
+  minValue: minValue.value, maxValue: maxValue.value, flags: [...flags.value], sort: sort.value })
+function applyView(v: View) {
+  const f = v.f
+  q.value = f.q ?? ''; category.value = f.category ?? null; status.value = f.status ?? null; locationId.value = f.locationId ?? null
+  grade.value = f.grade ?? null; minValue.value = f.minValue ?? ''; maxValue.value = f.maxValue ?? ''; flags.value = f.flags ?? []; sort.value = f.sort ?? 'recent'
+}
+function persistViews() { try { localStorage.setItem('cv-views', JSON.stringify(views.value)) } catch {} }
+function saveView() {
+  const name = viewName.value.trim()
+  if (!name) return
+  views.value = [...views.value.filter((v) => v.name !== name), { name, f: snapshot() }]
+  persistViews(); viewName.value = ''; saving.value = false
+}
+function deleteView(name: string) { views.value = views.value.filter((v) => v.name !== name); persistViews() }
 
 async function load() {
   loading.value = true
@@ -73,11 +111,17 @@ async function load() {
     if (category.value) query.category = category.value
     if (status.value) query.status = status.value
     if (locationId.value) query.location_id = String(locationId.value)
+    if (grade.value) query.grade = grade.value
+    if (minValue.value !== '') query.min_value = String(minValue.value)
+    if (maxValue.value !== '') query.max_value = String(maxValue.value)
+    for (const f of flags.value) query[f] = f === 'stale_days' ? '7' : 'true'
     ;[cards.value, stats.value, locations.value] = await Promise.all([
       api<Card[]>('/api/cards', { query }),
       api<Stats>('/api/cards/stats'),
       api<Location[]>('/api/locations'),
     ])
+    const here = new Set(cards.value.map((c) => c.id))
+    selected.value = selected.value.filter((id) => here.has(id)) // drop anything that is no longer listed
   } catch (e: any) {
     error.value = `Couldn't load inventory: ${e.message}. Check that the API is running on port 8000.`
   } finally {
@@ -87,10 +131,15 @@ async function load() {
 
 const open = (c: Card) => navigateTo(`/cards/${c.id}`)
 const onRow = (_: unknown, row: { item: Card }) => open(row.item)
+const toggle = (id: number) => { selected.value = selected.value.includes(id) ? selected.value.filter((x) => x !== id) : [...selected.value, id] }
+const gradeItems = GRADE_OPTIONS
+const repriceSelected = () => reprice.value?.start(selected.value)
+const repriceAll = () => reprice.value?.start(null)
 
 let t: ReturnType<typeof setTimeout>
 watch(q, () => { clearTimeout(t); t = setTimeout(load, 250) })
-watch([category, status, locationId, sort], load)
+watch([category, status, locationId, sort, grade, flags], load)
+watch([minValue, maxValue], () => { clearTimeout(t); t = setTimeout(load, 400) })
 // Header search navigates here with ?q=
 watch(() => route.query.q, (v) => { q.value = (v as string) || '' })
 watch(locationId, (v) => router.replace({ query: { ...route.query, location: v ? String(v) : undefined } }))
@@ -98,6 +147,7 @@ onMounted(() => {
   // Phones default to the grid; the table needs horizontal room.
   const fallback = window.innerWidth < 760 ? 'grid' : 'table'
   try { view.value = (localStorage.getItem('cv-view') as any) || fallback } catch { view.value = fallback }
+  try { views.value = JSON.parse(localStorage.getItem('cv-views') || '[]') } catch {}
   load()
 })
 watch(view, (v) => { try { localStorage.setItem('cv-view', v) } catch {} })
@@ -108,11 +158,14 @@ watch(view, (v) => { try { localStorage.setItem('cv-view', v) } catch {} })
     <PageHeader title="Inventory" subtitle="Every card in your collection, where it's stored, and what it's worth.">
       <template #actions>
         <v-btn variant="outlined" prepend-icon="mdi-refresh" :loading="loading" @click="load">Refresh</v-btn>
+        <v-btn variant="outlined" prepend-icon="mdi-cash-sync" @click="repriceAll">Re-price all</v-btn>
+        <v-btn variant="outlined" prepend-icon="mdi-clipboard-check-outline" to="/review" class="d-none d-sm-flex">Review queue</v-btn>
         <v-btn color="primary" variant="flat" prepend-icon="mdi-camera-plus-outline" to="/scan" class="d-none d-md-flex">Scan card</v-btn>
       </template>
     </PageHeader>
 
     <v-alert v-if="error" type="error" variant="tonal" border="start" class="mb-4" :text="error" />
+    <RepriceStatus ref="reprice" @finished="load" />
 
     <!-- KPIs -->
     <v-row dense class="mb-2">
@@ -178,6 +231,31 @@ watch(view, (v) => { try { localStorage.setItem('cv-view', v) } catch {} })
         <v-select v-model="sort" :items="sortItems" prepend-inner-icon="mdi-sort" aria-label="Sort" />
         <v-btn v-if="hasFilters" variant="text" size="small" prepend-icon="mdi-filter-remove-outline" @click="clearFilters">Clear</v-btn>
       </div>
+      <div class="toolbar2">
+        <v-select v-model="grade" :items="gradeItems" placeholder="Any grade" clearable density="compact" class="t2-grade" aria-label="Grade" />
+        <v-text-field v-model="minValue" type="number" min="0" prefix="$" placeholder="Min value" density="compact" class="t2-num" aria-label="Minimum value" />
+        <v-text-field v-model="maxValue" type="number" min="0" prefix="$" placeholder="Max value" density="compact" class="t2-num" aria-label="Maximum value" />
+        <v-chip-group v-model="flags" multiple column class="t2-flags">
+          <v-chip v-for="f in FLAGS" :key="f.key" :value="f.key" filter size="small" variant="outlined">{{ f.label }}</v-chip>
+        </v-chip-group>
+        <v-menu :close-on-content-click="false">
+          <template #activator="{ props: p }"><v-btn v-bind="p" size="small" variant="text" prepend-icon="mdi-bookmark-outline">Views<span v-if="views.length" class="ml-1 num">({{ views.length }})</span></v-btn></template>
+          <v-card min-width="260">
+            <v-list density="compact">
+              <v-list-item v-for="v in views" :key="v.name" :title="v.name" @click="applyView(v)">
+                <template #append><v-btn icon="mdi-close" size="x-small" variant="text" :aria-label="`Delete view ${v.name}`" @click.stop="deleteView(v.name)" /></template>
+              </v-list-item>
+              <v-list-item v-if="!views.length" subtitle="No saved views yet" />
+            </v-list>
+            <v-divider />
+            <div class="pa-3 d-flex ga-2">
+              <v-text-field v-model="viewName" placeholder="Name this filter set" density="compact" hide-details @keyup.enter="saveView" />
+              <v-btn variant="flat" color="primary" :disabled="!viewName.trim()" @click="saveView">Save</v-btn>
+            </div>
+          </v-card>
+        </v-menu>
+      </div>
+      <BulkBar v-if="selected.length" :ids="selected" :locations="locations" @clear="selected = []" @changed="load" @reprice="repriceSelected" />
       <v-divider />
 
       <!-- Empty -->
@@ -193,9 +271,14 @@ watch(view, (v) => { try { localStorage.setItem('cv-view', v) } catch {} })
       <v-data-table
         v-else-if="showTable"
         :headers="headers"
+        v-model="selected"
         :items="cards"
+        item-value="id"
+        show-select
+        select-strategy="all"
         :loading="loading"
-        items-per-page="25"
+        items-per-page="50"
+        :items-per-page-options="[25, 50, 100, 250]"
         class="inv-table"
         @click:row="onRow"
       >
@@ -227,7 +310,8 @@ watch(view, (v) => { try { localStorage.setItem('cv-view', v) } catch {} })
 
       <!-- Grid -->
       <div v-else class="grid card-body">
-        <v-card v-for="c in cards" :key="c.id" class="tile" :to="`/cards/${c.id}`">
+        <v-card v-for="c in cards" :key="c.id" class="tile" :class="{ picked: selected.includes(c.id) }" :to="`/cards/${c.id}`">
+          <v-checkbox-btn :model-value="selected.includes(c.id)" class="pick" density="compact" :aria-label="`Select ${c.name}`" @click.stop.prevent="toggle(c.id)" />
           <div class="pa-3 pb-0"><CardThumb :src="c.image_url" :alt="c.name" :foil="!!c.est_value && c.est_value >= 100" /></div>
           <div class="pa-3">
             <div class="tile-row d-flex justify-space-between align-baseline ga-2">
@@ -272,6 +356,12 @@ watch(view, (v) => { try { localStorage.setItem('cv-view', v) } catch {} })
   .tile :deep(.pa-3) { padding: 8px !important; }
   .tile :deep(.pa-3.pb-0) { padding-bottom: 0 !important; }
 }
+.toolbar2 { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 0 18px 12px; }
+.t2-grade { max-width: 190px; min-width: 150px; } .t2-num { max-width: 150px; min-width: 120px; }
+.t2-flags { flex: 1 1 auto; }
+.tile { position: relative; }
+.pick { position: absolute; top: 6px; left: 6px; z-index: 2; background: rgb(var(--v-theme-surface)); border-radius: 6px; }
+.tile.picked { border-color: rgb(var(--v-theme-primary)) !important; }
 .tile { transition: border-color 0.15s, box-shadow 0.15s; }
 .tile:hover { border-color: rgb(var(--v-theme-primary)) !important; box-shadow: 0 4px 14px rgba(20, 30, 60, 0.08); }
 

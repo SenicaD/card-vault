@@ -15,6 +15,7 @@ export interface CardFields {
   slot: string | null
   notes: string | null
   search_query: string | null
+  cost?: number | null // paid per copy
 }
 
 export interface Card extends CardFields {
@@ -27,6 +28,7 @@ export interface Card extends CardFields {
   grade_counts?: Record<string, number> | null
   grade_counts_at?: string | null
   parallel?: string | null
+  reviewed?: boolean
   created_at: string
   updated_at: string
 }
@@ -219,4 +221,31 @@ export const STATUS_LABELS: Record<Status, string> = {
   in_stock: 'In stock',
   listed: 'Listed',
   sold: 'Sold',
+}
+
+export interface RepriceStatus {
+  state: 'idle' | 'running' | 'done'
+  total?: number
+  done?: number
+  failed?: number
+  changed?: number
+  unchanged?: number
+  top_changes?: { id: number; name: string; before: number | null; after: number | null }[]
+}
+
+export interface Mover { id: number; name: string; grade: string; before: number; now: number; change: number; pct: number }
+
+export interface Portfolio {
+  range: string
+  totals: {
+    cards: number; distinct: number; value: number; unpriced: number
+    cost: number; costed_cards: number; uncosted_cards: number; gain: number | null; gain_pct: number | null
+  }
+  series: { date: string; value: number }[]
+  change: number
+  by_location: { name: string; cards: number; value: number }[]
+  by_category: { name: string; cards: number; value: number }[]
+  top_cards: { id: number; name: string; grade: string; quantity: number; est_value: number | null; image_url: string | null }[]
+  gainers: Mover[]
+  losers: Mover[]
 }

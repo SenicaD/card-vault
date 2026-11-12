@@ -780,3 +780,82 @@ def test_new_columns_are_added_to_an_existing_database():
     with engine.connect() as conn:
         assert "parallel" in {c["name"] for c in inspect(conn).get_columns("card")}
         assert {"excluded"} <= {c["name"] for c in inspect(conn).get_columns("listingseen")}
+
+
+def _mk(c, **kw):
+    return c.post("/api/cards", json={"name": "Bulk Test", "category": "sports", **kw}).json()
+
+
+def test_filters_stack():
+    with TestClient(app) as c:
+        a = _mk(c, name="Zed Alpha", cost=5.0)
+        b = _mk(c, name="Zed Beta", grade="PSA 10", id_confidence=0.1)
+        assert {x["id"] for x in c.get("/api/cards", params={"q": "Zed", "unpriced": True}).json()} >= {a["id"], b["id"]}
+        low = c.get("/api/cards", params={"q": "Zed", "low_confidence": True}).json()
+        assert [x["id"] for x in low] == [b["id"]]
+        assert [x["id"] for x in c.get("/api/cards", params={"q": "Zed", "grade": "PSA 10"}).json()] == [b["id"]]
+        assert [x["id"] for x in c.get("/api/cards", params={"q": "Zed", "no_cost": True}).json()] == [b["id"]]
+        assert [x["id"] for x in c.get("/api/cards", params={"q": "Zed", "no_photo": True, "grade": "Raw"}).json()] == [a["id"]]
+        assert c.get("/api/cards", params={"q": "Zed", "stale_days": 7}).json()  # never priced counts as stale
+        # review queue: poorly identified or unpriced, until you mark it reviewed
+        queue = {x["id"] for x in c.get("/api/cards", params={"needs_review": True}).json()}
+        assert b["id"] in queue
+        c.patch(f"/api/cards/{b['id']}", json={"reviewed": True})
+        assert b["id"] not in {x["id"] for x in c.get("/api/cards", params={"needs_review": True}).json()}
+
+
+def test_bulk_update_delete_and_cost():
+    with TestClient(app) as c:
+        loc = c.post("/api/locations", json={"name": "Bulk Box"}).json()
+        ids = [_mk(c, name=f"Bulk {i}")["id"] for i in range(3)]
+        r = c.post("/api/cards/bulk/update", json={"ids": ids + [999999], "changes": {"location_id": loc["id"], "cost": 2.5}})
+        assert r.json() == {"updated": 3, "missing": 1}
+        for i in ids:
+            got = c.get(f"/api/cards/{i}").json()
+            assert got["location_id"] == loc["id"] and got["cost"] == 2.5
+        # identity fields are not bulk-editable
+        assert c.post("/api/cards/bulk/update", json={"ids": ids, "changes": {"name": "x"}}).status_code == 422
+        assert c.post("/api/cards/bulk/update", json={"ids": ids, "changes": {}}).status_code == 422
+        # a grade change in bulk clears the old grade's estimate, same as a single edit
+        c.post(f"/api/cards/{ids[0]}/price")
+        assert c.get(f"/api/cards/{ids[0]}").json()["est_value"]
+        c.post("/api/cards/bulk/update", json={"ids": [ids[0]], "changes": {"grade": "PSA 9"}})
+        assert c.get(f"/api/cards/{ids[0]}").json()["est_value"] is None
+        assert c.post("/api/cards/bulk/delete", json={"ids": ids}).json() == {"deleted": 3}
+        assert c.get(f"/api/cards/{ids[0]}").status_code == 404
+
+
+def test_bulk_reprice_job(monkeypatch):
+    import time
+
+    from app.services import refresh
+    monkeypatch.setattr(refresh, "PAUSE_BETWEEN_CARDS", 0)
+    with TestClient(app) as c:
+        ids = [_mk(c, name=f"Reprice {i}")["id"] for i in range(2)]
+        r = c.post("/api/cards/bulk/reprice", json={"ids": ids})
+        assert r.status_code == 202 and r.json()["total"] == 2
+        for _ in range(100):
+            st = c.get("/api/cards/bulk/reprice").json()
+            if st["state"] == "done":
+                break
+            time.sleep(0.05)
+        assert st["state"] == "done" and st["done"] == 2 and st["failed"] == 0
+        assert st["changed"] == 2  # unpriced -> priced
+        assert all(c.get(f"/api/cards/{i}").json()["est_value"] for i in ids)
+
+
+def test_portfolio_totals_cost_and_series():
+    with TestClient(app) as c:
+        a = _mk(c, name="Folio A", quantity=2, cost=10.0)
+        b = _mk(c, name="Folio B")
+        c.post(f"/api/cards/{a['id']}/price")
+        c.post(f"/api/cards/{b['id']}/price")
+        p = c.get("/api/portfolio", params={"range": "all"}).json()
+        t = p["totals"]
+        assert t["value"] > 0 and t["costed_cards"] >= 1 and t["cost"] >= 20.0
+        assert t["gain"] is not None
+        assert p["series"] and p["series"][-1]["value"] == t["value"]
+        assert p["by_location"] and p["by_category"] and p["top_cards"]
+        sold = c.post("/api/cards", json={"name": "Folio Sold", "category": "sports"}).json()
+        c.patch(f"/api/cards/{sold['id']}", json={"status": "sold"})
+        assert c.get("/api/portfolio").json()["totals"]["distinct"] == t["distinct"]  # sold cards leave the portfolio

@@ -5,7 +5,8 @@ snapshot, so restarting the container never re-prices everything. Failures are l
 """
 import asyncio
 import logging
-from datetime import timedelta
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 
 from sqlmodel import Session, col, select
 
@@ -23,6 +24,45 @@ PAUSE_BETWEEN_CARDS = 1.0  # be polite to the eBay API
 MAX_TRACKED_GRADES = 6
 
 
+def _plan(session: Session, c: Card) -> tuple:
+    """What to search for this card: (id, query, own grade, grades to price, photo, version)."""
+    rows = session.exec(select(PriceSnapshot.grade).where(
+        PriceSnapshot.card_id == c.id, col(PriceSnapshot.source).in_(ASKING_SOURCES),
+        col(PriceSnapshot.grade).is_not(None))).all()
+    own = normalize_grade(c.grade)
+    others = sorted(set(rows) - {own}, key=grade_sort_key)
+    return (c.id, c.search_query or c.name, own, ([own] + others)[:MAX_TRACKED_GRADES], card_image(c), c.parallel)
+
+
+async def reprice_card(card_id: int, query: str, own: str, tracked: list[str], image, parallel) -> bool:
+    """Price one card on eBay and record it. True if any grade got a price. Raises if the search fails."""
+    with Session(engine) as session:
+        skip = set(session.exec(select(ListingSeen.item_id).where(
+            ListingSeen.card_id == card_id, ListingSeen.excluded == True)).all())  # noqa: E712
+    priced = await quote_grades(query, tracked, image, parallel=parallel, exclude=skip)
+    quotes, counts, groups = priced.quotes, priced.counts, priced.groups
+    quotes = [q for q in quotes if q.median is not None]  # don't record empty points
+    ok = False
+    with Session(engine) as session:
+        card = session.get(Card, card_id)
+        if card and card.status != CardStatus.sold:
+            card.grade_counts, card.grade_counts_at = counts, utcnow()
+            for q in quotes:
+                session.add(PriceSnapshot(card_id=card_id, **q.model_dump()))
+                if q.grade == own:  # the estimate follows only the card's own grade
+                    card.est_value = q.median
+                    card.priced_at = utcnow()
+            session.add(card)
+            session.commit()
+            ok = bool(quotes)
+            try:  # after the commit, so a failure here can never lose the prices
+                await track_listings(session, card_id, groups)
+            except Exception:
+                log.exception("listing tracking failed for card %s", card_id)
+                session.rollback()
+    return ok
+
+
 async def refresh_due(max_age: timedelta | None = None, pause: float = PAUSE_BETWEEN_CARDS) -> tuple[int, int]:
     """Re-price every unsold card whose last graded asking snapshot is older than max_age.
 
@@ -38,48 +78,22 @@ async def refresh_due(max_age: timedelta | None = None, pause: float = PAUSE_BET
         cards = session.exec(select(Card).where(col(Card.status) != CardStatus.sold)).all()
         due: list[tuple] = []
         for c in cards:
-            rows = session.exec(select(PriceSnapshot.grade, PriceSnapshot.created_at).where(
+            rows = session.exec(select(PriceSnapshot.created_at).where(
                 PriceSnapshot.card_id == c.id, col(PriceSnapshot.source).in_(ASKING_SOURCES),
                 col(PriceSnapshot.grade).is_not(None))).all()
             # A search that found nothing still counts as a check, or a card with no listings
             # for its grade would be searched again every hour.
-            last = max([created for _, created in rows] + ([c.grade_counts_at] if c.grade_counts_at else []), default=None)
+            last = max(list(rows) + ([c.grade_counts_at] if c.grade_counts_at else []), default=None)
             if last is None or last < cutoff:
-                own = normalize_grade(c.grade)
-                others = sorted({g for g, _ in rows} - {own}, key=grade_sort_key)
-                due.append((c.id, c.search_query or c.name, own, ([own] + others)[:MAX_TRACKED_GRADES], card_image(c), c.parallel))
+                due.append(_plan(session, c))
 
-    for card_id, query, own, tracked, image, parallel in due:
+    for plan in due:
         try:
-            with Session(engine) as session:
-                skip = set(session.exec(select(ListingSeen.item_id).where(
-                    ListingSeen.card_id == card_id, ListingSeen.excluded == True)).all())  # noqa: E712
-            priced = await quote_grades(query, tracked, image, parallel=parallel, exclude=skip)
-            quotes, counts, groups = priced.quotes, priced.counts, priced.groups
+            if await reprice_card(*plan):
+                refreshed += 1
         except Exception as e:  # keep going: one bad query shouldn't stop the round
             failed += 1
-            log.warning("re-price failed for card %s (%r): %s", card_id, query, e)
-            await asyncio.sleep(pause)
-            continue
-        priced = [q for q in quotes if q.median is not None]  # don't record empty points
-        with Session(engine) as session:
-            card = session.get(Card, card_id)
-            if card and card.status != CardStatus.sold:
-                card.grade_counts, card.grade_counts_at = counts, utcnow()
-                for q in priced:
-                    session.add(PriceSnapshot(card_id=card_id, **q.model_dump()))
-                    if q.grade == own:  # the estimate follows only the card's own grade
-                        card.est_value = q.median
-                        card.priced_at = utcnow()
-                session.add(card)
-                session.commit()
-                if priced:
-                    refreshed += 1
-                try:  # after the commit, so a failure here can never lose the prices
-                    await track_listings(session, card_id, groups)
-                except Exception:
-                    log.exception("listing tracking failed for card %s", card_id)
-                    session.rollback()
+            log.warning("re-price failed for card %s (%r): %s", plan[0], plan[1], e)
         await asyncio.sleep(pause)
 
     if due:
@@ -94,3 +108,69 @@ async def refresh_loop() -> None:
         except Exception:  # never let the background task die
             log.exception("price refresh round failed")
         await asyncio.sleep(CHECK_EVERY_SECONDS)
+
+
+# ---------- Bulk re-price you start by hand, with progress and a before/after summary ----------
+
+@dataclass
+class RepriceJob:
+    total: int
+    state: str = "running"  # running | done
+    done: int = 0
+    failed: int = 0
+    started_at: datetime = field(default_factory=utcnow)
+    finished_at: datetime | None = None
+    changes: list[dict] = field(default_factory=list)  # [{id, name, before, after}]
+
+    def snapshot(self) -> dict:
+        moved = [c for c in self.changes if c["before"] != c["after"]]
+        # Biggest swings (in dollars, per card) first
+        moved.sort(key=lambda c: abs((c["after"] or 0) - (c["before"] or 0)), reverse=True)
+        return {"state": self.state, "total": self.total, "done": self.done, "failed": self.failed,
+                "started_at": self.started_at, "finished_at": self.finished_at,
+                "changed": len(moved), "unchanged": len(self.changes) - len(moved), "top_changes": moved[:10]}
+
+
+_job: RepriceJob | None = None
+_task: asyncio.Task | None = None  # keeps a reference so the task isn't garbage-collected mid-run
+
+
+def current_job() -> RepriceJob | None:
+    return _job
+
+
+def start_job(ids: list[int] | None, pause: float | None = None) -> RepriceJob | None:
+    """Begin re-pricing the given cards (None = every unsold card). None is returned if one is already running."""
+    global _job, _task
+    pause = PAUSE_BETWEEN_CARDS if pause is None else pause
+    if _job and _job.state == "running":
+        return None
+    with Session(engine) as session:
+        stmt = select(Card).where(col(Card.status) != CardStatus.sold)
+        if ids is not None:
+            stmt = stmt.where(col(Card.id).in_(ids))
+        plans = [(_plan(session, c), c.name, c.est_value) for c in session.exec(stmt).all()]
+    _job = RepriceJob(total=len(plans))
+    if not plans:
+        _job.state, _job.finished_at = "done", utcnow()
+        return _job
+    _task = asyncio.create_task(_run_job(_job, plans, pause))
+    return _job
+
+
+async def _run_job(job: RepriceJob, plans: list[tuple], pause: float) -> None:
+    try:
+        for plan, name, before in plans:
+            try:
+                await reprice_card(*plan)
+                with Session(engine) as session:
+                    card = session.get(Card, plan[0])
+                    job.changes.append({"id": plan[0], "name": name, "before": before,
+                                        "after": card.est_value if card else before})
+            except Exception as e:
+                job.failed += 1
+                log.warning("bulk re-price failed for card %s (%r): %s", plan[0], plan[1], e)
+            job.done += 1
+            await asyncio.sleep(pause)
+    finally:
+        job.state, job.finished_at = "done", utcnow()
