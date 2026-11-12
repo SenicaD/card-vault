@@ -109,8 +109,8 @@ const soldMsg = ref('')
 async function checkSold() {
   checkingSold.value = true; soldMsg.value = ''
   try {
-    const r = await api<{ found: number; used: number; median: number | null; best_offers: number }>(`/api/cards/${id}/sold/refresh`, { method: 'POST' })
-    soldMsg.value = r.used ? `Found ${r.found} sales; ${r.used} match this card. Median ${money(r.median)}.` : `Found ${r.found} sales, but none match this card's grade and version.`
+    const r = await api<{ found: number; new: number; used: number; median: number | null; best_offers: number; on_record: number }>(`/api/cards/${id}/sold/refresh`, { method: 'POST' })
+    soldMsg.value = r.used ? `Found ${r.found} sales (${r.new} new to your record); ${r.used} match this card. Median ${money(r.median)}.` : `Found ${r.found} sales, but none match this card's grade and version.`
     await loadGone()
     loadTrend()
   } catch (e: any) { soldMsg.value = e.message } finally { checkingSold.value = false }
@@ -604,7 +604,7 @@ onMounted(() => {
                 <p v-if="soldMsg" class="px-5 text-body-2 mb-1">{{ soldMsg }}</p>
                 <p v-if="sold.provider.configured" class="px-5 text-caption text-muted-c mb-1">
                   <template v-if="sold.provider.last_checked">Sold prices last checked {{ stamp(sold.provider.last_checked) }}. </template><template v-else>Not checked yet. </template>
-                  {{ sold.provider.used }} of {{ sold.provider.budget }} monthly lookups used.
+                  <template v-if="sold.provider.on_record">{{ sold.provider.on_record }} sales on record<template v-if="sold.provider.since"> since {{ isoDate(sold.provider.since).slice(0, 10) }}</template>, kept for your history. </template>{{ sold.provider.used }} of {{ sold.provider.budget }} monthly lookups used.
                 </p>
                 <v-alert v-if="sold.source === 'sold'" type="success" variant="tonal" density="compact" class="mx-5 my-2">
                   "Sold" figures are real sales reported by the sold-prices service. For Best Offer sales the price shown is the asking price, so the real sale was probably lower.

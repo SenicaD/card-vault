@@ -1086,3 +1086,79 @@ def test_automatic_sold_checks_respect_the_auto_budget(monkeypatch):
         assert failed == 0 and done >= 2
         again, _ = asyncio.run(sold_refresh.sold_once(pause=0))
         assert again == 0  # every card was just checked, so none is due until the refresh interval passes
+
+
+class _FakeSold:
+    """A sold-prices provider that serves canned pages, to test what gets stored and when paging stops."""
+    name = "fake"
+
+    def __init__(self, pages):
+        self.pages, self.has_next, self.calls = pages, False, 0
+
+    async def search(self, keyword, count=240, page=1):
+        self.calls += 1
+        self.has_next = page < len(self.pages)
+        return self.pages[page - 1]
+
+
+def _sale(i, title, price, days_ago, **kw):
+    from datetime import timedelta
+
+    from app.models import utcnow
+    from app.services.sold import SoldItem
+    return SoldItem(item_id=f"f{i}", title=title, price=price, ended_at=(utcnow() - timedelta(days=days_ago)).date(), **kw)
+
+
+def test_every_sale_is_kept_and_prices_use_only_the_window(monkeypatch):
+    from sqlmodel import Session, select
+
+    from app.config import get_settings
+    from app.db import engine
+    from app.models import SoldSale
+    from app.services import sold_refresh
+    monkeypatch.setattr(get_settings(), "sold_monthly_budget", 50)
+    page = [_sale(1, "Hist Card Base", 10, 5), _sale(2, "Hist Card Base", 20, 40), _sale(3, "Hist Card Base", 30, 200),
+            _sale(4, "Hist Card lot of 5", 99, 3), _sale(5, "Hist Card PSA 10", 80, 10, best_offer=True, condition="Graded", shipping=4.5)]
+    monkeypatch.setattr(sold_refresh, "get_sold", lambda: _FakeSold([page]))
+    with TestClient(app) as c:
+        card = c.post("/api/cards", json={"name": "Hist Card", "category": "sports", "grade": "Raw"}).json()
+        out = c.post(f"/api/cards/{card['id']}/sold/refresh").json()
+        assert out["found"] == 5 and out["new"] == 5 and out["on_record"] == 5 and out["used"] == 2  # Raw: the $10 and $20 sales
+        with Session(engine) as s:
+            rows = {r.item_id: r for r in s.exec(select(SoldSale).where(SoldSale.card_id == card["id"])).all()}
+        assert len(rows) == 5 and rows["f3"].price == 30 and rows["f4"].junk and not rows["f1"].junk  # old and junk sales are kept
+        assert rows["f5"].grade == "PSA 10" and rows["f5"].best_offer and rows["f5"].shipping == 4.5 and rows["f5"].condition == "Graded"
+        # a second check stores nothing twice, and reports that nothing was new
+        again = c.post(f"/api/cards/{card['id']}/sold/refresh").json()
+        assert again["new"] == 0 and again["on_record"] == 5
+        # the trend is built from the stored sales, on the day each happened
+        trend = c.get(f"/api/cards/{card['id']}/trend?range=all&grades=Raw").json()
+        assert trend["sold_source"] == "sold" and sum(p["samples"] for p in trend["sold"][0]["points"]) == 3  # junk left out
+        week = c.get(f"/api/cards/{card['id']}/trend?range=1m&grades=Raw").json()["sold"][0]["points"]
+        assert [p["median"] for p in week] == [10]  # one day's sale inside the last month, plotted by day
+        info = c.get(f"/api/cards/{card['id']}/sold-compare").json()["provider"]
+        assert info["on_record"] == 4 and info["since"]  # the junk lot isn't counted
+
+
+def test_paging_back_only_when_there_may_be_a_gap(monkeypatch):
+    from app.config import get_settings
+    from app.services import sold_refresh
+    monkeypatch.setattr(get_settings(), "sold_monthly_budget", 50)
+    first = [_sale(i, "Page Card", 10 + i, i) for i in range(1, 4)]
+    with TestClient(app) as c:
+        card = c.post("/api/cards", json={"name": "Page Card", "category": "sports", "grade": "Raw"}).json()
+        # first check of a card: one page only, because there is nothing stored to overlap with
+        fake = _FakeSold([first, [_sale(10, "Page Card", 5, 60)]])
+        monkeypatch.setattr(sold_refresh, "get_sold", lambda: fake)
+        c.post(f"/api/cards/{card['id']}/sold/refresh")
+        assert fake.calls == 1
+        # a later check whose page shares a sale with the record: no gap, so one page again
+        fake = _FakeSold([[first[0], _sale(11, "Page Card", 12, 0)], [_sale(12, "Page Card", 5, 90)]])
+        monkeypatch.setattr(sold_refresh, "get_sold", lambda: fake)
+        c.post(f"/api/cards/{card['id']}/sold/refresh")
+        assert fake.calls == 1
+        # a page sharing nothing with the record may have skipped sales, so the next page is fetched too
+        fake = _FakeSold([[_sale(20, "Page Card", 14, 0)], [_sale(21, "Page Card", 15, 1), first[1]]])
+        monkeypatch.setattr(sold_refresh, "get_sold", lambda: fake)
+        out = c.post(f"/api/cards/{card['id']}/sold/refresh").json()
+        assert fake.calls == 2 and out["found"] == 3

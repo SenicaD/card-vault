@@ -284,7 +284,7 @@ export interface SoldRow {
   vs_asking_pct: number | null
 }
 
-export interface SoldProviderInfo { configured: boolean; name: string | null; last_checked: string | null; budget: number; used: number }
+export interface SoldProviderInfo { configured: boolean; name: string | null; last_checked: string | null; budget: number; used: number; on_record: number; since: string | null }
 export interface SoldCompare {
   days: number
   source: 'sold' | 'estimated'

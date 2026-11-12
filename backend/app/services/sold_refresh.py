@@ -55,10 +55,48 @@ def sold_keyword(card: Card) -> str:
     return base if own == "Raw" or own.lower() in base.lower() else f"{base} {own}"
 
 
-async def refresh_sold(session: Session, card: Card, kind: str = "manual") -> dict:
-    """One sold-prices search for this card. Stores the sales found and a sold-price snapshot per grade.
+MAX_PAGES = 3  # most pages one check will fetch (each page is one lookup)
 
-    Raises SoldUnavailable (off / budget spent) or SoldApiError (the provider said no).
+
+async def _fetch_pages(session: Session, card: Card, provider, keyword: str, kind: str, trace: Trace) -> list:
+    """Fetch the newest sales, and keep going back a page at a time only while there may be sales we
+    have never seen: that is, while the page shared nothing with what is already stored for this card.
+    The first check of a card is a single page, because with nothing stored there is nothing to overlap."""
+    known = set(session.exec(select(SoldSale.item_id).where(SoldSale.card_id == card.id)).all())
+    items: list = []
+    for page in range(1, MAX_PAGES + 1):
+        if page > 1 and budget_left(session, kind) <= 0:
+            trace.note("Stopped paging because this month's lookup budget ran out.")
+            break
+        t0, err, got = time.monotonic(), None, []
+        try:
+            got = await provider.search(keyword, page=page)
+        except Exception as e:
+            err = repr(e)[:300]
+            raise
+        finally:
+            rec = {"api": "sold search", "purpose": f"what matching cards sold for (page {page})", "detail": keyword[:200],
+                   "ms": round((time.monotonic() - t0) * 1000), "returned": len(got) if not err else None, "error": err}
+            log_event(source="soldcomps", **rec)
+            trace.calls.append(rec)
+            session.add(SoldCall(card_id=card.id, kind=kind, cost=0 if err else 1, ok=not err, error=err))
+            if err:
+                trace.error = err
+                save_trace(session, trace, card.id)  # commits the call record too
+        items += got
+        overlaps = any(i.item_id in known for i in got)
+        if not (getattr(provider, "has_next", False) and known and not overlaps):
+            break
+        trace.note(f"Page {page} shared no sales with the ones already on record, so the next page was fetched too.")
+    return items
+
+
+async def refresh_sold(session: Session, card: Card, kind: str = "manual") -> dict:
+    """Search for this card's sold listings and add every sale found to the card's history.
+
+    Everything the provider returns is kept (sales older than the price window, lots and bundles too,
+    flagged), so the record only grows and a sale never needs fetching twice. The prices use only the
+    in-window, non-junk sales. Raises SoldUnavailable (off / budget spent) or SoldApiError.
     """
     provider = get_sold()
     if provider is None:
@@ -70,60 +108,41 @@ async def refresh_sold(session: Session, card: Card, kind: str = "manual") -> di
     own = normalize_grade(card.grade)
     keyword = sold_keyword(card)
     trace = Trace("sold", kind, keyword, [own], card.parallel)
-    t0, err, items = time.monotonic(), None, []
-    try:
-        items = await provider.search(keyword)
-    except Exception as e:
-        err = repr(e)[:300]
-        raise
-    finally:
-        ms = round((time.monotonic() - t0) * 1000)
-        rec = {"api": "sold search", "purpose": "what matching cards sold for", "detail": keyword[:200], "ms": ms,
-               "returned": len(items) if not err else None, "error": err}
-        log_event(source="soldcomps", **rec)
-        trace.calls.append(rec)
-        session.add(SoldCall(card_id=card.id, kind=kind, cost=0 if err else 1, ok=not err, error=err))
-        if err:
-            trace.error = err
-            save_trace(session, trace, card.id)  # commits the call record too
+    items = await _fetch_pages(session, card, provider, keyword, kind, trace)
 
     cutoff = (utcnow() - timedelta(days=s.sold_window_days)).date()
+    have = {r.item_id: r for r in session.exec(select(SoldSale).where(SoldSale.card_id == card.id)).all()}
     groups: dict[str, list[EbayItem]] = {}
-    best_offers = 0
-    ended: dict[str, object] = {}
+    best_offers = new_rows = 0
     for it in items:
-        if it.ended_at and it.ended_at < cutoff:
-            continue
-        if _JUNK.search(it.title):
-            continue
+        junk = bool(_JUNK.search(it.title))
         g = parse_grade(it.title) or "Raw"  # a title with no grader and grade is a raw card
+        when = datetime(it.ended_at.year, it.ended_at.month, it.ended_at.day, tzinfo=UTC) if it.ended_at else None
+        row = have.get(it.item_id)
+        if row is None:
+            row = SoldSale(card_id=card.id, item_id=it.item_id, grade=g, title=it.title, price=it.price)
+            have[it.item_id] = row
+            new_rows += 1
+        row.grade, row.title, row.price, row.ended_at, row.best_offer, row.junk = g, it.title, it.price, when, it.best_offer, junk
+        row.url, row.image_url, row.condition, row.shipping, row.fetched_at = it.url, it.image_url, it.condition, it.shipping, utcnow()
+        session.add(row)
+        if junk or (it.ended_at and it.ended_at < cutoff):
+            continue  # on record, but not part of this price
         best_offers += it.best_offer
-        ended[it.item_id] = it
         groups.setdefault(g, []).append(EbayItem(item_id=it.item_id, title=it.title, price=it.price, currency=it.currency,
                                                  url=it.url, image_url=it.image_url))
 
-    # Keep every sale found, whatever its grade, so the sold table can show other grades too
-    have = {r.item_id: r for r in session.exec(select(SoldSale).where(SoldSale.card_id == card.id)).all()}
-    for g, lst in groups.items():
-        for i in lst:
-            src = ended[i.item_id]
-            when = datetime(src.ended_at.year, src.ended_at.month, src.ended_at.day, tzinfo=UTC) if src.ended_at else None
-            row = have.get(i.item_id) or SoldSale(card_id=card.id, item_id=i.item_id, grade=g, title=i.title, price=i.price)
-            row.grade, row.title, row.price, row.ended_at, row.best_offer = g, i.title, i.price, when, src.best_offer
-            row.url, row.image_url, row.fetched_at = i.url, i.image_url, utcnow()
-            session.add(row)
-
     grades = [own] + [g for g, lst in groups.items() if g != own and len(lst) >= MIN_SAMPLE_TO_RECORD]
     quotes, _ = build_quotes(groups, grades, keyword, "ebay-sold", card.parallel, frozenset(), trace)
-    saved = []
     for q in quotes:
         if q.median is not None and (q.grade == own or q.sample_size >= MIN_SAMPLE_TO_RECORD):
             session.add(PriceSnapshot(card_id=card.id, **q.model_dump()))
-            saved.append(q)
     trace.mode = "ebay-sold"
     trace.summary = {"returned": len(items), "after_top_up": sum(len(v) for v in groups.values()), "mode": "sold",
-                     "junk": 0, "unknown_grade": 0, "best_offer": best_offers, "window_days": s.sold_window_days,
+                     "junk": sum(1 for r in have.values() if r.junk), "unknown_grade": 0, "best_offer": best_offers,
+                     "window_days": s.sold_window_days, "new_on_record": new_rows,
                      "grades_found": {g: len(v) for g, v in groups.items()}}
+    trace.note(f"{new_rows} of the {len(items)} sales returned were new to the record; {len(items) - new_rows} were already stored.")
     if best_offers:
         trace.note(f"{best_offers} of these were Best Offer sales. For those the price shown is the asking price, "
                    "so the real sale price was probably lower.")
@@ -132,9 +151,9 @@ async def refresh_sold(session: Session, card: Card, kind: str = "manual") -> di
     session.commit()
     save_trace(session, trace, card.id)
     mine = next((q for q in quotes if q.grade == own), None)
-    return {"found": len(items), "used": mine.sample_size if mine else 0, "grade": own,
+    return {"found": len(items), "new": new_rows, "used": mine.sample_size if mine else 0, "grade": own,
             "median": mine.median if mine else None, "best_offers": best_offers,
-            "budget_left": budget_left(session, "manual")}
+            "on_record": len(have), "budget_left": budget_left(session, "manual")}
 
 
 def _due_cards(session: Session) -> list[int]:

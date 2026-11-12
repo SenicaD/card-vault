@@ -312,6 +312,9 @@ class SoldSale(SQLModel, table=True):
     best_offer: bool = False
     url: str | None = None
     image_url: str | None = None
+    condition: str | None = None
+    shipping: float | None = None
+    junk: bool = False  # looks like a lot, bundle or reprint: kept on record, left out of every price
     fetched_at: datetime = ts(default_factory=utcnow)
 
 

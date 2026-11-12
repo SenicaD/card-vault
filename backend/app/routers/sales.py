@@ -100,6 +100,8 @@ class SoldProviderInfo(BaseModel):
     last_checked: datetime | None = None
     budget: int = 0
     used: int = 0
+    on_record: int = 0  # sales stored for this card, however old
+    since: datetime | None = None  # date of the oldest stored sale
 
 
 class SoldCompare(BaseModel):
@@ -133,7 +135,7 @@ def sold_compare(card_id: int, days: int = Query(90, ge=0, le=3650), grades: lis
     sales = [x for x in session.exec(select(Sale).where(Sale.card_id == card_id)).all()
              if cutoff is None or x.sold_at >= cutoff]
 
-    real = session.exec(select(SoldSale).where(SoldSale.card_id == card_id)).all()
+    real = session.exec(select(SoldSale).where(SoldSale.card_id == card_id, SoldSale.junk == False)).all()  # noqa: E712
     real = [r for r in real if (cutoff is None or (r.ended_at and r.ended_at >= cutoff))]
     if card.parallel and not all_versions:
         real = [r for r in real if parse_parallel(r.title) == card.parallel]
@@ -179,8 +181,9 @@ def sold_compare(card_id: int, days: int = Query(90, ge=0, le=3650), grades: lis
 
     provider = get_sold()
     last = session.exec(select(func.max(SoldCall.at)).where(SoldCall.card_id == card_id, SoldCall.ok == True)).one()  # noqa: E712
+    count, oldest = session.exec(select(func.count(SoldSale.id), func.min(SoldSale.ended_at)).where(SoldSale.card_id == card_id, SoldSale.junk == False)).one()  # noqa: E712
     info = SoldProviderInfo(configured=provider is not None, name=provider.name if provider else None, last_checked=last,
-                            budget=get_settings().sold_monthly_budget, used=used_this_month(session))
+                            budget=get_settings().sold_monthly_budget, used=used_this_month(session), on_record=count or 0, since=oldest)
     return SoldCompare(days=days, source="sold" if real_grades else "estimated", grades=out, rows=detail[:200], provider=info)
 
 

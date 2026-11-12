@@ -9,7 +9,7 @@ from sqlmodel import Session, col, select
 
 from ..config import get_settings
 from ..db import get_session
-from ..models import ASKING_SOURCES, Card, CardCategory, CardStatus, Listing, ListingSeen, PriceSnapshot, Sale, utcnow
+from ..models import ASKING_SOURCES, Card, CardCategory, CardStatus, Listing, ListingSeen, PriceSnapshot, Sale, SoldSale, utcnow
 from ..services.ebay import EbayItem, ListingRequest, get_ebay
 from ..services.grading import grade_sort_key, normalize_grade
 from ..services.parallels import BASE, parse_parallel
@@ -271,6 +271,17 @@ def _daily_gone(rows: list[ListingSeen]) -> list[TrendPoint]:
             for d, v in sorted(by_day.items())]
 
 
+def _sales_points(rows: list[SoldSale], weekly: bool) -> list[TrendPoint]:
+    """Sold prices by the day each sale happened (or by week, for long ranges): the median of that period."""
+    buckets: dict[str, list[SoldSale]] = {}
+    for r in rows:
+        d = r.ended_at.date()
+        key = (d - timedelta(days=d.weekday())).isoformat() if weekly else d.isoformat()
+        buckets.setdefault(key, []).append(r)
+    return [TrendPoint(date=d, median=round(_median(x.price for x in v), 2), low=min(x.price for x in v),
+                       high=max(x.price for x in v), samples=len(v)) for d, v in sorted(buckets.items())]
+
+
 @router.get("/trend", response_model=Trend)
 def price_trend(card_id: int, range: str = Query("1m", pattern="^(7d|1m|3m|1y|all)$"),
                 grades: list[str] | None = Query(None), session: Session = Depends(get_session)):
@@ -292,7 +303,13 @@ def price_trend(card_id: int, range: str = Query("1m", pattern="^(7d|1m|3m|1y|al
 
     # Sold line: real sold prices if we have any, otherwise the estimate from listings that disappeared.
     gone = session.exec(select(ListingSeen).where(ListingSeen.card_id == card_id, ListingSeen.status == "gone")).all()
-    if sold_all:
+    stored = [r for r in session.exec(select(SoldSale).where(SoldSale.card_id == card_id, SoldSale.junk == False)).all()  # noqa: E712
+              if r.ended_at and in_range(r.ended_at) and (not card.parallel or parse_parallel(r.title) == card.parallel)]
+    if stored:  # real sales, plotted on the day they happened: every check adds to this record
+        sold_source = "sold"
+        weekly = days is None or days > 31
+        sold = [TrendSeries(grade=g, points=_sales_points([r for r in stored if r.grade == g], weekly)) for g in wanted]
+    elif sold_all:
         sold_source, sold = "sold", series(sold_all)
     elif gone:
         sold_source = "estimated"

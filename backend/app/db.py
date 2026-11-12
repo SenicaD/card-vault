@@ -32,6 +32,7 @@ def _add_missing_columns() -> None:
         "card": {"grade_counts": "JSON", "grade_counts_at": "DATETIME", "parallel": "VARCHAR",
                  "cost": "FLOAT", "batch": "VARCHAR", "reviewed": "BOOLEAN DEFAULT 0"},
         "listingseen": {"excluded": "BOOLEAN DEFAULT 0"},
+        "soldsale": {"condition": "VARCHAR", "shipping": "FLOAT", "junk": "BOOLEAN DEFAULT 0"},
     }
     with engine.begin() as conn:
         for table, cols in additions.items():

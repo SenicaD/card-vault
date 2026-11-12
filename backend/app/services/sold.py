@@ -22,6 +22,8 @@ class SoldItem(BaseModel):
     best_offer: bool = False
     url: str | None = None
     image_url: str | None = None
+    condition: str | None = None
+    shipping: float | None = None
 
 
 class SoldApiError(RuntimeError):
@@ -43,11 +45,12 @@ class SoldCompsClient:
     def __init__(self, s: Settings):
         self.s = s
         self.usage: dict[str, str] = {}  # the provider's own usage headers from the latest call
+        self.has_next = False  # whether the latest search had another page of sales after it
 
-    async def search(self, keyword: str, count: int = 240) -> list[SoldItem]:
+    async def search(self, keyword: str, count: int = 240, page: int = 1) -> list[SoldItem]:
         async with httpx.AsyncClient(timeout=60) as client:
             r = await client.get(f"{self.s.soldcomps_base_url}/v1/scrape",
-                                 params={"keyword": keyword, "count": count, "sold": "true", "ebaySite": "ebay.com"},
+                                 params={"keyword": keyword, "count": count, "page": page, "sold": "true", "ebaySite": "ebay.com"},
                                  headers={"Authorization": f"Bearer {self.s.soldcomps_api_key}"})
         self.usage = {k: v for k, v in r.headers.items() if k.lower().startswith(("x-usage", "x-credit", "x-plan"))}
         if r.status_code != 200:
@@ -58,7 +61,9 @@ class SoldCompsClient:
             code = body.get("code") or body.get("error")
             raise SoldApiError(f"{r.status_code} {code or ''} {str(body.get('message') or body.get('error') or r.text)[:200]}".strip(),
                                r.status_code, code if isinstance(code, str) else None)
-        return parse_items(r.json())
+        body = r.json()
+        self.has_next = bool(body.get("hasNextPage"))
+        return parse_items(body)
 
     async def account(self) -> dict[str, Any]:
         """The provider's own view of the plan and what has been used (a free call)."""
@@ -83,7 +88,8 @@ def parse_items(body: dict) -> list[SoldItem]:
             ended = None
         out.append(SoldItem(item_id=str(it["itemId"]), title=it.get("title") or "", price=price, ended_at=ended,
                             best_offer=bool(it.get("bestOfferAccepted")), url=it.get("url"),
-                            image_url=it.get("thumbnailUrl")))
+                            image_url=it.get("thumbnailUrl"), condition=it.get("condition"),
+                            shipping=_price(it.get("shippingPrice"))))
     return out
 
 
@@ -92,8 +98,9 @@ class MockSoldClient:
 
     name = "mock"
     usage: dict[str, str] = {}
+    has_next = False
 
-    async def search(self, keyword: str, count: int = 240) -> list[SoldItem]:
+    async def search(self, keyword: str, count: int = 240, page: int = 1) -> list[SoldItem]:
         from .ebay import get_ebay
 
         found = await get_ebay().search_active(keyword, limit=60)
