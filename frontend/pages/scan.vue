@@ -1,12 +1,27 @@
 <script setup lang="ts">
 import { useDisplay } from 'vuetify'
 import type { Location } from '~/types'
-import { AUTO_ADD_THRESHOLD, type ScanItem } from '~/composables/useScanQueue'
+import { AUTO_ADD_THRESHOLD, defaultSession, slotLabel, type ScanItem } from '~/composables/useScanQueue'
 
 const { api } = useApi()
 const { mdAndUp } = useDisplay()
 const q = useScanQueue()
-const { items, counts } = q
+const { items, counts, session } = q
+const notice = ref('')
+const advanced = ref(false)
+const conditionItems = [{ value: null, title: 'From the photo' }, ...CONDITIONS.map((c) => ({ value: c.value, title: c.name }))]
+const sessionAdded = computed(() => items.value.filter((i) => i.status === 'added'))
+const sessionCost = computed(() => sessionAdded.value.reduce((a, i) => a + (i.card?.cost ?? 0) * (i.card?.quantity ?? 1), 0))
+const slotsUsed = computed(() => {
+  const slots = sessionAdded.value.map((i) => i.card?.slot).filter(Boolean) as string[]
+  return slots.length ? (slots.length === 1 ? slots[0] : `${slots[0]} to ${slots[slots.length - 1]}`) : ''
+})
+async function another() { notice.value = await q.anotherCopy() }
+function newSession() {
+  const keep = { slotOn: session.value.slotOn, slotPrefix: session.value.slotPrefix, perPage: session.value.perPage }
+  Object.assign(session.value, defaultSession(), keep) // new batch: numbering restarts, the rest is cleared
+  q.clearAdded()
+}
 
 const locations = ref<Location[]>([])
 const camera = ref<HTMLInputElement>()
@@ -25,9 +40,11 @@ const locName = (id: number | null) => locations.value.find((l) => l.id === id)?
 onMounted(async () => {
   locations.value = await api<Location[]>('/api/locations').catch(() => [])
   try { q.autoAdd.value = localStorage.getItem('cv-auto-add') === '1' } catch {}
+  try { const saved = localStorage.getItem('cv-session'); if (saved) Object.assign(session.value, JSON.parse(saved)) } catch {}
   window.addEventListener('beforeunload', guard)
 })
 onBeforeUnmount(() => window.removeEventListener('beforeunload', guard))
+watch(session, (v) => { try { localStorage.setItem('cv-session', JSON.stringify(v)) } catch {} }, { deep: true })
 watch(q.autoAdd, (v) => { try { localStorage.setItem('cv-auto-add', v ? '1' : '0') } catch {} })
 
 // The queue survives in-app navigation, but not a reload or closed tab.
@@ -99,19 +116,47 @@ function openRow(_: unknown, row: { item: ScanItem }) {
       </template>
     </PageHeader>
 
-    <!-- Batch settings -->
+    <!-- Scan session: settings that apply to every card in this batch -->
     <v-card class="mb-4">
       <div class="settings">
-        <v-select v-model="q.defaultLocation.value" :items="locationItems" label="File new cards in" prepend-inner-icon="mdi-archive-outline" class="set-loc" />
-        <v-switch v-model="q.autoAdd.value" color="primary" hide-details density="compact" inset>
-          <template #label>
-            <span class="text-body-2">Auto-add cards identified at ≥ {{ AUTO_ADD_THRESHOLD * 100 }}% confidence</span>
-          </template>
+        <v-text-field v-model="session.name" label="Session name" placeholder="Box 3 lot" prepend-inner-icon="mdi-tag-outline" hide-details class="set-name" />
+        <v-select v-model="q.defaultLocation.value" :items="locationItems" label="File new cards in" prepend-inner-icon="mdi-archive-outline" hide-details class="set-loc" />
+        <v-text-field v-model="session.cost" label="Paid per card" type="number" min="0" step="0.01" prefix="$" hide-details class="set-cost" />
+        <v-btn variant="text" size="small" :prepend-icon="advanced ? 'mdi-chevron-up' : 'mdi-chevron-down'" @click="advanced = !advanced">More</v-btn>
+      </div>
+      <div class="settings pt-0">
+        <v-switch v-model="session.slotOn" color="primary" hide-details density="compact" inset>
+          <template #label><span class="text-body-2">Number slots automatically</span></template>
         </v-switch>
+        <template v-if="session.slotOn">
+          <v-text-field v-model="session.slotPrefix" label="Prefix" placeholder="p" hide-details density="compact" class="set-small" />
+          <v-text-field v-model.number="session.slotNext" label="Next number" type="number" min="1" hide-details density="compact" class="set-small" />
+          <v-text-field v-model.number="session.perPage" label="Pockets per page" type="number" min="0" placeholder="0 = off" hide-details density="compact" class="set-small" />
+          <v-chip color="primary" variant="tonal" class="num">Next slot: {{ slotLabel(session, session.slotNext) }}</v-chip>
+        </template>
+      </div>
+      <div v-if="advanced" class="settings pt-0">
+        <v-combobox v-model="session.grade" :items="GRADE_OPTIONS" label="Grade for this batch" placeholder="From the photo" clearable hide-details density="compact" class="set-loc" />
+        <v-select v-model="session.condition" :items="conditionItems" label="Condition for this batch" hide-details density="compact" class="set-loc" />
+        <v-switch v-model="session.mergeDups" color="primary" hide-details density="compact" inset>
+          <template #label><span class="text-body-2">Add duplicates as extra copies</span></template>
+        </v-switch>
+        <v-switch v-model="q.autoAdd.value" color="primary" hide-details density="compact" inset>
+          <template #label><span class="text-body-2">Auto-add at ≥ {{ AUTO_ADD_THRESHOLD * 100 }}% confidence</span></template>
+        </v-switch>
+      </div>
+      <v-divider />
+      <div class="settings">
+        <v-btn variant="tonal" prepend-icon="mdi-plus-circle-multiple-outline" :disabled="!items.some((i) => (i.status === 'ready' || i.status === 'added') && i.form)" @click="another">Another copy of the last card</v-btn>
+        <span class="text-caption text-muted-c">Same card again? Tap this instead of photographing it twice.</span>
         <v-spacer />
-        <div class="text-caption text-muted-c">Lower-confidence cards wait for your review.</div>
+        <span v-if="sessionAdded.length" class="text-caption text-secondary-c num">
+          {{ sessionAdded.length }} added<template v-if="sessionCost"> · {{ money(sessionCost) }} paid</template><template v-if="slotsUsed"> · slots {{ slotsUsed }}</template>
+        </span>
+        <v-btn variant="text" size="small" prepend-icon="mdi-restart" @click="newSession">New session</v-btn>
       </div>
     </v-card>
+    <v-snackbar :model-value="!!notice" timeout="2500" @update:model-value="notice = ''">{{ notice }}</v-snackbar>
 
     <!-- Drop zone -->
     <v-card v-if="!items.length || dragging" class="drop mb-4" :class="{ over: dragging }" @click="upload?.click()">
@@ -161,6 +206,7 @@ function openRow(_: unknown, row: { item: ScanItem }) {
                 <template v-if="item.form">
                   <div class="font-weight-medium truncate">{{ item.form.name }}</div>
                   <div class="text-caption text-secondary-c truncate">{{ subline(item) || '—' }}</div>
+                  <v-chip v-if="item.dups.length && item.status === 'ready'" size="x-small" color="warning" variant="tonal" class="mt-1">Already own {{ item.dups.reduce((a, d) => a + d.quantity, 0) }}<template v-if="item.dups[0].slot"> ({{ item.dups[0].slot }})</template></v-chip>
                 </template>
                 <template v-else>
                   <div class="text-secondary-c truncate">{{ item.fileName }}</div>
@@ -193,13 +239,14 @@ function openRow(_: unknown, row: { item: ScanItem }) {
                 <v-chip v-bind="p" :color="STATUS[item.status].color" variant="tonal" size="small" class="text-no-wrap">
                   <v-progress-circular v-if="item.status === 'processing' || item.status === 'saving'" indeterminate size="12" width="2" class="mr-2" />
                   <v-icon v-else-if="STATUS[item.status].icon" :icon="STATUS[item.status].icon" start size="14" />
-                  {{ STATUS[item.status].label }}
+                  {{ item.merged ? 'Added as a copy' : STATUS[item.status].label }}
                 </v-chip>
               </template>
             </v-tooltip>
           </template>
           <template #item.actions="{ item }">
             <div class="d-flex justify-end ga-1">
+              <v-btn v-if="item.status === 'ready' && item.dups.length" icon="mdi-content-copy" variant="text" size="small" aria-label="Add as another copy of the card you own" title="Add as another copy of the card you own" @click.stop="q.addCopy(item.key)" />
               <v-btn v-if="item.status === 'ready'" icon="mdi-plus" variant="text" size="small" color="primary" aria-label="Add to inventory" @click.stop="q.save(item.key)" />
               <v-btn v-if="item.status === 'error'" icon="mdi-refresh" variant="text" size="small" aria-label="Retry" @click.stop="q.retry(item.key)" />
               <v-btn v-if="item.card" icon="mdi-open-in-new" variant="text" size="small" :to="`/cards/${item.card.id}`" aria-label="Open card" @click.stop />
@@ -217,7 +264,7 @@ function openRow(_: unknown, row: { item: ScanItem }) {
               <v-list-item-title class="font-weight-medium">{{ item.form?.name || item.fileName }}</v-list-item-title>
               <v-list-item-subtitle>
                 <span v-if="item.error" class="text-error">{{ item.error }}</span>
-                <span v-else>{{ STATUS[item.status].label }}<template v-if="item.scan"> · {{ Math.round(conf(item) * 100) }}%</template></span>
+                <span v-else>{{ item.merged ? 'Added as a copy' : STATUS[item.status].label }}<template v-if="item.dups.length && item.status === 'ready'"> · already own</template><template v-if="item.scan"> · {{ Math.round(conf(item) * 100) }}%</template></span>
               </v-list-item-subtitle>
               <template #append>
                 <div class="text-right">
@@ -253,7 +300,10 @@ function openRow(_: unknown, row: { item: ScanItem }) {
 .min-w-0 { min-width: 0; }
 .font-weight-semibold { font-weight: 600; }
 .settings { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; padding: 12px 18px; }
-.set-loc { max-width: 280px; min-width: 220px; }
+.set-loc { max-width: 280px; min-width: 200px; }
+.set-name { max-width: 260px; min-width: 180px; }
+.set-cost { max-width: 160px; min-width: 130px; }
+.set-small { max-width: 130px; min-width: 100px; }
 .drop { border-style: dashed !important; border-width: 2px !important; cursor: pointer; transition: border-color 0.15s, background 0.15s; }
 .drop:hover, .drop.over { border-color: rgb(var(--v-theme-primary)) !important; }
 .drop.over { background: rgb(var(--v-theme-brand-muted)) !important; }

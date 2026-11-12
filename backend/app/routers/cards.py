@@ -23,7 +23,7 @@ def filtered(stmt, q=None, category=None, status=None, location_id=None, grade=N
     if q:
         like = f"%{q}%"
         stmt = stmt.where(or_(col(Card.name).ilike(like), col(Card.set_name).ilike(like),
-                              col(Card.card_number).ilike(like), col(Card.variant).ilike(like)))
+                              col(Card.card_number).ilike(like), col(Card.variant).ilike(like), col(Card.batch).ilike(like)))
     if category:
         stmt = stmt.where(Card.category == category)
     if status:
@@ -168,6 +168,30 @@ async def bulk_reprice(body: BulkIds | None = None):
 def bulk_reprice_status():
     job = refresh_service.current_job()
     return job.snapshot() if job else {"state": "idle"}
+
+
+def _norm_num(v: str | None) -> str:
+    return (v or "").strip().lstrip("#").lower()
+
+
+@router.get("/duplicates", response_model=list[CardRead])
+def duplicates(name: str, set_name: str | None = None, card_number: str | None = None, grade: str | None = None,
+               session: Session = Depends(get_session)):
+    """Cards you already own that look like this one: same name and grade, and the same set and number
+    wherever both sides have one. Used while scanning to offer "add a copy" instead of a second entry."""
+    rows = session.exec(select(Card).where(func.lower(Card.name) == name.strip().lower(),
+                                           col(Card.status) != CardStatus.sold)).all()
+    want = normalize_grade(grade)
+    out = []
+    for c in rows:
+        if normalize_grade(c.grade) != want:
+            continue
+        if _norm_num(c.card_number) and _norm_num(card_number) and _norm_num(c.card_number) != _norm_num(card_number):
+            continue
+        if (c.set_name or "").strip() and (set_name or "").strip() and c.set_name.strip().lower() != set_name.strip().lower():
+            continue
+        out.append(to_read(c))
+    return out[:5]
 
 
 @router.get("/{card_id}", response_model=CardRead)

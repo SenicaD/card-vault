@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useDisplay } from 'vuetify'
-import { CATEGORY_LABELS, type Card, type CardFields, type Listing, type Location, type MatchRow, type SimilarityResult, type GoneListing, type PriceResult, type PriceSnapshot, type Sale, type Trend, type TrendRange } from '~/types'
+import { CATEGORY_LABELS, type Card, type CardFields, type Listing, type Location, type MatchRow, type SimilarityResult, type SoldCompare, type PriceResult, type PriceSnapshot, type Sale, type Trend, type TrendRange } from '~/types'
 
 const { api } = useApi()
 const { xs } = useDisplay()
@@ -89,8 +89,20 @@ const RANGES: { value: TrendRange; label: string }[] = [
   { value: '1y', label: '1Y' }, { value: 'all', label: 'All' },
 ]
 const sales = ref<Sale[]>([])
-const gone = ref<GoneListing[]>([])
-const loadGone = async () => { gone.value = await api<GoneListing[]>(`/api/cards/${id}/gone`, { query: { limit: 10 } }).catch(() => []) }
+const soldDays = ref(90)
+const sold = ref<SoldCompare | null>(null)
+const soldHeaders = [
+  { title: 'Gone', key: 'gone_at' }, { title: 'Grade', key: 'grade' }, { title: 'Version', key: 'parallel' },
+  { title: 'Listing', key: 'title', sortable: false }, { title: 'Days up', key: 'days_listed', align: 'end' as const },
+  { title: 'Last asking', key: 'price', align: 'end' as const }, { title: 'vs asking now', key: 'vs_asking_pct', align: 'end' as const },
+]
+const pctText = (v: number | null | undefined) => (v == null ? '' : `${v > 0 ? '+' : ''}${v}%`)
+// loadGone keeps its old name: it is called after every lookup and refresh
+const loadGone = async () => {
+  sold.value = await api<SoldCompare>(`/api/cards/${id}/sold-compare`, {
+    query: { days: soldDays.value, grades: selectedGrades.value, all_versions: showAllVersions.value },
+  }).catch(() => null)
+}
 
 // "Mark sold" asks what you actually got, so the sale lands on the chart and in your sales list
 const sellOpen = ref(false)
@@ -241,6 +253,7 @@ async function loadMatches() {
   matches.value = await api<MatchRow[]>(`/api/cards/${id}/matches`, { query: { grades: selectedGrades.value } }).catch(() => [])
 }
 watch(selectedGrades, () => { if (card.value) loadMatches() }, { deep: true })
+watch([selectedGrades, showAllVersions], () => { if (card.value) loadGone() }, { deep: true })
 
 // The versions ("parallels") seen among the listings of the selected grades, most common first.
 const parallelCounts = computed(() => {
@@ -548,24 +561,45 @@ onMounted(() => {
                 </p>
               </div>
 
-              <!-- Listings that disappeared: the estimate behind the dashed line -->
-              <template v-if="gone.length">
+              <!-- Asking vs sold -->
+              <template v-if="sold && (sold.grades.some((g) => g.sold_count || g.yours_count) || sold.rows.length)">
                 <v-divider />
-                <div class="px-5 pt-4 pb-1 text-body-2 font-weight-medium">Listings that disappeared</div>
-                <p class="px-5 text-caption text-muted-c mb-2">
-                  Likely sales, not confirmed ones: a seller can also end or relist a listing. The price is what it was asking when we last saw it.
-                </p>
+                <div class="px-5 pt-4 pb-1 d-flex align-center justify-space-between flex-wrap ga-2">
+                  <span class="text-body-2 font-weight-medium">Asking vs sold</span>
+                  <v-btn-toggle v-model="soldDays" mandatory density="compact" variant="outlined" divided rounded="lg" color="primary" aria-label="Sold window" @update:model-value="loadGone">
+                    <v-btn :value="30" size="small">30D</v-btn><v-btn :value="90" size="small">90D</v-btn>
+                    <v-btn :value="365" size="small">1Y</v-btn><v-btn :value="0" size="small">All</v-btn>
+                  </v-btn-toggle>
+                </div>
+                <v-alert type="info" variant="tonal" density="compact" class="mx-5 my-2">
+                  eBay's public API doesn't share sold prices. "Likely sold" is the last asking price of a listing that has since disappeared:
+                  usually a sale, but a seller can also end or relist it. Only "Your sales" are confirmed.
+                </v-alert>
                 <v-table density="compact" class="grade-table">
-                  <thead><tr><th>Gone</th><th>Grade</th><th>Listing</th><th class="text-right">Last asking price</th></tr></thead>
+                  <thead><tr><th>Grade</th><th class="text-right">Asking now</th><th class="text-right">Likely sold</th><th class="text-right">Sold vs asking</th><th class="text-right">Days up</th><th class="text-right">Your sales</th></tr></thead>
                   <tbody>
-                    <tr v-for="g in gone" :key="g.id">
-                      <td class="num text-no-wrap">{{ g.gone_at ? isoDate(g.gone_at).slice(0, 10) : '' }}</td>
+                    <tr v-for="g in sold.grades" :key="g.grade">
                       <td class="text-no-wrap">{{ g.grade }}</td>
-                      <td class="gone-title"><span class="truncate d-block">{{ g.title }}</span></td>
-                      <td class="text-right num text-no-wrap"><PriceLink :value="g.price" :listing="{ item_id: g.item_id, title: g.title, price: g.price, currency: 'USD', condition: null, url: g.url }" :label="g.verdict === 'out_of_stock' ? 'Sold out' : 'No longer on eBay'" /></td>
+                      <td class="text-right num">{{ money(g.asking_median) }}<span class="text-muted-c text-caption"> ({{ g.asking_count }})</span></td>
+                      <td class="text-right num">{{ money(g.sold_median) }}<span v-if="g.sold_count" class="text-muted-c text-caption"> ({{ g.sold_count }})</span></td>
+                      <td class="text-right num text-no-wrap" :class="g.gap == null ? '' : g.gap < 0 ? 'text-error' : 'text-success'">
+                        <template v-if="g.gap != null">{{ g.gap < 0 ? '−' : '+' }}{{ money(Math.abs(g.gap)) }} ({{ pctText(g.gap_pct) }})</template><template v-else>—</template>
+                      </td>
+                      <td class="text-right num">{{ g.days_median ?? '—' }}</td>
+                      <td class="text-right num">{{ money(g.yours_median) }}<span v-if="g.yours_count" class="text-muted-c text-caption"> ({{ g.yours_count }})</span></td>
                     </tr>
                   </tbody>
                 </v-table>
+                <div v-if="sold.rows.length" class="sold-scroll"><v-data-table :headers="soldHeaders" :items="sold.rows" density="compact" :items-per-page="10" :sort-by="[{ key: 'gone_at', order: 'desc' }]" class="no-pointer mt-2">
+                  <template #item.gone_at="{ item }"><span class="num text-no-wrap">{{ item.gone_at ? isoDate(item.gone_at).slice(0, 10) : '' }}</span></template>
+                  <template #item.parallel="{ item }"><v-chip size="x-small" variant="tonal">{{ item.parallel }}</v-chip></template>
+                  <template #item.title="{ item }"><span class="truncate d-block gone-title">{{ item.title }}</span></template>
+                  <template #item.days_listed="{ item }"><span class="num">{{ item.days_listed ?? '—' }}</span></template>
+                  <template #item.price="{ item }">
+                    <PriceLink :value="item.price" :listing="{ item_id: item.item_id, title: item.title, price: item.price, currency: item.currency, condition: null, url: item.url }" :label="item.verdict === 'out_of_stock' ? 'Sold out' : 'No longer on eBay'" />
+                  </template>
+                  <template #item.vs_asking_pct="{ item }"><span class="num" :class="(item.vs_asking_pct ?? 0) < 0 ? 'text-error' : 'text-success'">{{ pctText(item.vs_asking_pct) || '—' }}</span></template>
+                </v-data-table></div>
                 <div class="pb-3" />
               </template>
 
@@ -740,6 +774,8 @@ onMounted(() => {
 .grade-table { background: transparent !important; }
 .d-grid { display: grid; gap: 14px; }
 .gone-title { max-width: 320px; }
+.sold-scroll { overflow-x: auto; }
+.sold-scroll .gone-title { max-width: 190px; }
 .grade-table :deep(th) { font-size: 11.5px !important; text-transform: uppercase; letter-spacing: 0.04em; color: rgb(var(--v-theme-text-muted)) !important; }
 .top-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
 @media (max-width: 700px) { .top-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }

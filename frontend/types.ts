@@ -16,6 +16,7 @@ export interface CardFields {
   notes: string | null
   search_query: string | null
   cost?: number | null // paid per copy
+  batch?: string | null // scan session it was added in
 }
 
 export interface Card extends CardFields {
@@ -248,4 +249,41 @@ export interface Portfolio {
   top_cards: { id: number; name: string; grade: string; quantity: number; est_value: number | null; image_url: string | null }[]
   gainers: Mover[]
   losers: Mover[]
+}
+
+export interface GradeCompare {
+  grade: string
+  asking_median: number | null
+  asking_count: number
+  sold_median: number | null
+  sold_count: number
+  gap: number | null
+  gap_pct: number | null
+  days_median: number | null
+  yours_median: number | null
+  yours_count: number
+}
+
+export interface SoldRow {
+  id: number
+  item_id: string
+  grade: string
+  parallel: string
+  title: string
+  price: number
+  currency: string
+  url: string | null
+  image_url: string | null
+  first_seen: string
+  gone_at: string | null
+  days_listed: number | null
+  verdict: 'not_found' | 'out_of_stock' | null
+  vs_asking_pct: number | null
+}
+
+export interface SoldCompare {
+  days: number
+  source: string
+  grades: GradeCompare[]
+  rows: SoldRow[]
 }

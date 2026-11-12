@@ -85,6 +85,7 @@ class CardBase(SQLModel):
     notes: str | None = None
     search_query: str | None = None  # query used for eBay lookup
     cost: float | None = None  # what you paid for ONE copy; None = not recorded
+    batch: str | None = None  # name of the scan session it was added in, e.g. "Box 3 lot"
 
 
 class Card(CardBase, table=True):
@@ -157,6 +158,7 @@ class CardUpdate(SQLModel):
     parallel: str | None = None
     status: CardStatus | None = None
     cost: float | None = None
+    batch: str | None = None
     reviewed: bool | None = None
 
 

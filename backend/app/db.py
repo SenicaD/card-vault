@@ -30,7 +30,7 @@ def _add_missing_columns() -> None:
         "pricesnapshot": {"top_listings": "JSON", "grade": "VARCHAR", "price_refs": "JSON",
                           "parallel": "VARCHAR", "spread": "FLOAT", "trimmed": "INTEGER"},
         "card": {"grade_counts": "JSON", "grade_counts_at": "DATETIME", "parallel": "VARCHAR",
-                 "cost": "FLOAT", "reviewed": "BOOLEAN DEFAULT 0"},
+                 "cost": "FLOAT", "batch": "VARCHAR", "reviewed": "BOOLEAN DEFAULT 0"},
         "listingseen": {"excluded": "BOOLEAN DEFAULT 0"},
     }
     with engine.begin() as conn:

@@ -880,3 +880,46 @@ def test_crop_straightens_a_tilted_card():
         # bad shapes are refused
         assert c.post("/api/scan/crop", json={"image_path": s["image_path"], "box": {"x": 0, "y": 0, "w": 1, "h": 1, "corners": [[0, 0], [0, 0], [0, 0], [0, 0]]}}).status_code == 422
         assert c.post("/api/scan/crop", json={"image_path": s["image_path"], "box": {"x": 0, "y": 0, "w": 1, "h": 1, "corners": [[0, 0], [1, 0], [1, 1]]}}).status_code == 422
+
+
+def test_duplicates_and_batch():
+    with TestClient(app) as c:
+        a = c.post("/api/cards", json={"name": "Dupe Guy", "category": "sports", "set_name": "Prizm", "card_number": "#12",
+                                       "grade": "PSA 10", "batch": "Box 9 lot"}).json()
+        hit = lambda **kw: [x["id"] for x in c.get("/api/cards/duplicates", params={"name": "dupe guy", **kw}).json()]  # noqa: E731
+        assert hit(card_number="12", set_name="prizm", grade="PSA 10") == [a["id"]]
+        assert hit() == []  # no grade means Raw: a different card from the PSA 10
+        assert hit(grade="PSA 10", card_number="13") == []
+        assert hit(grade="PSA 10", set_name="Select") == []
+        assert hit(grade="PSA 10") == [a["id"]]  # unknown set and number don't rule it out
+        c.patch(f"/api/cards/{a['id']}", json={"status": "sold"})
+        assert hit(grade="PSA 10") == []  # sold cards aren't duplicates
+        assert [x["id"] for x in c.get("/api/cards", params={"q": "Box 9"}).json()] == [a["id"]]
+
+
+def test_sold_compare_asking_vs_gone():
+    from datetime import timedelta
+
+    from sqlmodel import Session
+
+    from app.db import engine
+    from app.models import ListingSeen, utcnow
+    with TestClient(app) as c:
+        card = c.post("/api/cards", json={"name": "Compare Me", "category": "sports", "grade": "PSA 10"}).json()
+        now = utcnow()
+        with Session(engine) as s:
+            for i, (price, status) in enumerate([(100, "active"), (120, "active"), (80, "gone"), (90, "gone")]):
+                s.add(ListingSeen(card_id=card["id"], item_id=f"i{i}", grade="PSA 10", title=f"Compare Me PSA 10 #{i}", price=price,
+                                  first_seen=now - timedelta(days=10), last_seen=now, status=status,
+                                  gone_at=now - timedelta(days=2) if status == "gone" else None))
+            s.add(ListingSeen(card_id=card["id"], item_id="old", grade="PSA 10", title="Compare Me old", price=50,
+                              first_seen=now - timedelta(days=400), last_seen=now - timedelta(days=300), status="gone",
+                              gone_at=now - timedelta(days=300)))
+            s.commit()
+        r = c.get(f"/api/cards/{card['id']}/sold-compare", params={"days": 90}).json()
+        g = r["grades"][0]
+        assert g["grade"] == "PSA 10" and g["asking_median"] == 110 and g["asking_count"] == 2
+        assert g["sold_median"] == 85 and g["sold_count"] == 2  # the 300-day-old one is outside the window
+        assert g["gap"] == -25 and g["gap_pct"] == -22.7 and g["days_median"] == 8
+        assert len(r["rows"]) == 2 and r["rows"][0]["days_listed"] == 8 and r["source"] == "estimated"
+        assert len(c.get(f"/api/cards/{card['id']}/sold-compare", params={"days": 0}).json()["rows"]) == 3

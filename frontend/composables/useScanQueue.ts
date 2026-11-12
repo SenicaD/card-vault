@@ -16,6 +16,29 @@ export interface ScanItem {
   error: string
   repricing: boolean
   card: Card | null
+  dups: Card[] // cards you already own that look the same
+  merged: boolean // saved as one more copy of an existing card instead of a new card
+}
+
+// Settings for the batch being scanned. Applied to each new card as it is added.
+export interface ScanSession {
+  name: string // saved on every card as its batch, so the batch can be searched later
+  grade: string | null // null = whatever the photo suggests
+  condition: string | null
+  cost: number | string | null // paid per card
+  slotOn: boolean // number the slots automatically
+  slotPrefix: string
+  slotNext: number
+  perPage: number // pockets per binder page; 0 = plain numbers
+  mergeDups: boolean // add a copy to a card you already own instead of a second entry
+}
+export const defaultSession = (): ScanSession => ({
+  name: '', grade: null, condition: null, cost: '', slotOn: false, slotPrefix: '', slotNext: 1, perPage: 0, mergeDups: false,
+})
+
+export function slotLabel(s: Pick<ScanSession, 'slotPrefix' | 'perPage'>, n: number): string {
+  if (s.perPage > 0) return `${s.slotPrefix}${Math.floor((n - 1) / s.perPage) + 1}-${((n - 1) % s.perPage) + 1}`
+  return `${s.slotPrefix}${n}`
 }
 
 const CONCURRENCY = 3
@@ -31,6 +54,8 @@ export function useScanQueue() {
   const defaultLocation = useState<number | null>('lastLocation', () => null)
   const autoAdd = useState<boolean>('scanAutoAdd', () => false)
   const seq = useState<number>('scanSeq', () => 0)
+  const session = useState<ScanSession>('scanSession', defaultSession)
+  const nextSlot = computed(() => (session.value.slotOn ? slotLabel(session.value, session.value.slotNext) : ''))
 
   const counts = computed(() => {
     const c = { total: items.value.length, pending: 0, ready: 0, error: 0, added: 0 }
@@ -54,7 +79,7 @@ export function useScanQueue() {
       if (!file.type.startsWith('image/')) continue
       items.value.push({
         key: ++seq.value, fileName: file.name, file, preview: URL.createObjectURL(file), status: 'queued',
-        scan: null, form: null, quote: null, comps: [], priceError: '', error: '', repricing: false, card: null,
+        scan: null, form: null, quote: null, comps: [], priceError: '', error: '', repricing: false, card: null, dups: [], merged: false,
       })
     }
     pump()
@@ -75,13 +100,52 @@ export function useScanQueue() {
     cur.quote = res.quote
     cur.comps = res.comps
     cur.priceError = res.price_error || ''
+    const ss = session.value
     cur.form = {
       category: i.category, name: i.name, set_name: i.set_name, year: i.year,
-      card_number: i.card_number, variant: i.variant, grade: i.grade, condition: i.condition,
+      card_number: i.card_number, variant: i.variant,
+      // the batch's own settings win over what the photo suggests, but not over edits you made to this card
+      grade: keep ? i.grade : ss.grade || i.grade, condition: keep ? i.condition : ss.condition || i.condition,
       quantity: keep?.quantity ?? 1, location_id: keep ? keep.location_id : defaultLocation.value,
       slot: keep?.slot ?? null, notes: keep?.notes ?? null,
       search_query: res.quote?.query || i.search_query,
+      cost: keep ? keep.cost : ss.cost === '' || ss.cost == null ? null : Number(ss.cost),
+      batch: keep ? keep.batch : ss.name.trim() || null,
     }
+    findDups(cur)
+  }
+
+  async function findDups(it: ScanItem) {
+    const f = it.form
+    if (!f?.name) return
+    try {
+      it.dups = await api<Card[]>('/api/cards/duplicates', { query: { name: f.name, set_name: f.set_name || undefined, card_number: f.card_number || undefined, grade: f.grade || undefined } })
+    } catch { it.dups = [] }
+  }
+
+  // Count this card as one more copy of a card you already own; the new photo isn't kept as a second entry.
+  async function addCopy(key: number, cardId?: number) {
+    const it = find(key)
+    const target = it?.dups.find((d) => d.id === cardId) ?? it?.dups[0]
+    if (!it?.form || !target || it.status !== 'ready') return
+    it.status = 'saving'
+    try {
+      it.card = await api<Card>(`/api/cards/${target.id}`, { method: 'PATCH', body: { quantity: target.quantity + (it.form.quantity || 1) } })
+      it.merged = true
+      it.status = 'added'
+    } catch (e: any) {
+      it.status = 'error'
+      it.error = `Couldn't add the copy: ${e.message}`
+    }
+  }
+
+  // One more of the card you just scanned, without another photo.
+  async function anotherCopy(): Promise<string> {
+    const last = [...items.value].reverse().find((i) => (i.status === 'ready' || i.status === 'added') && i.form)
+    if (!last?.form) return 'Scan a card first'
+    if (last.status === 'ready') last.form.quantity = (last.form.quantity || 1) + 1
+    else if (last.card) last.card = await api<Card>(`/api/cards/${last.card.id}`, { method: 'PATCH', body: { quantity: last.card.quantity + 1 } })
+    return `${last.form.name}: now ${last.status === 'ready' ? last.form.quantity : last.card?.quantity} copies`
   }
 
   // Crop the saved photo to the card, then identify and price the cropped photo.
@@ -163,7 +227,16 @@ export function useScanQueue() {
   async function save(key: number) {
     const it = find(key)
     if (!it?.form || !it.scan || it.status !== 'ready' || !it.form.name) return
+    if (session.value.mergeDups) { // re-check: an earlier card in this batch may have just been added
+      await findDups(it)
+      if (it.dups.length) return addCopy(key)
+    }
     it.status = 'saving'
+    let slotUsed: number | null = null
+    if (session.value.slotOn && !it.form.slot) { // numbered in the order cards are added, which is scan order for "Add all"
+      it.form.slot = slotLabel(session.value, session.value.slotNext)
+      slotUsed = session.value.slotNext++
+    }
     try {
       // Only carry the quote over if it was for the query being saved; otherwise the card prices fresh later.
       const price = it.quote && it.quote.query === it.form.search_query ? it.quote : null
@@ -176,6 +249,10 @@ export function useScanQueue() {
     } catch (e: any) {
       it.status = 'error'
       it.error = `Couldn't save: ${e.message}`
+      if (slotUsed != null) { // give the number back if nothing else took one meanwhile
+        if (session.value.slotNext === slotUsed + 1) session.value.slotNext = slotUsed
+        it.form.slot = null
+      }
     }
   }
 
@@ -201,5 +278,5 @@ export function useScanQueue() {
     for (const i of items.value) if (i.form && i.status !== 'added' && i.form.location_id === prev) i.form.location_id = loc
   })
 
-  return { items, counts, readyValue, addedValue, defaultLocation, autoAdd, addFiles, retry, reprice, recrop, save, saveAll, remove, clearAdded }
+  return { items, counts, readyValue, addedValue, defaultLocation, autoAdd, session, nextSlot, addCopy, anotherCopy, addFiles, retry, reprice, recrop, save, saveAll, remove, clearAdded }
 }
