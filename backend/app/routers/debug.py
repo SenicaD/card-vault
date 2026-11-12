@@ -18,6 +18,8 @@ from ..models import JobRun, PriceTrace, utcnow
 from ..services import refresh as refresh_service
 from ..services.debuglog import EVENTS
 from ..services.ebay import get_ebay
+from ..services.sold import SoldCompsClient, get_sold
+from ..services.sold_refresh import used_this_month
 from ..services.trace import compare_traces
 from .common import get_card_or_404
 
@@ -28,7 +30,7 @@ router = APIRouter(prefix="/api/debug", tags=["debug"])
 
 
 def _summary(t: PriceTrace) -> dict:
-    return {"id": t.id, "created_at": t.created_at, "trigger": t.trigger, "mode": t.mode, "query": t.query,
+    return {"id": t.id, "kind": t.kind, "created_at": t.created_at, "trigger": t.trigger, "mode": t.mode, "query": t.query,
             "grades": t.grades, "parallel": t.parallel, "duration_ms": t.duration_ms, "error": t.error,
             "has_listings": t.listings is not None, "has_raw": t.raw is not None,
             "calls": len(t.calls or []), "notes": len(t.notes or []),
@@ -36,7 +38,7 @@ def _summary(t: PriceTrace) -> dict:
 
 
 def _lookups(session: Session, card_id: int) -> list[PriceTrace]:
-    return session.exec(select(PriceTrace).where(PriceTrace.card_id == card_id, PriceTrace.kind == "lookup")
+    return session.exec(select(PriceTrace).where(PriceTrace.card_id == card_id, col(PriceTrace.kind).in_(("lookup", "sold")))
                         .order_by(col(PriceTrace.id).desc())).all()
 
 
@@ -74,7 +76,7 @@ def compare(card_id: int, a: int | None = None, b: int | None = None, session: S
     """Compare two lookups (default: the two newest that still have their listing table)."""
     get_card_or_404(session, card_id)
     if a is None or b is None:
-        rows = [t for t in _lookups(session, card_id) if t.listings is not None]
+        rows = [t for t in _lookups(session, card_id) if t.listings is not None and t.kind == "lookup"]
         if len(rows) < 2:
             raise HTTPException(404, "Need two lookups with listing details to compare")
         new, old = rows[0], rows[1]
@@ -169,6 +171,13 @@ def health():
     info["db"], info["backups"] = db, backups
     imgs = [f for f in s.image_dir.glob("*") if f.is_file()] if s.image_dir.exists() else []
     info["images"] = {"count": len(imgs), "size_mb": _mb(sum(f.stat().st_size for f in imgs))}
+    provider = get_sold()
+    with Session(engine) as session:
+        info["sold"] = {"provider": provider.name if provider else None, "configured": provider is not None,
+                        "budget": s.sold_monthly_budget, "used_this_month": used_this_month(session),
+                        "auto_used": used_this_month(session, "auto"), "refresh_days": s.sold_refresh_days,
+                        "min_value": s.sold_min_value, "window_days": s.sold_window_days,
+                        "auto_enabled": isinstance(provider, SoldCompsClient)}
     return info
 
 

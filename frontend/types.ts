@@ -260,6 +260,7 @@ export interface GradeCompare {
   gap: number | null
   gap_pct: number | null
   days_median: number | null
+  sold_source: 'sold' | 'estimated' | null
   yours_median: number | null
   yours_count: number
 }
@@ -274,18 +275,22 @@ export interface SoldRow {
   currency: string
   url: string | null
   image_url: string | null
-  first_seen: string
+  first_seen: string | null
   gone_at: string | null
   days_listed: number | null
-  verdict: 'not_found' | 'out_of_stock' | null
+  verdict: 'not_found' | 'out_of_stock' | 'sold' | null
+  source: 'sold' | 'estimated'
+  best_offer: boolean
   vs_asking_pct: number | null
 }
 
+export interface SoldProviderInfo { configured: boolean; name: string | null; last_checked: string | null; budget: number; used: number }
 export interface SoldCompare {
   days: number
-  source: string
+  source: 'sold' | 'estimated'
   grades: GradeCompare[]
   rows: SoldRow[]
+  provider: SoldProviderInfo
 }
 
 export interface TraceCall { api: string; purpose: string; detail: string; ms: number; returned: number | null; error: string | null }
@@ -297,7 +302,7 @@ export interface TraceFunnel {
 export type Decision = 'junk' | 'unknown_grade' | 'grade_not_requested' | 'excluded' | 'other_version' | 'outlier' | 'used'
 export interface TraceListing { id: string; t: string; p: number; g: string | null; v: string | null; d: Decision; r: 'low' | 'median' | 'high' | null; u: string | null }
 export interface TraceSummary {
-  id: number; created_at: string; trigger: string | null; mode: string | null; query: string | null; grades: string[] | null
+  id: number; kind: 'lookup' | 'sold'; created_at: string; trigger: string | null; mode: string | null; query: string | null; grades: string[] | null
   parallel: string | null; duration_ms: number | null; error: string | null; has_listings: boolean; has_raw: boolean
   calls: number; notes: number; medians: Record<string, number | null>
 }

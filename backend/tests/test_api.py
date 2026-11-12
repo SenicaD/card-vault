@@ -996,3 +996,92 @@ def test_identification_trace_and_debug_pages():
         ev = c.get("/api/debug/events").json()
         assert ev["events"] and ev["last_hour"]["calls"] >= 1
         assert "runs" in c.get("/api/debug/jobs").json()
+
+
+def test_soldcomps_response_parsing_and_errors(monkeypatch):
+    import asyncio
+
+    import httpx
+
+    from app.services import sold
+    from app.services.sold import SoldApiError, SoldCompsClient, parse_items
+
+    body = {"items": [
+        {"itemId": "1", "title": "Luka Doncic PSA 10", "soldPrice": "99.50", "soldCurrency": "USD", "endedAt": "2026-11-01",
+         "bestOfferAccepted": True, "url": "https://ebay.com/itm/1"},
+        {"itemId": "2", "title": "euro sale", "soldPrice": "50", "soldCurrency": "EUR", "endedAt": "2026-11-01"},
+        {"itemId": "3", "title": "no price", "soldPrice": None, "soldCurrency": "USD"},
+        {"itemId": "4", "title": "bad date", "soldPrice": "10", "soldCurrency": "USD", "endedAt": "soon"}]}
+    items = parse_items(body)
+    assert [i.item_id for i in items] == ["1", "4"] and items[0].best_offer and items[0].price == 99.5 and items[1].ended_at is None
+
+    class Fake:
+        status = 200
+        def __init__(self, *a, **k): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def get(self, url, params=None, headers=None):
+            Fake.seen = (url, params, headers)
+            if Fake.status == 200:
+                return httpx.Response(200, json=body, headers={"X-Usage-Remaining": "77"})
+            return httpx.Response(Fake.status, json={"code": "quota_exceeded", "message": "monthly quota used"})
+
+    monkeypatch.setattr(sold.httpx, "AsyncClient", Fake)
+    from app.config import get_settings
+    client = SoldCompsClient(get_settings().model_copy(update={"soldcomps_api_key": "sc_test"}))
+    got = asyncio.run(client.search("luka doncic psa 10"))
+    url, params, headers = Fake.seen
+    assert url.endswith("/v1/scrape") and params["sold"] == "true" and headers["Authorization"] == "Bearer sc_test"
+    assert len(got) == 2 and client.usage["x-usage-remaining"] == "77"
+    Fake.status = 429
+    try:
+        asyncio.run(client.search("x"))
+        raise AssertionError("expected an error")
+    except SoldApiError as e:
+        assert e.status == 429 and e.code == "quota_exceeded"
+
+
+def test_sold_prices_flow_into_the_comparison_and_trend(monkeypatch):
+    from app.config import get_settings
+    monkeypatch.setattr(get_settings(), "sold_monthly_budget", 2)
+    with TestClient(app) as c:
+        card, _ = _priced_card(c, grade="Raw")
+        cid = card["id"]
+        c.post(f"/api/cards/{cid}/price", json={})
+        r = c.post(f"/api/cards/{cid}/sold/refresh")
+        assert r.status_code == 200, r.text
+        out = r.json()
+        assert out["found"] > 0 and out["median"] > 0 and out["grade"] == "Raw"
+        cmp = c.get(f"/api/cards/{cid}/sold-compare", params={"days": 90}).json()
+        g = next(x for x in cmp["grades"] if x["grade"] == "Raw")
+        assert cmp["source"] == "sold" and g["sold_source"] == "sold" and g["sold_median"] == out["median"] and g["gap"] is not None
+        assert cmp["rows"] and cmp["rows"][0]["source"] == "sold" and cmp["provider"]["configured"] and cmp["provider"]["used"] == 1
+        trend = c.get(f"/api/cards/{cid}/trend?range=1m&grades=Raw").json()
+        assert trend["sold_source"] == "sold" and trend["sold"][0]["points"]
+        # the sold check shows up in the card's debug trace list, with its searches
+        traces = c.get(f"/api/cards/{cid}/debug/traces").json()
+        t = next(x for x in traces if x["kind"] == "sold")
+        full = c.get(f"/api/cards/{cid}/debug/traces/{t['id']}").json()
+        assert full["mode"] == "ebay-sold" and full["calls"][0]["api"] == "sold search" and full["funnel"][0]["used"] == out["used"]
+        # the monthly budget is enforced before any call is made
+        assert c.post(f"/api/cards/{cid}/sold/refresh").status_code == 200
+        blocked = c.post(f"/api/cards/{cid}/sold/refresh")
+        assert blocked.status_code == 503 and "budget" in blocked.json()["detail"]
+        assert c.get("/api/debug/health").json()["sold"]["used_this_month"] == 2
+
+
+def test_automatic_sold_checks_respect_the_auto_budget(monkeypatch):
+    import asyncio
+
+    from app.config import get_settings
+    from app.services import sold_refresh
+    monkeypatch.setattr(get_settings(), "sold_monthly_budget", 100)
+    with TestClient(app) as c:
+        ids = [_priced_card(c, grade="Raw")[0]["id"] for _ in range(2)]
+        for i in ids:
+            c.post(f"/api/cards/{i}/price", json={})
+        monkeypatch.setattr(get_settings(), "sold_monthly_budget", 5)  # auto share is 80%: 4 lookups minus what is spent
+        done, failed = asyncio.run(sold_refresh.sold_once(pause=0))
+        assert failed == 0 and done >= 2
+        again, _ = asyncio.run(sold_refresh.sold_once(pause=0))
+        assert again == 0  # every card was just checked, so none is due until the refresh interval passes

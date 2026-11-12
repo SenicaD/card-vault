@@ -26,6 +26,14 @@ class Settings(BaseSettings):
     # Re-price unsold cards this often so the trend chart fills in (live eBay only). 0 turns it off.
     price_refresh_hours: float = 24
 
+    # Sold prices from SoldComps (sold-comps.com). Leave the key empty to switch the feature off.
+    soldcomps_api_key: str = ""
+    soldcomps_base_url: str = "https://api.sold-comps.com"
+    sold_monthly_budget: int = 100  # lookups the app may spend per calendar month (the free tier gives 100)
+    sold_refresh_days: int = 7  # how often a card's sold prices are refreshed automatically
+    sold_min_value: float = 0  # automatic checks only for cards estimated at or above this
+    sold_window_days: int = 90  # how far back sold prices count
+
     database_url: str = "sqlite:///./data/cardvault.db"
     image_dir: Path = Path("./data/images")
     cors_origins: str = "http://localhost:3000"

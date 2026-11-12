@@ -12,6 +12,7 @@ interface Health {
   db: { path?: string; size_mb?: number; tables: Record<string, number> }
   disk?: { free_gb: number; total_gb: number }
   images: { count: number; size_mb: number }
+  sold: { provider: string | null; configured: boolean; budget: number; used_this_month: number; auto_used: number; refresh_days: number; min_value: number; window_days: number; auto_enabled: boolean }
   backups: { name: string; size_mb: number; modified: string }[]
 }
 const jobs = ref<{ runs: JobRunRow[]; current: any; daily_enabled: boolean; every_hours: number } | null>(null)
@@ -138,6 +139,20 @@ const eventHeaders = [{ title: 'Time', key: 'ts' }, { title: 'Why', key: 'purpos
               <v-alert v-if="test" :type="test.ok ? 'success' : 'error'" variant="tonal" density="compact" class="mx-5 mb-4">
                 {{ test.ok ? `Worked: eBay answered in ${test.ms} ms.` : `Failed after ${test.ms} ms: ${test.error}` }}
               </v-alert>
+            </v-card>
+          </v-col>
+          <v-col cols="12" md="6">
+            <v-card class="h-100">
+              <div class="card-head"><div><h2><v-icon icon="mdi-cash-check" size="18" />Sold prices</h2></div></div>
+              <dl v-if="health.sold.configured" class="facts card-body pt-0">
+                <div><dt>Provider</dt><dd>{{ health.sold.provider }}</dd></div>
+                <div><dt>Lookups this month</dt><dd class="num">{{ health.sold.used_this_month }} of {{ health.sold.budget }}</dd></div>
+                <div><dt>Of those, automatic</dt><dd class="num">{{ health.sold.auto_used }} (up to 80% of the budget)</dd></div>
+                <div><dt>Automatic refresh</dt><dd>{{ health.sold.auto_enabled ? `every ${health.sold.refresh_days} days per card, most valuable first` : 'off (demo data)' }}</dd></div>
+                <div><dt>Only cards worth</dt><dd>{{ health.sold.min_value ? `at least $${health.sold.min_value}` : 'any value' }}</dd></div>
+                <div><dt>Sales counted from</dt><dd>the last {{ health.sold.window_days }} days</dd></div>
+              </dl>
+              <p v-else class="px-5 pb-4 text-body-2 text-muted-c">Not set up. Add SOLDCOMPS_API_KEY to the settings file and restart to turn on real sold prices.</p>
             </v-card>
           </v-col>
           <v-col cols="12" md="6">

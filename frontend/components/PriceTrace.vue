@@ -35,7 +35,7 @@ watch(() => props.version, loadList)
 watch(pick, () => { loadTrace(); compareIds.value = null })
 
 const items = computed(() => list.value.map((t) => ({
-  value: t.id, title: `${stamp(t.created_at)} · ${TRIGGER_LABEL[t.trigger ?? ''] ?? t.trigger ?? ''}${t.error ? ' · FAILED' : ''}`,
+  value: t.id, title: `${stamp(t.created_at)} · ${t.kind === 'sold' ? 'Sold check' : (TRIGGER_LABEL[t.trigger ?? ''] ?? t.trigger ?? '')}${t.error ? ' · FAILED' : ''}`,
 })))
 const fun = computed<TraceFunnel | null>(() => trace.value?.funnel?.find((f) => f.grade === grade.value) ?? null)
 const gradeListings = computed(() => (trace.value?.listings ?? []).filter((l) => l.g === grade.value))
@@ -47,11 +47,11 @@ const headers = [
 const decisionItems = computed(() => [{ value: 'all', title: 'All listings' },
   ...Object.entries(DECISION_LABEL).map(([value, title]) => ({ value, title }))])
 const idx = computed(() => list.value.findIndex((t) => t.id === pick.value))
-const previous = computed(() => list.value.slice(idx.value + 1).find((t) => t.has_listings))
+const previous = computed(() => list.value.slice(idx.value + 1).find((t) => t.has_listings && t.kind === list.value[idx.value]?.kind))
 function compareWithPrevious() {
   if (previous.value && pick.value != null) { compareIds.value = [previous.value.id, pick.value]; tab.value = 'compare' }
 }
-const modeText = (m: string | null) => (m === 'ebay-image' ? 'the card photo' : m === 'ebay-active' ? 'the search words' : m ?? '—')
+const modeText = (m: string | null) => (m === 'ebay-image' ? 'the card photo' : m === 'ebay-active' ? 'the search words' : m === 'ebay-sold' ? 'sold listings (SoldComps)' : m ?? '—')
 const total = computed(() => trace.value?.summary?.after_top_up ?? trace.value?.summary?.returned ?? 0)
 </script>
 
@@ -73,7 +73,7 @@ const total = computed(() => trace.value?.summary?.after_top_up ?? trace.value?.
           This lookup failed: {{ trace.error }}
         </v-alert>
         <p class="text-body-2 mb-3">
-          {{ stamp(trace.created_at) }} · {{ TRIGGER_LABEL[trace.trigger ?? ''] ?? trace.trigger }} · searched by <strong>{{ modeText(trace.mode) }}</strong>
+          {{ stamp(trace.created_at) }} · {{ trace.mode === 'ebay-sold' ? 'Sold check' : (TRIGGER_LABEL[trace.trigger ?? ''] ?? trace.trigger) }} · searched by <strong>{{ modeText(trace.mode) }}</strong>
           <template v-if="trace.query"> (words: "{{ trace.query }}")</template>
           <template v-if="trace.parallel"> · version <strong>{{ trace.parallel }}</strong> only</template>
           <template v-if="trace.duration_ms != null"> · {{ trace.duration_ms }} ms</template>

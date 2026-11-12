@@ -294,3 +294,34 @@ class JobRun(SQLModel, table=True):
     refreshed: int = 0
     failed: int = 0
     errors: list[dict[str, Any]] | None = Field(default=None, sa_column=Column(JSON, nullable=True))
+
+
+# ---------- Sold prices (from a sold-listings provider) ----------
+
+class SoldSale(SQLModel, table=True):
+    """A sale reported by the sold-prices provider for one of your cards' searches."""
+
+    id: int | None = Field(default=None, primary_key=True)
+    card_id: int = Field(foreign_key="card.id", index=True)
+    item_id: str = Field(index=True)
+    grade: str
+    title: str
+    price: float  # the sold price; for a Best Offer sale this is usually the asking price, so an upper bound
+    currency: str = "USD"
+    ended_at: datetime | None = ts(default=None)  # the provider gives a date only
+    best_offer: bool = False
+    url: str | None = None
+    image_url: str | None = None
+    fetched_at: datetime = ts(default_factory=utcnow)
+
+
+class SoldCall(SQLModel, table=True):
+    """One request to the sold-prices provider, so spending can be capped and audited."""
+
+    id: int | None = Field(default=None, primary_key=True)
+    at: datetime = ts(default_factory=utcnow, index=True)
+    card_id: int | None = Field(default=None, index=True)
+    kind: str = "manual"  # manual | auto
+    cost: int = 0  # requests charged (failed requests are free)
+    ok: bool = True
+    error: str | None = None

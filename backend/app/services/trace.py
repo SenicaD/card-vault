@@ -79,13 +79,13 @@ def save_trace(session: Session, trace: Trace, card_id: int | None = None, keep_
     session.add(row)
     session.commit()
     session.refresh(row)
-    if card_id is not None and trace.kind == "lookup":
-        _prune(session, card_id)
+    if card_id is not None and trace.kind in ("lookup", "sold"):
+        _prune(session, card_id, trace.kind)
     return row
 
 
-def _prune(session: Session, card_id: int) -> None:
-    rows = session.exec(select(PriceTrace).where(PriceTrace.card_id == card_id, PriceTrace.kind == "lookup")
+def _prune(session: Session, card_id: int, kind: str = "lookup") -> None:
+    rows = session.exec(select(PriceTrace).where(PriceTrace.card_id == card_id, PriceTrace.kind == kind)
                         .order_by(col(PriceTrace.id).desc())).all()
     for r in rows[KEEP_TRACES:]:
         session.delete(r)

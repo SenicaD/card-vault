@@ -99,11 +99,22 @@ const sales = ref<Sale[]>([])
 const soldDays = ref(90)
 const sold = ref<SoldCompare | null>(null)
 const soldHeaders = [
-  { title: 'Gone', key: 'gone_at' }, { title: 'Grade', key: 'grade' }, { title: 'Version', key: 'parallel' },
+  { title: 'Sold / gone', key: 'gone_at' }, { title: 'Grade', key: 'grade' }, { title: 'Version', key: 'parallel' },
   { title: 'Listing', key: 'title', sortable: false }, { title: 'Days up', key: 'days_listed', align: 'end' as const },
-  { title: 'Last asking', key: 'price', align: 'end' as const }, { title: 'vs asking now', key: 'vs_asking_pct', align: 'end' as const },
+  { title: 'Price', key: 'price', align: 'end' as const }, { title: 'vs asking now', key: 'vs_asking_pct', align: 'end' as const },
 ]
 const pctText = (v: number | null | undefined) => (v == null ? '' : `${v > 0 ? '+' : ''}${v}%`)
+const checkingSold = ref(false)
+const soldMsg = ref('')
+async function checkSold() {
+  checkingSold.value = true; soldMsg.value = ''
+  try {
+    const r = await api<{ found: number; used: number; median: number | null; best_offers: number }>(`/api/cards/${id}/sold/refresh`, { method: 'POST' })
+    soldMsg.value = r.used ? `Found ${r.found} sales; ${r.used} match this card. Median ${money(r.median)}.` : `Found ${r.found} sales, but none match this card's grade and version.`
+    await loadGone()
+    loadTrend()
+  } catch (e: any) { soldMsg.value = e.message } finally { checkingSold.value = false }
+}
 // loadGone keeps its old name: it is called after every lookup and refresh
 const loadGone = async () => {
   sold.value = await api<SoldCompare>(`/api/cards/${id}/sold-compare`, {
@@ -578,26 +589,37 @@ onMounted(() => {
               </div>
 
               <!-- Asking vs sold -->
-              <template v-if="sold && (sold.grades.some((g) => g.sold_count || g.yours_count) || sold.rows.length)">
+              <template v-if="sold && (sold.provider.configured || sold.grades.some((g) => g.sold_count || g.yours_count) || sold.rows.length)">
                 <v-divider />
                 <div class="px-5 pt-4 pb-1 d-flex align-center justify-space-between flex-wrap ga-2">
                   <span class="text-body-2 font-weight-medium">Asking vs sold</span>
-                  <v-btn-toggle v-model="soldDays" mandatory density="compact" variant="outlined" divided rounded="lg" color="primary" aria-label="Sold window" @update:model-value="loadGone">
-                    <v-btn :value="30" size="small">30D</v-btn><v-btn :value="90" size="small">90D</v-btn>
-                    <v-btn :value="365" size="small">1Y</v-btn><v-btn :value="0" size="small">All</v-btn>
-                  </v-btn-toggle>
+                  <div class="d-flex align-center ga-2 flex-wrap">
+                    <v-btn v-if="sold.provider.configured" size="small" variant="outlined" prepend-icon="mdi-cash-check" :loading="checkingSold" @click="checkSold">Check sold prices</v-btn>
+                    <v-btn-toggle v-model="soldDays" mandatory density="compact" variant="outlined" divided rounded="lg" color="primary" aria-label="Sold window" @update:model-value="loadGone">
+                      <v-btn :value="30" size="small">30D</v-btn><v-btn :value="90" size="small">90D</v-btn>
+                      <v-btn :value="365" size="small">1Y</v-btn><v-btn :value="0" size="small">All</v-btn>
+                    </v-btn-toggle>
+                  </div>
                 </div>
-                <v-alert type="info" variant="tonal" density="compact" class="mx-5 my-2">
-                  eBay's public API doesn't share sold prices. "Likely sold" is the last asking price of a listing that has since disappeared:
+                <p v-if="soldMsg" class="px-5 text-body-2 mb-1">{{ soldMsg }}</p>
+                <p v-if="sold.provider.configured" class="px-5 text-caption text-muted-c mb-1">
+                  <template v-if="sold.provider.last_checked">Sold prices last checked {{ stamp(sold.provider.last_checked) }}. </template><template v-else>Not checked yet. </template>
+                  {{ sold.provider.used }} of {{ sold.provider.budget }} monthly lookups used.
+                </p>
+                <v-alert v-if="sold.source === 'sold'" type="success" variant="tonal" density="compact" class="mx-5 my-2">
+                  "Sold" figures are real sales reported by the sold-prices service. For Best Offer sales the price shown is the asking price, so the real sale was probably lower.
+                </v-alert>
+                <v-alert v-else type="info" variant="tonal" density="compact" class="mx-5 my-2">
+                  <template v-if="sold.provider.configured">No real sales checked for this card yet: press "Check sold prices". Until then, </template>"Likely sold" is the last asking price of a listing that has since disappeared:
                   usually a sale, but a seller can also end or relist it. Only "Your sales" are confirmed.
                 </v-alert>
                 <v-table density="compact" class="grade-table">
-                  <thead><tr><th>Grade</th><th class="text-right">Asking now</th><th class="text-right">Likely sold</th><th class="text-right">Sold vs asking</th><th class="text-right">Days up</th><th class="text-right">Your sales</th></tr></thead>
+                  <thead><tr><th>Grade</th><th class="text-right">Asking now</th><th class="text-right">Sold</th><th class="text-right">Sold vs asking</th><th class="text-right">Days up</th><th class="text-right">Your sales</th></tr></thead>
                   <tbody>
                     <tr v-for="g in sold.grades" :key="g.grade">
                       <td class="text-no-wrap">{{ g.grade }}</td>
                       <td class="text-right num">{{ money(g.asking_median) }}<span class="text-muted-c text-caption"> ({{ g.asking_count }})</span></td>
-                      <td class="text-right num">{{ money(g.sold_median) }}<span v-if="g.sold_count" class="text-muted-c text-caption"> ({{ g.sold_count }})</span></td>
+                      <td class="text-right num">{{ money(g.sold_median) }}<span v-if="g.sold_count" class="text-muted-c text-caption"> ({{ g.sold_count }}{{ g.sold_source === 'estimated' ? ', likely' : '' }})</span></td>
                       <td class="text-right num text-no-wrap" :class="g.gap == null ? '' : g.gap < 0 ? 'text-error' : 'text-success'">
                         <template v-if="g.gap != null">{{ g.gap < 0 ? '−' : '+' }}{{ money(Math.abs(g.gap)) }} ({{ pctText(g.gap_pct) }})</template><template v-else>—</template>
                       </td>
@@ -612,7 +634,8 @@ onMounted(() => {
                   <template #item.title="{ item }"><span class="truncate d-block gone-title">{{ item.title }}</span></template>
                   <template #item.days_listed="{ item }"><span class="num">{{ item.days_listed ?? '—' }}</span></template>
                   <template #item.price="{ item }">
-                    <PriceLink :value="item.price" :listing="{ item_id: item.item_id, title: item.title, price: item.price, currency: item.currency, condition: null, url: item.url }" :label="item.verdict === 'out_of_stock' ? 'Sold out' : 'No longer on eBay'" />
+                    <PriceLink :value="item.price" :listing="{ item_id: item.item_id, title: item.title, price: item.price, currency: item.currency, condition: null, url: item.url }" :label="item.source === 'sold' ? 'Sold' : item.verdict === 'out_of_stock' ? 'Sold out' : 'No longer on eBay'" />
+                    <v-chip v-if="item.best_offer" size="x-small" variant="tonal" color="warning" class="ml-1" title="Best Offer sale: this is the asking price, so the sale was probably lower">best offer</v-chip>
                   </template>
                   <template #item.vs_asking_pct="{ item }"><span class="num" :class="(item.vs_asking_pct ?? 0) < 0 ? 'text-error' : 'text-success'">{{ pctText(item.vs_asking_pct) || '—' }}</span></template>
                 </v-data-table></div>

@@ -19,5 +19,5 @@ export const DECISION_LABEL: Record<string, string> = {
 export const DECISION_COLOR: Record<string, string> = {
   junk: 'grey', unknown_grade: 'grey', grade_not_requested: 'grey', excluded: 'warning', other_version: 'warning', outlier: 'error', used: 'success',
 }
-export const TRIGGER_LABEL: Record<string, string> = { manual: 'Look up', daily: 'Daily refresh', bulk: 'Bulk re-price', crop: 'Crop', scan: 'Scan' }
+export const TRIGGER_LABEL: Record<string, string> = { manual: 'Look up', daily: 'Daily refresh', bulk: 'Bulk re-price', crop: 'Crop', scan: 'Scan', auto: 'Automatic' }
 export const stamp = (s: string | null | undefined) => (s ? isoDate(s).replace('T', ' ').slice(0, 16) : '')

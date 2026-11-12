@@ -9,6 +9,8 @@ from .config import get_settings
 from .db import init_db
 from .routers import cards, debug, ebay, locations, portfolio, sales, scan
 from .services.refresh import refresh_loop
+from .services.sold import SoldCompsClient, get_sold
+from .services.sold_refresh import sold_loop
 
 settings = get_settings()
 
@@ -17,11 +19,13 @@ settings = get_settings()
 async def lifespan(_: FastAPI):
     init_db()
     # The daily re-pricing job only runs against real eBay data; mock prices would just be noise.
-    task = None
+    tasks = []
     if settings.ebay_mode == "live" and settings.price_refresh_hours > 0:
-        task = asyncio.create_task(refresh_loop())
+        tasks.append(asyncio.create_task(refresh_loop()))
+    if isinstance(get_sold(), SoldCompsClient):  # real sold prices are only fetched when a key is set
+        tasks.append(asyncio.create_task(sold_loop()))
     yield
-    if task:
+    for task in tasks:
         task.cancel()
         with suppress(asyncio.CancelledError):
             await task

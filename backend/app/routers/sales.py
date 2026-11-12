@@ -1,14 +1,17 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, UTC
 from statistics import median
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
-from sqlmodel import Session, col, select
+from sqlmodel import Session, col, func, select
 
 from ..db import get_session
-from ..models import CardStatus, ListingSeen, Sale, utcnow
+from ..config import get_settings
+from ..models import CardStatus, ListingSeen, Sale, SoldCall, SoldSale, utcnow
 from ..services.grading import grade_sort_key, normalize_grade
 from ..services.parallels import parse_parallel
+from ..services.sold import SoldApiError, get_sold
+from ..services.sold_refresh import SoldUnavailable, budget_left, refresh_sold, used_this_month
 from .common import get_card_or_404
 
 router = APIRouter(prefix="/api/cards/{card_id}", tags=["sales"])
@@ -67,6 +70,7 @@ class GradeCompare(BaseModel):
     gap: float | None  # likely-sold minus asking, in dollars
     gap_pct: float | None
     days_median: float | None  # how long the disappeared listings were up before they went
+    sold_source: str | None = None  # "sold": real sales from the provider; "estimated": listings that disappeared
     yours_median: float | None  # what you actually sold this card for (recorded by you)
     yours_count: int
 
@@ -81,18 +85,29 @@ class SoldRow(BaseModel):
     currency: str
     url: str | None
     image_url: str | None
-    first_seen: datetime
-    gone_at: datetime | None
+    first_seen: datetime | None
+    gone_at: datetime | None  # the sale date for real sales
     days_listed: float | None
     verdict: str | None
+    source: str = "estimated"  # "sold" | "estimated"
+    best_offer: bool = False
     vs_asking_pct: float | None  # this listing's price against today's asking median for its grade
+
+
+class SoldProviderInfo(BaseModel):
+    configured: bool
+    name: str | None = None
+    last_checked: datetime | None = None
+    budget: int = 0
+    used: int = 0
 
 
 class SoldCompare(BaseModel):
     days: int
-    source: str  # "estimated": eBay's public API doesn't return sold prices, so these are inferred
+    source: str  # "sold" when real sales are available for some grade, otherwise "estimated"
     grades: list[GradeCompare]
     rows: list[SoldRow]
+    provider: SoldProviderInfo
 
 
 def _med(values: list[float]) -> float | None:
@@ -118,7 +133,12 @@ def sold_compare(card_id: int, days: int = Query(90, ge=0, le=3650), grades: lis
     sales = [x for x in session.exec(select(Sale).where(Sale.card_id == card_id)).all()
              if cutoff is None or x.sold_at >= cutoff]
 
-    present = {r.grade for r in active} | {r.grade for r in gone} | {x.grade for x in sales if x.grade}
+    real = session.exec(select(SoldSale).where(SoldSale.card_id == card_id)).all()
+    real = [r for r in real if (cutoff is None or (r.ended_at and r.ended_at >= cutoff))]
+    if card.parallel and not all_versions:
+        real = [r for r in real if parse_parallel(r.title) == card.parallel]
+
+    present = {r.grade for r in active} | {r.grade for r in gone} | {r.grade for r in real} | {x.grade for x in sales if x.grade}
     wanted = [normalize_grade(g) for g in grades] if grades else sorted(present | {normalize_grade(card.grade)}, key=grade_sort_key)
     wanted = list(dict.fromkeys(wanted))[:8]
 
@@ -126,24 +146,51 @@ def sold_compare(card_id: int, days: int = Query(90, ge=0, le=3650), grades: lis
     for g in wanted:
         ask = [r.price for r in active if r.grade == g]
         sold = [r for r in gone if r.grade == g]
+        real_g = [r.price for r in real if r.grade == g]
         mine = [x.price for x in sales if x.grade == g]
-        a, sm = _med(ask), _med([r.price for r in sold])
+        a, sm = _med(ask), _med(real_g if real_g else [r.price for r in sold])
         ask_by_grade[g] = a
-        spans = [(r.gone_at - r.first_seen).total_seconds() / 86400 for r in sold if r.gone_at and r.first_seen]
+        spans = [(r.gone_at - r.first_seen).total_seconds() / 86400 for r in sold if r.gone_at and r.first_seen] if not real_g else []
         dm = _med(spans)
+        n_sold = len(real_g) if real_g else len(sold)
         out.append(GradeCompare(
-            grade=g, asking_median=a, asking_count=len(ask), sold_median=sm, sold_count=len(sold),
+            grade=g, asking_median=a, asking_count=len(ask), sold_median=sm, sold_count=n_sold,
             gap=round(sm - a, 2) if a is not None and sm is not None else None,
             gap_pct=round((sm - a) / a * 100, 1) if a and sm is not None else None,
             days_median=round(dm, 1) if dm is not None else None,
+            sold_source="sold" if real_g else ("estimated" if sold else None),
             yours_median=_med(mine), yours_count=len(mine)))
 
     detail = [SoldRow(
         id=r.id, item_id=r.item_id, grade=r.grade, parallel=parse_parallel(r.title), title=r.title, price=r.price,
+        currency=r.currency, url=r.url, image_url=r.image_url, first_seen=None, gone_at=r.ended_at, days_listed=None,
+        verdict="sold", source="sold", best_offer=r.best_offer,
+        vs_asking_pct=round((r.price - ask_by_grade[r.grade]) / ask_by_grade[r.grade] * 100, 1)
+        if ask_by_grade.get(r.grade) else None) for r in real if r.grade in wanted]
+    real_grades = {r.grade for r in real}
+    detail += [SoldRow(
+        id=r.id, item_id=r.item_id, grade=r.grade, parallel=parse_parallel(r.title), title=r.title, price=r.price,
         currency=r.currency, url=r.url, image_url=r.image_url, first_seen=r.first_seen, gone_at=r.gone_at,
         days_listed=round(max(0.0, (r.gone_at - r.first_seen).total_seconds() / 86400), 1) if r.gone_at else None,
-        verdict=r.verdict,
+        verdict=r.verdict, source="estimated",
         vs_asking_pct=round((r.price - ask_by_grade[r.grade]) / ask_by_grade[r.grade] * 100, 1)
-        if ask_by_grade.get(r.grade) else None) for r in gone if r.grade in wanted]
-    detail.sort(key=lambda r: r.gone_at, reverse=True)
-    return SoldCompare(days=days, source="estimated", grades=out, rows=detail[:200])
+        if ask_by_grade.get(r.grade) else None) for r in gone if r.grade in wanted and r.grade not in real_grades]
+    detail.sort(key=lambda r: r.gone_at or datetime.min.replace(tzinfo=UTC), reverse=True)
+
+    provider = get_sold()
+    last = session.exec(select(func.max(SoldCall.at)).where(SoldCall.card_id == card_id, SoldCall.ok == True)).one()  # noqa: E712
+    info = SoldProviderInfo(configured=provider is not None, name=provider.name if provider else None, last_checked=last,
+                            budget=get_settings().sold_monthly_budget, used=used_this_month(session))
+    return SoldCompare(days=days, source="sold" if real_grades else "estimated", grades=out, rows=detail[:200], provider=info)
+
+
+@router.post("/sold/refresh")
+async def refresh_sold_prices(card_id: int, session: Session = Depends(get_session)):
+    """Look up what this card's matching listings actually sold for (uses one lookup from the monthly budget)."""
+    card = get_card_or_404(session, card_id)
+    try:
+        return await refresh_sold(session, card, "manual")
+    except SoldUnavailable as e:
+        raise HTTPException(503, str(e)) from e
+    except SoldApiError as e:
+        raise HTTPException(429 if e.status == 429 else 502, f"The sold-prices service said: {e}") from e
