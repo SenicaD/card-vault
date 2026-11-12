@@ -27,7 +27,7 @@ function load(c: Card | null) {
 const why = computed(() => {
   const c = card.value
   if (!c) return []
-  return [(c.id_confidence ?? 1) < 0.3 ? `Weak match (${Math.round((c.id_confidence ?? 0) * 100)}%)` : '', c.est_value == null ? 'No price yet' : ''].filter(Boolean)
+  return [(c.id_confidence ?? 1) < 0.3 ? `Weak match (${Math.round((c.id_confidence ?? 0) * 100)}%)` : '', c.value == null ? 'No price yet' : ''].filter(Boolean)
 })
 
 onMounted(async () => {
@@ -118,7 +118,7 @@ const saveNext = () => run('save', async () => {
 
             <div class="d-flex ga-2 flex-wrap mt-1">
               <v-btn variant="outlined" prepend-icon="mdi-magnify" :loading="busy === 'price'" @click="lookUp">Look up price</v-btn>
-              <span v-if="card.est_value != null" class="align-self-center text-body-2">Current estimate <strong class="num">{{ money(card.est_value) }}</strong></span>
+              <span v-if="card.value != null" class="align-self-center text-body-2">Current value <strong class="num">{{ money(card.value) }}</strong> <span class="text-muted-c">({{ card.value_basis }})</span></span>
             </div>
 
             <div v-if="result?.snapshot.top_listings?.length" class="mt-4">

@@ -37,8 +37,8 @@ const maxOf = (rows: { value: number }[]) => Math.max(1, ...rows.map((r) => r.va
     <template v-if="data && t">
       <v-row dense class="mb-2">
         <v-col cols="6" lg="3">
-          <StatCard label="Estimated value" :value="money(t.value)" icon="mdi-currency-usd" color="primary"
-            :sub="[data.series.length > 1 ? `${signed(data.change)} over ${range === 'all' ? 'all time' : range}` : 'History builds as cards are re-priced', t.sold_cards ? `Asking-based. Sold-based: ${money(t.sold_value)} on ${t.sold_cards} cards (asking says ${money(t.asking_value_of_sold_cards)} for those)` : 'Asking-based'].join('. ')" />
+          <StatCard label="Collection value" :value="money(t.value)" icon="mdi-currency-usd" color="primary"
+            :sub="[data.series.length > 1 ? `${signed(data.change)} over ${range === 'all' ? 'all time' : range}` : 'History builds as prices come in', t.sold_cards ? `${t.sold_cards} cards at sold prices${t.asking_cards ? `, ${t.asking_cards} at asking` : ''}. Asking alone: ${money(t.asking_value)}` : 'All asking prices so far'].join('. ')" />
         </v-col>
         <v-col cols="6" lg="3">
           <StatCard label="Paid" :value="t.costed_cards ? money(t.cost) : '—'" icon="mdi-receipt-text-outline" color="info"
@@ -56,7 +56,7 @@ const maxOf = (rows: { value: number }[]) => Math.max(1, ...rows.map((r) => r.va
 
       <v-card class="mb-4">
         <div class="card-head"><div><h2><v-icon icon="mdi-chart-line" size="18" />Value over time</h2>
-          <p>Each card counts from the day it was first priced, at its price on each day.</p></div></div>
+          <p>Sold prices where there were enough sales (the last 90 days up to each date), otherwise the asking price at the time.</p></div></div>
         <div class="card-body"><PortfolioChart :points="data.series" /></div>
       </v-card>
 
@@ -112,7 +112,7 @@ const maxOf = (rows: { value: number }[]) => Math.max(1, ...rows.map((r) => r.va
             <div class="card-body pt-0">
               <NuxtLink v-for="c in data.top_cards" :key="c.id" :to="`/cards/${c.id}`" class="row">
                 <span class="truncate">{{ c.name }} <span class="text-muted-c">{{ c.grade }}<template v-if="c.quantity > 1"> ×{{ c.quantity }}</template></span></span>
-                <span class="num text-no-wrap">{{ money((c.est_value ?? 0) * c.quantity) }}</span>
+                <span class="num text-no-wrap">{{ money((c.value ?? 0) * c.quantity) }}</span>
               </NuxtLink>
             </div>
           </v-card>

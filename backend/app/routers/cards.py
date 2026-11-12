@@ -16,6 +16,7 @@ from ..services.trace import identification_trace, save_trace
 from .common import get_card_or_404, to_read
 
 router = APIRouter(prefix="/api/cards", tags=["cards"])
+VALUE = func.coalesce(Card.sold_value, Card.est_value)  # the value shown for a card: sold when known, else asking
 
 
 def filtered(stmt, q=None, category=None, status=None, location_id=None, grade=None, min_value=None,
@@ -35,11 +36,11 @@ def filtered(stmt, q=None, category=None, status=None, location_id=None, grade=N
     if grade:
         stmt = stmt.where(Card.grade == grade) if grade != "Raw" else stmt.where(or_(Card.grade == "Raw", col(Card.grade).is_(None)))
     if min_value is not None:
-        stmt = stmt.where(col(Card.est_value) >= min_value)
+        stmt = stmt.where(VALUE >= min_value)
     if max_value is not None:
-        stmt = stmt.where(col(Card.est_value) <= max_value)
+        stmt = stmt.where(VALUE <= max_value)
     if unpriced:
-        stmt = stmt.where(col(Card.est_value).is_(None))
+        stmt = stmt.where(VALUE.is_(None))
     if stale_days:
         stmt = stmt.where(or_(col(Card.priced_at).is_(None), col(Card.priced_at) < utcnow() - timedelta(days=stale_days)))
     if low_confidence:
@@ -49,7 +50,7 @@ def filtered(stmt, q=None, category=None, status=None, location_id=None, grade=N
     if no_cost:
         stmt = stmt.where(col(Card.cost).is_(None))
     if needs_review:  # not yet looked over, and either poorly identified or without a price
-        stmt = stmt.where(col(Card.reviewed) == False, or_(col(Card.id_confidence) < LOW_CONFIDENCE, col(Card.est_value).is_(None)))  # noqa: E712
+        stmt = stmt.where(col(Card.reviewed) == False, or_(col(Card.id_confidence) < LOW_CONFIDENCE, VALUE.is_(None)))  # noqa: E712
     return stmt
 
 
@@ -77,7 +78,7 @@ def list_cards(
     stmt = filtered(select(Card), q, category, status, location_id, normalize_grade(grade) if grade else None,
                     min_value, max_value, unpriced, stale_days, low_confidence, no_photo, no_cost, needs_review)
     order = {"recent": col(Card.created_at).desc(),
-             "value": col(Card.est_value).desc().nulls_last(),
+             "value": VALUE.desc().nulls_last(),
              "name": col(Card.name).asc(),
              "oldest_price": col(Card.priced_at).asc().nulls_first()}[sort]
     return [to_read(c) for c in session.exec(stmt.order_by(order)).all()]
@@ -85,21 +86,23 @@ def list_cards(
 
 @router.get("/stats")
 def stats(session: Session = Depends(get_session)):
-    rows = session.exec(select(Card.category, Card.status, func.sum(Card.quantity),
-                               func.sum(func.coalesce(Card.est_value, 0) * Card.quantity))
-                        .group_by(Card.category, Card.status)).all()
-    out = {"total_cards": 0, "total_value": 0.0, "by_category": {}, "by_status": {}}
-    for cat, st, qty, val in rows:
+    rows = session.exec(select(Card.category, Card.status, func.sum(Card.quantity)).group_by(Card.category, Card.status)).all()
+    out = {"total_cards": 0, "by_category": {}, "by_status": {}}
+    for cat, st, qty in rows:
         out["total_cards"] += qty or 0
-        out["total_value"] += val or 0
         out["by_category"][cat] = out["by_category"].get(cat, 0) + (qty or 0)
         out["by_status"][st] = out["by_status"].get(st, 0) + (qty or 0)
-    out["total_value"] = round(out["total_value"], 2)
-    # Sold-based value, beside the asking-based one: only cards with enough sales, and what asking says for those same cards
-    sv, n, ask = session.exec(select(func.coalesce(func.sum(Card.sold_value * Card.quantity), 0), func.count(),
-                                     func.coalesce(func.sum(func.coalesce(Card.est_value, 0) * Card.quantity), 0))
-                              .where(col(Card.sold_value).is_not(None), col(Card.status) != CardStatus.sold)).one()
-    out["sold_value"], out["sold_cards"], out["asking_value_of_sold_cards"] = round(sv, 2), n, round(ask, 2)
+    # Value: what each unsold card sold for when there are enough sales, otherwise its asking-based estimate.
+    live = col(Card.status) != CardStatus.sold
+    total, asking = session.exec(select(func.coalesce(func.sum(func.coalesce(VALUE, 0) * Card.quantity), 0),
+                                        func.coalesce(func.sum(func.coalesce(Card.est_value, 0) * Card.quantity), 0)).where(live)).one()
+    sv, n, ask_of_sold = session.exec(select(func.coalesce(func.sum(Card.sold_value * Card.quantity), 0), func.count(),
+                                             func.coalesce(func.sum(func.coalesce(Card.est_value, 0) * Card.quantity), 0))
+                                      .where(col(Card.sold_value).is_not(None), live)).one()
+    fallback = session.exec(select(func.count()).where(col(Card.sold_value).is_(None), col(Card.est_value).is_not(None), live)).one()
+    out["total_value"], out["asking_value"] = round(total, 2), round(asking, 2)  # headline value; the asking-only total beside it
+    out["sold_value"], out["sold_cards"], out["asking_value_of_sold_cards"] = round(sv, 2), n, round(ask_of_sold, 2)
+    out["asking_cards"] = fallback  # cards still valued at their asking estimate for lack of sales
     s = get_settings()
     out["modes"] = {"identifier": s.identifier, "ebay": s.ebay_mode}
     return out

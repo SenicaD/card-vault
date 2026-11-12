@@ -138,7 +138,7 @@ const sellDate = ref('')
 const sellNote = ref('')
 const todayISO = () => new Date().toISOString().slice(0, 10)
 function openSell() {
-  sellPrice.value = card.value?.est_value ?? latest.value?.median ?? listPrice.value ?? null
+  sellPrice.value = card.value?.value ?? card.value?.est_value ?? latest.value?.median ?? listPrice.value ?? null
   sellDate.value = todayISO()
   sellNote.value = ''
   sellOpen.value = true
@@ -390,7 +390,7 @@ onMounted(() => {
         <div class="side">
           <v-card>
             <div class="card-body photo">
-              <CardThumb :src="card.image_url" :alt="card.name" :foil="!!card.est_value && card.est_value >= 100" />
+              <CardThumb :src="card.image_url" :alt="card.name" :foil="!!card.value && card.value >= 100" />
               <v-btn v-if="card.image_url" block size="small" variant="outlined" class="mt-2" prepend-icon="mdi-crop" @click="cropping = true">Crop photo</v-btn>
             </div>
           </v-card>
@@ -442,12 +442,13 @@ onMounted(() => {
         <!-- Value KPIs -->
         <v-row dense class="mb-2">
           <v-col cols="6" sm="3" class="kpi-wrap">
-            <StatCard label="Estimate" :value="money(card.est_value)" icon="mdi-currency-usd" color="primary" :sub="[card.priced_at ? `Priced ${isoDate(card.priced_at).slice(0, 10)}` : 'Not priced', card.sold_value != null ? `sold ${money(card.sold_value)} (${card.sold_count})` : card.sold_count ? `${card.sold_count} sales, too few` : ''].filter(Boolean).join(' · ')" />
+            <StatCard :label="card.value_basis === 'sold' ? 'Sold value' : 'Value (asking)'" :value="money(card.value)" icon="mdi-currency-usd" color="primary"
+              :sub="card.value_basis === 'sold' ? `Median of ${card.sold_count} sales, last 90 days · asking ${money(card.est_value)}` : card.value_basis === 'asking' ? `Asking price${card.sold_count ? `: only ${card.sold_count} sales, too few` : ': no sold data yet'}${card.priced_at ? ` · priced ${isoDate(card.priced_at).slice(0, 10)}` : ''}` : 'Not priced'" />
             <v-btn v-if="debug.on" icon="mdi-bug-outline" size="x-small" variant="tonal" color="warning" class="kpi-bug" aria-label="Show how this price was calculated" title="Show how this price was calculated" @click="showTrace" />
           </v-col>
-          <v-col cols="6" sm="3"><StatCard label="Low" :value="money(latest?.low)" icon="mdi-arrow-down" color="info" /></v-col>
-          <v-col cols="6" sm="3"><StatCard label="High" :value="money(latest?.high)" icon="mdi-arrow-up" color="warning" /></v-col>
-          <v-col cols="6" sm="3"><StatCard label="Sample size" :value="latest?.sample_size ?? '—'" icon="mdi-chart-box-outline" color="success" :sub="latest?.source === 'ebay-image' ? 'Image matches' : 'Active listings'" /></v-col>
+          <v-col cols="6" sm="3"><StatCard :label="card.value_basis === 'sold' ? 'Lowest sale' : 'Low'" :value="money(card.value_basis === 'sold' ? card.sold_low : latest?.low)" icon="mdi-arrow-down" color="info" /></v-col>
+          <v-col cols="6" sm="3"><StatCard :label="card.value_basis === 'sold' ? 'Highest sale' : 'High'" :value="money(card.value_basis === 'sold' ? card.sold_high : latest?.high)" icon="mdi-arrow-up" color="warning" /></v-col>
+          <v-col cols="6" sm="3"><StatCard :label="card.value_basis === 'sold' ? 'Sales counted' : 'Sample size'" :value="card.value_basis === 'sold' ? card.sold_count : (latest?.sample_size ?? '—')" icon="mdi-chart-box-outline" color="success" :sub="card.value_basis === 'sold' ? `Last 90 days · ${latest?.sample_size ?? 0} asking listings` : latest?.source === 'ebay-image' ? 'Image matches' : 'Active listings'" /></v-col>
         </v-row>
 
         <v-card>

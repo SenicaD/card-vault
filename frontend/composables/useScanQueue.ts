@@ -71,7 +71,7 @@ export function useScanQueue() {
     items.value.filter((i) => i.status === 'ready').reduce((a, i) => a + (i.quote?.median ?? 0) * (i.form?.quantity ?? 1), 0),
   )
   const addedValue = computed(() =>
-    items.value.filter((i) => i.status === 'added').reduce((a, i) => a + (i.card?.est_value ?? 0) * (i.card?.quantity ?? 1), 0),
+    items.value.filter((i) => i.status === 'added').reduce((a, i) => a + (i.card?.value ?? i.card?.est_value ?? 0) * (i.card?.quantity ?? 1), 0),
   )
 
   function addFiles(files: Iterable<File>) {

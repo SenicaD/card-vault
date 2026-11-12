@@ -58,8 +58,8 @@ const headers = [
   { title: 'Grade', key: 'grade', sortable: false },
   { title: 'Qty', key: 'quantity', sortable: false, align: 'end' as const },
   { title: 'Status', key: 'status', sortable: false },
-  { title: 'Est. value (asking)', key: 'est_value', sortable: false, align: 'end' as const },
-  { title: 'Sold value', key: 'sold_value', sortable: false, align: 'end' as const },
+  { title: 'Value', key: 'value', sortable: false, align: 'end' as const },
+  { title: 'Asking', key: 'est_value', sortable: false, align: 'end' as const },
 ]
 
 // Category mix bar: one segment per category, coloured from a fixed categorical palette.
@@ -172,8 +172,8 @@ watch(view, (v) => { try { localStorage.setItem('cv-view', v) } catch {} })
     <!-- KPIs -->
     <v-row dense class="mb-2">
       <v-col cols="6" lg="3">
-        <StatCard label="Estimated value" :value="stats ? money(stats.total_value) : '—'" icon="mdi-currency-usd" color="primary" 
-          :sub="stats && stats.sold_cards ? `Asking prices. Sold-based: ${money(stats.sold_value)} on ${stats.sold_cards} cards (asking says ${money(stats.asking_value_of_sold_cards)} for those)` : 'Sum of eBay asking-price medians. No sold data yet'" />
+        <StatCard label="Collection value" :value="stats ? money(stats.total_value) : '—'" icon="mdi-currency-usd" color="primary"
+          :sub="stats ? (stats.sold_cards ? `${stats.sold_cards} cards at sold prices` + (stats.asking_cards ? `, ${stats.asking_cards} at asking (too few sales)` : '') + `. Asking alone: ${money(stats.asking_value)}` : 'Asking prices so far: no sold data yet') : ''" />
       </v-col>
       <v-col cols="6" lg="3">
         <StatCard label="Total cards" :value="stats?.total_cards ?? '—'" icon="mdi-cards-outline" color="info" :sub="`${locations.length} storage locations`" />
@@ -287,7 +287,7 @@ watch(view, (v) => { try { localStorage.setItem('cv-view', v) } catch {} })
       >
         <template #item.name="{ item }">
           <div class="d-flex align-center ga-3 py-2" style="min-width: 220px">
-            <div class="mini-thumb"><CardThumb :src="item.image_url" :alt="item.name" :foil="!!item.est_value && item.est_value >= 100" /></div>
+            <div class="mini-thumb"><CardThumb :src="item.image_url" :alt="item.name" :foil="!!item.value && item.value >= 100" /></div>
             <div class="min-w-0">
               <div class="font-weight-semibold truncate">{{ item.name }}</div>
               <div class="text-caption text-secondary-c truncate">{{ subline(item) || '—' }}</div>
@@ -308,13 +308,10 @@ watch(view, (v) => { try { localStorage.setItem('cv-view', v) } catch {} })
         </template>
         <template #item.quantity="{ item }"><span class="num">{{ item.quantity }}</span></template>
         <template #item.status="{ item }"><StatusPill :status="item.status" /></template>
-        <template #item.sold_value="{ item }">
-          <span v-if="item.sold_value != null" class="num text-no-wrap" :title="`Median of ${item.sold_count} recent sales`">{{ money(item.sold_value) }}<span class="text-caption text-muted-c"> ({{ item.sold_count }})</span></span>
-          <span v-else-if="item.sold_count" class="text-caption text-muted-c text-no-wrap">{{ item.sold_count }} sales, too few</span>
-          <span v-else class="text-muted-c">—</span>
-        </template>
-        <template #item.est_value="{ item }">
-          <span class="num font-weight-semibold text-no-wrap">{{ money(item.est_value) }}</span>
+        <template #item.est_value="{ item }"><span class="num text-muted-c text-no-wrap">{{ money(item.est_value) }}</span></template>
+        <template #item.value="{ item }">
+          <span class="num font-weight-semibold text-no-wrap">{{ money(item.value) }}</span>
+          <v-chip v-if="item.value_basis" size="x-small" :color="item.value_basis === 'sold' ? 'success' : undefined" variant="tonal" class="ml-1" :title="item.value_basis === 'sold' ? `Median of ${item.sold_count} recent sales` : 'Too few sales, so this is the asking-price estimate'">{{ item.value_basis === 'sold' ? `sold ${item.sold_count}` : 'asking' }}</v-chip>
           <v-btn v-if="debug.on" icon="mdi-bug-outline" size="x-small" variant="text" color="warning" :to="`/cards/${item.id}?debug=1`" aria-label="How this price was calculated" title="How this price was calculated" @click.stop />
         </template>
       </v-data-table>
@@ -323,13 +320,13 @@ watch(view, (v) => { try { localStorage.setItem('cv-view', v) } catch {} })
       <div v-else class="grid card-body">
         <v-card v-for="c in cards" :key="c.id" class="tile" :class="{ picked: selected.includes(c.id) }" :to="`/cards/${c.id}`">
           <v-checkbox-btn :model-value="selected.includes(c.id)" class="pick" density="compact" :aria-label="`Select ${c.name}`" @click.stop.prevent="toggle(c.id)" />
-          <div class="pa-3 pb-0"><CardThumb :src="c.image_url" :alt="c.name" :foil="!!c.est_value && c.est_value >= 100" /></div>
+          <div class="pa-3 pb-0"><CardThumb :src="c.image_url" :alt="c.name" :foil="!!c.value && c.value >= 100" /></div>
           <div class="pa-3">
             <div class="tile-row d-flex justify-space-between align-baseline ga-2">
               <strong class="truncate">{{ c.name }}</strong>
-              <span class="num font-weight-semibold text-no-wrap">{{ money(c.est_value) }}</span>
+              <span class="num font-weight-semibold text-no-wrap">{{ money(c.value) }}</span>
             </div>
-            <div v-if="c.sold_value != null" class="text-caption text-muted-c num">sold {{ money(c.sold_value) }} ({{ c.sold_count }})</div>
+            <div v-if="c.value_basis" class="text-caption text-muted-c num">{{ c.value_basis === 'sold' ? `sold, ${c.sold_count} sales` : 'asking price' }}<template v-if="c.value_basis === 'sold' && c.est_value != null"> · asking {{ money(c.est_value) }}</template></div>
             <div v-if="debug.on" class="text-caption text-muted-c truncate">#{{ c.id }} · {{ c.priced_at ? isoDate(c.priced_at).slice(0, 10) : 'never priced' }} · {{ c.id_confidence != null ? Math.round(c.id_confidence * 100) + '% match' : 'no match data' }}</div>
             <div class="text-caption text-secondary-c truncate">{{ subline(c) || '—' }}</div>
             <div class="d-flex justify-space-between align-center ga-2 mt-2">

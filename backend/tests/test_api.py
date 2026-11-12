@@ -1210,3 +1210,52 @@ def test_price_points_for_the_asking_vs_sold_chart(monkeypatch):
         assert any(s["best_offer"] for s in pts["sales"]) and pts["listings"] and pts["asking_line"] and pts["sold_line"]
         assert pts["asking_now"] > 0 and pts["asking_count"] > 0
         assert c.get(f"/api/cards/{cid}/price-points", params={"grade": "PSA 10"}).json()["sales"] == []
+
+
+def test_sold_value_is_the_primary_value_with_asking_as_the_fallback(monkeypatch):
+    from app.config import get_settings
+    from app.services import sold_refresh
+    monkeypatch.setattr(get_settings(), "sold_monthly_budget", 50)
+    sales = [_sale(i, "Primary Card", 200 + i, i * 4) for i in range(1, 6)]  # median 203, five sales
+    monkeypatch.setattr(sold_refresh, "get_sold", lambda: _FakeSold([sales]))
+    with TestClient(app) as c:
+        a = c.post("/api/cards", json={"name": "Primary Card", "category": "sports", "grade": "Raw", "quantity": 2}).json()
+        b = c.post("/api/cards", json={"name": "Fallback Card", "category": "sports", "grade": "Raw"}).json()
+        none = c.post("/api/cards", json={"name": "Unpriced Card", "category": "sports"}).json()
+        for card in (a, b):
+            c.patch(f"/api/cards/{card['id']}", json={"search_query": card["name"]})
+        c.post(f"/api/cards/{a['id']}/price", json={})
+        c.post(f"/api/cards/{b['id']}/price", json={})
+        asking_a = c.get(f"/api/cards/{a['id']}").json()["est_value"]
+        c.post(f"/api/cards/{a['id']}/sold/refresh")
+        ga, gb, gn = (c.get(f"/api/cards/{x['id']}").json() for x in (a, b, none))
+        assert ga["value"] == 203 and ga["value_basis"] == "sold" and ga["est_value"] == asking_a  # asking kept beside it
+        assert ga["sold_low"] == 201 and ga["sold_high"] == 205
+        assert gb["value"] == gb["est_value"] and gb["value_basis"] == "asking"  # too few sales: asking is the fallback
+        assert gn["value"] is None and gn["value_basis"] is None
+        # sorting, filtering and the headline all use the displayed value
+        listed = [x["id"] for x in c.get("/api/cards", params={"q": "Card", "sort": "value"}).json()]
+        assert listed.index(a["id"]) < listed.index(none["id"])
+        assert a["id"] in [x["id"] for x in c.get("/api/cards", params={"q": "Primary", "min_value": 200, "max_value": 210}).json()]
+        assert none["id"] in [x["id"] for x in c.get("/api/cards", params={"q": "Unpriced", "unpriced": True}).json()]
+        st = c.get("/api/cards/stats").json()
+        assert st["sold_cards"] >= 1 and st["asking_cards"] >= 1 and st["total_value"] >= 2 * 203 + gb["est_value"]
+        folio = c.get("/api/portfolio", params={"range": "all"}).json()
+        assert folio["totals"]["value"] == st["total_value"] and folio["series"][-1]["value"] == folio["totals"]["value"]
+        top = next((t for t in folio["top_cards"] if t["id"] == a["id"]), None)  # only the 8 most valuable are listed
+        assert top is None or (top["value"] == 203 and top["basis"] == "sold")
+        assert all(t["basis"] in ("sold", "asking", None) for t in folio["top_cards"])
+
+
+def test_portfolio_history_reaches_back_through_sales(monkeypatch):
+    from app.config import get_settings
+    from app.services import sold_refresh
+    monkeypatch.setattr(get_settings(), "sold_monthly_budget", 50)
+    sales = [_sale(i, "History Card", 300, 20 + i * 5) for i in range(5)]  # five sales, 20 to 40 days ago
+    monkeypatch.setattr(sold_refresh, "get_sold", lambda: _FakeSold([sales]))
+    with TestClient(app) as c:
+        card = c.post("/api/cards", json={"name": "History Card", "category": "sports", "grade": "Raw"}).json()
+        c.post(f"/api/cards/{card['id']}/sold/refresh")
+        series = c.get("/api/portfolio", params={"range": "3m"}).json()["series"]
+        assert len(series) > 2 and series[0]["date"] < series[-1]["date"]  # history starts at the oldest sale, not at today
+        assert series[-1]["value"] >= 300

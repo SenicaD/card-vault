@@ -4,9 +4,19 @@ from sqlmodel import Session
 from ..models import Card, CardRead
 
 
+def card_value(card: Card) -> tuple[float | None, str | None]:
+    """The value to show for a card: what it sold for when there are enough sales, else the asking-based estimate."""
+    if card.sold_value is not None:
+        return card.sold_value, "sold"
+    if card.est_value is not None:
+        return card.est_value, "asking"
+    return None, None
+
+
 def to_read(card: Card) -> CardRead:
     data = card.model_dump()
     data["image_url"] = f"/images/{card.image_path}" if card.image_path else None
+    data["value"], data["value_basis"] = card_value(card)
     return CardRead.model_validate(data)
 
 

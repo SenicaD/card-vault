@@ -107,6 +107,8 @@ class Card(CardBase, table=True):
     # version), kept beside the asking-price estimate. None until enough sales are on record.
     sold_value: float | None = None
     sold_count: int = 0  # sales behind it (counted even when too few to give a value)
+    sold_low: float | None = None
+    sold_high: float | None = None
     sold_at: datetime | None = ts(default=None)
     created_at: datetime = ts(default_factory=utcnow)
     updated_at: datetime = ts(default_factory=utcnow)
@@ -180,7 +182,12 @@ class CardRead(CardBase):
     reviewed: bool = False
     sold_value: float | None = None
     sold_count: int = 0
+    sold_low: float | None = None
+    sold_high: float | None = None
     sold_at: datetime | None = None
+    # The value to show: the sold value when the card has enough sales, otherwise the asking-based estimate
+    value: float | None = None
+    value_basis: str | None = None  # "sold" | "asking" | None (no price yet)
     created_at: datetime
     updated_at: datetime
 

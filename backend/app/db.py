@@ -31,7 +31,7 @@ def _add_missing_columns() -> None:
                           "parallel": "VARCHAR", "spread": "FLOAT", "trimmed": "INTEGER"},
         "card": {"grade_counts": "JSON", "grade_counts_at": "DATETIME", "parallel": "VARCHAR",
                  "cost": "FLOAT", "batch": "VARCHAR", "reviewed": "BOOLEAN DEFAULT 0",
-                 "sold_value": "FLOAT", "sold_count": "INTEGER DEFAULT 0", "sold_at": "DATETIME"},
+                 "sold_value": "FLOAT", "sold_count": "INTEGER DEFAULT 0", "sold_at": "DATETIME", "sold_low": "FLOAT", "sold_high": "FLOAT"},
         "listingseen": {"excluded": "BOOLEAN DEFAULT 0"},
         "soldsale": {"condition": "VARCHAR", "shipping": "FLOAT", "junk": "BOOLEAN DEFAULT 0"},
     }

@@ -32,7 +32,11 @@ export interface Card extends CardFields {
   reviewed?: boolean
   sold_value?: number | null // what it sold for (median of recent sales), beside the asking-based estimate
   sold_count?: number
+  sold_low?: number | null
+  sold_high?: number | null
   sold_at?: string | null
+  value?: number | null // the value to show: sold when enough sales, else the asking estimate
+  value_basis?: 'sold' | 'asking' | null
   created_at: string
   updated_at: string
 }
@@ -207,6 +211,8 @@ export interface Listing {
 export interface Stats {
   total_cards: number
   total_value: number
+  asking_value: number
+  asking_cards: number
   sold_value: number
   sold_cards: number
   asking_value_of_sold_cards: number
@@ -246,14 +252,14 @@ export interface Portfolio {
   range: string
   totals: {
     cards: number; distinct: number; value: number; unpriced: number
-    sold_value: number; sold_cards: number; asking_value_of_sold_cards: number
+    sold_value: number; sold_cards: number; asking_value_of_sold_cards: number; asking_value: number; asking_cards: number
     cost: number; costed_cards: number; uncosted_cards: number; gain: number | null; gain_pct: number | null
   }
   series: { date: string; value: number }[]
   change: number
   by_location: { name: string; cards: number; value: number }[]
   by_category: { name: string; cards: number; value: number }[]
-  top_cards: { id: number; name: string; grade: string; quantity: number; est_value: number | null; image_url: string | null }[]
+  top_cards: { id: number; name: string; grade: string; quantity: number; value: number | null; basis: 'sold' | 'asking' | null; image_url: string | null }[]
   gainers: Mover[]
   losers: Mover[]
 }

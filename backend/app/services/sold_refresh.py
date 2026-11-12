@@ -69,7 +69,9 @@ def recompute_sold(session: Session, card: Card) -> None:
             if r.ended_at and r.ended_at >= cutoff and (not card.parallel or parse_parallel(r.title) == card.parallel)]
     stats = summarize([EbayItem(item_id=r.item_id, title=r.title, price=r.price) for r in rows])
     card.sold_count = stats["sample_size"]
-    card.sold_value = stats["median"] if stats["sample_size"] >= s.sold_min_sales else None
+    enough = stats["sample_size"] >= s.sold_min_sales
+    card.sold_value = stats["median"] if enough else None
+    card.sold_low, card.sold_high = (stats["low"], stats["high"]) if enough else (None, None)
     card.sold_at = utcnow() if rows else None
     session.add(card)
 
@@ -194,8 +196,8 @@ def _due_cards(session: Session) -> list[int]:
     cutoff = utcnow() - timedelta(days=s.sold_refresh_days)
     checked = dict(session.exec(select(SoldCall.card_id, func.max(SoldCall.at)).where(SoldCall.ok == True).group_by(SoldCall.card_id)).all())  # noqa: E712
     cards = session.exec(select(Card).where(col(Card.status) != CardStatus.sold,
-                                            func.coalesce(Card.est_value, 0) >= s.sold_min_value)
-                         .order_by(col(Card.est_value).desc().nulls_last())).all()  # most valuable first
+                                            func.coalesce(Card.sold_value, Card.est_value, 0) >= s.sold_min_value)
+                         .order_by(func.coalesce(Card.sold_value, Card.est_value).desc().nulls_last())).all()  # most valuable first
     return [c.id for c in cards if checked.get(c.id) is None or checked[c.id] < cutoff]
 
 
