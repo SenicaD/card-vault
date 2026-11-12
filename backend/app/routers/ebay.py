@@ -390,3 +390,52 @@ def list_listings(card_id: int, session: Session = Depends(get_session)):
     get_card_or_404(session, card_id)
     return session.exec(select(Listing).where(Listing.card_id == card_id)
                         .order_by(col(Listing.created_at).desc())).all()
+
+
+
+class PricePoints(BaseModel):
+    grade: str
+    range: str
+    sales: list[dict]  # every sold sale on record: {date, price, best_offer, title, url}
+    listings: list[dict]  # asking listings seen: {first, last, price, status, title, url}
+    asking_line: list[TrendPoint]  # median asking price per day, with the low-high spread
+    sold_line: list[TrendPoint]  # median sold price per day (week, for long ranges)
+    asking_now: float | None
+    sold_median: float | None
+    sold_count: int
+    asking_count: int
+
+
+@router.get("/price-points", response_model=PricePoints)
+def price_points(card_id: int, grade: str | None = None, range: str = Query("3m", pattern="^(7d|1m|3m|1y|all)$"),
+                 all_versions: bool = False, session: Session = Depends(get_session)):
+    """Every price on record for one grade, for the asking-vs-sold chart: each sold sale, each asking listing
+    seen, and the median line through each. Limited to the card's version unless all_versions is set."""
+    card = get_card_or_404(session, card_id)
+    g = normalize_grade(grade or card.grade)
+    days = _RANGE_DAYS[range]
+    cutoff = utcnow() - timedelta(days=days) if days else None
+    in_range = lambda d: cutoff is None or d >= cutoff  # noqa: E731
+    version = lambda title: all_versions or not card.parallel or parse_parallel(title) == card.parallel  # noqa: E731
+
+    sales = [r for r in session.exec(select(SoldSale).where(SoldSale.card_id == card_id, SoldSale.junk == False,  # noqa: E712
+                                                            SoldSale.grade == g).order_by(col(SoldSale.ended_at))).all()
+             if r.ended_at and in_range(r.ended_at) and version(r.title)]
+    seen = [r for r in session.exec(select(ListingSeen).where(ListingSeen.card_id == card_id, ListingSeen.excluded == False,  # noqa: E712
+                                                              ListingSeen.grade == g)).all()
+            if (r.status == "active" or in_range(r.last_seen)) and version(r.title)]
+    seen.sort(key=lambda r: r.last_seen, reverse=True)
+    snaps = [x for x in session.exec(select(PriceSnapshot).where(PriceSnapshot.card_id == card_id, PriceSnapshot.grade == g)
+                                     .order_by(col(PriceSnapshot.created_at))).all()
+             if x.source in ASKING_SOURCES and in_range(x.created_at) and (all_versions or (x.parallel or None) == (card.parallel or None))]
+    weekly = days is None or days > 31
+    active = [r.price for r in seen if r.status == "active"]
+    return PricePoints(
+        grade=g, range=range,
+        sales=[{"date": r.ended_at.date().isoformat(), "price": r.price, "best_offer": r.best_offer, "title": r.title, "url": r.url} for r in sales],
+        listings=[{"first": r.first_seen.date().isoformat(), "last": (r.gone_at or r.last_seen).date().isoformat(), "price": r.price,
+                   "status": r.status, "title": r.title, "url": r.url} for r in seen[:300]],
+        asking_line=_daily(snaps), sold_line=_sales_points(sales, weekly),
+        asking_now=round(_median(active), 2) if active else None,
+        sold_median=round(_median(r.price for r in sales), 2) if sales else None,
+        sold_count=len(sales), asking_count=len(active))

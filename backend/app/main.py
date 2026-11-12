@@ -10,7 +10,7 @@ from .db import init_db
 from .routers import cards, debug, ebay, locations, portfolio, sales, scan
 from .services.refresh import refresh_loop
 from .services.sold import SoldCompsClient, get_sold
-from .services.sold_refresh import sold_loop
+from .services.sold_refresh import backfill_sold_values, sold_loop
 
 settings = get_settings()
 
@@ -18,6 +18,7 @@ settings = get_settings()
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     init_db()
+    backfill_sold_values()
     # The daily re-pricing job only runs against real eBay data; mock prices would just be noise.
     tasks = []
     if settings.ebay_mode == "live" and settings.price_refresh_hours > 0:

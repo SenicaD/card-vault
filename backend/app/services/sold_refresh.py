@@ -13,7 +13,7 @@ from .debuglog import log_event
 from .ebay import EbayItem
 from .grading import normalize_grade, parse_grade
 from .parallels import parse_parallel
-from .pricing import _JUNK, build_quotes
+from .pricing import _JUNK, build_quotes, summarize
 from .refresh import PAUSE_BETWEEN_CARDS
 from .sold import SoldApiError, get_sold
 from .trace import Trace, save_trace
@@ -53,6 +53,37 @@ def sold_keyword(card: Card) -> str:
     base = (card.search_query or card.name).strip()
     own = normalize_grade(card.grade)
     return base if own == "Raw" or own.lower() in base.lower() else f"{base} {own}"
+
+
+def recompute_sold(session: Session, card: Card) -> None:
+    """Set the card's sold-based value from the sales on record for its own grade and version.
+
+    Same rules as the sold prices elsewhere: sales inside the window, lots left out, outliers trimmed.
+    The value needs at least SOLD_MIN_SALES sales; below that only the count is kept.
+    """
+    s = get_settings()
+    cutoff = utcnow() - timedelta(days=s.sold_window_days)
+    own = normalize_grade(card.grade)
+    rows = [r for r in session.exec(select(SoldSale).where(SoldSale.card_id == card.id, SoldSale.junk == False,  # noqa: E712
+                                                           SoldSale.grade == own)).all()
+            if r.ended_at and r.ended_at >= cutoff and (not card.parallel or parse_parallel(r.title) == card.parallel)]
+    stats = summarize([EbayItem(item_id=r.item_id, title=r.title, price=r.price) for r in rows])
+    card.sold_count = stats["sample_size"]
+    card.sold_value = stats["median"] if stats["sample_size"] >= s.sold_min_sales else None
+    card.sold_at = utcnow() if rows else None
+    session.add(card)
+
+
+def backfill_sold_values() -> int:
+    """At startup: give every card that already has stored sales its sold-based value."""
+    with Session(engine) as session:
+        ids = session.exec(select(SoldSale.card_id).distinct()).all()
+        for cid in ids:
+            card = session.get(Card, cid)
+            if card:
+                recompute_sold(session, card)
+        session.commit()
+        return len(ids)
 
 
 MAX_PAGES = 3  # most pages one check will fetch (each page is one lookup)
@@ -132,6 +163,8 @@ async def refresh_sold(session: Session, card: Card, kind: str = "manual") -> di
         groups.setdefault(g, []).append(EbayItem(item_id=it.item_id, title=it.title, price=it.price, currency=it.currency,
                                                  url=it.url, image_url=it.image_url))
 
+    session.flush()  # so the sales just added are visible to the value below
+    recompute_sold(session, card)
     grades = [own] + [g for g, lst in groups.items() if g != own and len(lst) >= MIN_SAMPLE_TO_RECORD]
     quotes, _ = build_quotes(groups, grades, keyword, "ebay-sold", card.parallel, frozenset(), trace)
     for q in quotes:
@@ -151,7 +184,7 @@ async def refresh_sold(session: Session, card: Card, kind: str = "manual") -> di
     session.commit()
     save_trace(session, trace, card.id)
     mine = next((q for q in quotes if q.grade == own), None)
-    return {"found": len(items), "new": new_rows, "used": mine.sample_size if mine else 0, "grade": own,
+    return {"found": len(items), "new": new_rows, "used": mine.sample_size if mine else 0, "grade": own, "sold_value": card.sold_value,
             "median": mine.median if mine else None, "best_offers": best_offers,
             "on_record": len(have), "budget_left": budget_left(session, "manual")}
 

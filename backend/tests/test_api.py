@@ -1162,3 +1162,51 @@ def test_paging_back_only_when_there_may_be_a_gap(monkeypatch):
         monkeypatch.setattr(sold_refresh, "get_sold", lambda: fake)
         out = c.post(f"/api/cards/{card['id']}/sold/refresh").json()
         assert fake.calls == 2 and out["found"] == 3
+
+
+def test_sold_value_sits_beside_the_estimate_and_follows_grade_and_version(monkeypatch):
+    from app.config import get_settings
+    from app.services import sold_refresh
+    monkeypatch.setattr(get_settings(), "sold_monthly_budget", 50)
+    page = [_sale(i, "Both Card Green /99", 100 + i * 10, i * 5) for i in range(1, 5)] + \
+           [_sale(10 + i, "Both Card PSA 10", 500 + i, i) for i in range(1, 4)] + [_sale(30, "Both Card Blue", 40, 2)]
+    monkeypatch.setattr(sold_refresh, "get_sold", lambda: _FakeSold([page]))
+    with TestClient(app) as c:
+        card = c.post("/api/cards", json={"name": "Both Card", "category": "sports", "grade": "Raw", "est_value": None}).json()
+        cid = card["id"]
+        assert c.get(f"/api/cards/{cid}").json()["sold_value"] is None
+        c.post(f"/api/cards/{cid}/sold/refresh")
+        got = c.get(f"/api/cards/{cid}").json()
+        assert got["sold_value"] == 120 and got["sold_count"] == 5 and got["est_value"] is None  # the estimate is untouched
+        # the version and the grade each change which sales count, with no new lookup
+        c.patch(f"/api/cards/{cid}", json={"parallel": "Green /99"})
+        got = c.get(f"/api/cards/{cid}").json()
+        assert got["sold_count"] == 4 and got["sold_value"] == 125
+        c.patch(f"/api/cards/{cid}", json={"grade": "PSA 10", "parallel": None})
+        got = c.get(f"/api/cards/{cid}").json()
+        assert got["sold_count"] == 3 and got["sold_value"] == 502
+        c.patch(f"/api/cards/{cid}", json={"grade": "PSA 9"})
+        got = c.get(f"/api/cards/{cid}").json()
+        assert got["sold_count"] == 0 and got["sold_value"] is None
+        c.patch(f"/api/cards/{cid}", json={"grade": "PSA 10"})
+        stats = c.get("/api/cards/stats").json()
+        assert stats["sold_cards"] >= 1 and stats["sold_value"] >= 502
+        assert c.get("/api/portfolio").json()["totals"]["sold_cards"] >= 1
+
+
+def test_price_points_for_the_asking_vs_sold_chart(monkeypatch):
+    from app.config import get_settings
+    from app.services import sold_refresh
+    monkeypatch.setattr(get_settings(), "sold_monthly_budget", 50)
+    page = [_sale(i, "Points Card", 50 + i, i * 3, best_offer=(i == 2)) for i in range(1, 7)]
+    monkeypatch.setattr(sold_refresh, "get_sold", lambda: _FakeSold([page]))
+    with TestClient(app) as c:
+        card, _ = _priced_card(c, grade="Raw")
+        cid = card["id"]
+        c.post(f"/api/cards/{cid}/price", json={})
+        c.post(f"/api/cards/{cid}/sold/refresh")
+        pts = c.get(f"/api/cards/{cid}/price-points", params={"grade": "Raw", "range": "3m"}).json()
+        assert len(pts["sales"]) == 6 and pts["sold_count"] == 6 and pts["sold_median"] > 0
+        assert any(s["best_offer"] for s in pts["sales"]) and pts["listings"] and pts["asking_line"] and pts["sold_line"]
+        assert pts["asking_now"] > 0 and pts["asking_count"] > 0
+        assert c.get(f"/api/cards/{cid}/price-points", params={"grade": "PSA 10"}).json()["sales"] == []

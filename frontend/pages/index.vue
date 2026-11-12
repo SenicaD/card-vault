@@ -58,7 +58,8 @@ const headers = [
   { title: 'Grade', key: 'grade', sortable: false },
   { title: 'Qty', key: 'quantity', sortable: false, align: 'end' as const },
   { title: 'Status', key: 'status', sortable: false },
-  { title: 'Est. value', key: 'est_value', sortable: false, align: 'end' as const },
+  { title: 'Est. value (asking)', key: 'est_value', sortable: false, align: 'end' as const },
+  { title: 'Sold value', key: 'sold_value', sortable: false, align: 'end' as const },
 ]
 
 // Category mix bar: one segment per category, coloured from a fixed categorical palette.
@@ -171,7 +172,8 @@ watch(view, (v) => { try { localStorage.setItem('cv-view', v) } catch {} })
     <!-- KPIs -->
     <v-row dense class="mb-2">
       <v-col cols="6" lg="3">
-        <StatCard label="Estimated value" :value="stats ? money(stats.total_value) : '—'" icon="mdi-currency-usd" color="primary" sub="Sum of eBay median estimates" />
+        <StatCard label="Estimated value" :value="stats ? money(stats.total_value) : '—'" icon="mdi-currency-usd" color="primary" 
+          :sub="stats && stats.sold_cards ? `Asking prices. Sold-based: ${money(stats.sold_value)} on ${stats.sold_cards} cards (asking says ${money(stats.asking_value_of_sold_cards)} for those)` : 'Sum of eBay asking-price medians. No sold data yet'" />
       </v-col>
       <v-col cols="6" lg="3">
         <StatCard label="Total cards" :value="stats?.total_cards ?? '—'" icon="mdi-cards-outline" color="info" :sub="`${locations.length} storage locations`" />
@@ -306,6 +308,11 @@ watch(view, (v) => { try { localStorage.setItem('cv-view', v) } catch {} })
         </template>
         <template #item.quantity="{ item }"><span class="num">{{ item.quantity }}</span></template>
         <template #item.status="{ item }"><StatusPill :status="item.status" /></template>
+        <template #item.sold_value="{ item }">
+          <span v-if="item.sold_value != null" class="num text-no-wrap" :title="`Median of ${item.sold_count} recent sales`">{{ money(item.sold_value) }}<span class="text-caption text-muted-c"> ({{ item.sold_count }})</span></span>
+          <span v-else-if="item.sold_count" class="text-caption text-muted-c text-no-wrap">{{ item.sold_count }} sales, too few</span>
+          <span v-else class="text-muted-c">—</span>
+        </template>
         <template #item.est_value="{ item }">
           <span class="num font-weight-semibold text-no-wrap">{{ money(item.est_value) }}</span>
           <v-btn v-if="debug.on" icon="mdi-bug-outline" size="x-small" variant="text" color="warning" :to="`/cards/${item.id}?debug=1`" aria-label="How this price was calculated" title="How this price was calculated" @click.stop />
@@ -322,6 +329,7 @@ watch(view, (v) => { try { localStorage.setItem('cv-view', v) } catch {} })
               <strong class="truncate">{{ c.name }}</strong>
               <span class="num font-weight-semibold text-no-wrap">{{ money(c.est_value) }}</span>
             </div>
+            <div v-if="c.sold_value != null" class="text-caption text-muted-c num">sold {{ money(c.sold_value) }} ({{ c.sold_count }})</div>
             <div v-if="debug.on" class="text-caption text-muted-c truncate">#{{ c.id }} · {{ c.priced_at ? isoDate(c.priced_at).slice(0, 10) : 'never priced' }} · {{ c.id_confidence != null ? Math.round(c.id_confidence * 100) + '% match' : 'no match data' }}</div>
             <div class="text-caption text-secondary-c truncate">{{ subline(c) || '—' }}</div>
             <div class="d-flex justify-space-between align-center ga-2 mt-2">

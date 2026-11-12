@@ -11,6 +11,7 @@ from ..services.imagecrop import CropBox, CropError, crop_saved_image
 from ..services.grading import normalize_grade
 from ..services.identify import CardIdentification, build_search_query, get_identifier
 from ..services import refresh as refresh_service
+from ..services.sold_refresh import recompute_sold
 from ..services.trace import identification_trace, save_trace
 from .common import get_card_or_404, to_read
 
@@ -94,6 +95,11 @@ def stats(session: Session = Depends(get_session)):
         out["by_category"][cat] = out["by_category"].get(cat, 0) + (qty or 0)
         out["by_status"][st] = out["by_status"].get(st, 0) + (qty or 0)
     out["total_value"] = round(out["total_value"], 2)
+    # Sold-based value, beside the asking-based one: only cards with enough sales, and what asking says for those same cards
+    sv, n, ask = session.exec(select(func.coalesce(func.sum(Card.sold_value * Card.quantity), 0), func.count(),
+                                     func.coalesce(func.sum(func.coalesce(Card.est_value, 0) * Card.quantity), 0))
+                              .where(col(Card.sold_value).is_not(None), col(Card.status) != CardStatus.sold)).one()
+    out["sold_value"], out["sold_cards"], out["asking_value_of_sold_cards"] = round(sv, 2), n, round(ask, 2)
     s = get_settings()
     out["modes"] = {"identifier": s.identifier, "ebay": s.ebay_mode}
     return out
@@ -212,6 +218,7 @@ def apply_update(session: Session, card: Card, changes: dict) -> None:
             PriceSnapshot.card_id == card.id, col(PriceSnapshot.source).in_(ASKING_SOURCES), PriceSnapshot.grade == new_grade, PriceSnapshot.parallel == card.parallel,
             col(PriceSnapshot.median).is_not(None)).order_by(col(PriceSnapshot.created_at).desc()).limit(1)).first()
         card.est_value, card.priced_at = (snap.median, snap.created_at) if snap else (None, None)
+        recompute_sold(session, card)  # the sold-based value belongs to the grade and version too
     card.updated_at = utcnow()
     session.add(card)
 

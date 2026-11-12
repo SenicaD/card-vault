@@ -38,7 +38,7 @@ const maxOf = (rows: { value: number }[]) => Math.max(1, ...rows.map((r) => r.va
       <v-row dense class="mb-2">
         <v-col cols="6" lg="3">
           <StatCard label="Estimated value" :value="money(t.value)" icon="mdi-currency-usd" color="primary"
-            :sub="data.series.length > 1 ? `${signed(data.change)} over ${range === 'all' ? 'all time' : range}` : 'History builds as cards are re-priced'" />
+            :sub="[data.series.length > 1 ? `${signed(data.change)} over ${range === 'all' ? 'all time' : range}` : 'History builds as cards are re-priced', t.sold_cards ? `Asking-based. Sold-based: ${money(t.sold_value)} on ${t.sold_cards} cards (asking says ${money(t.asking_value_of_sold_cards)} for those)` : 'Asking-based'].join('. ')" />
         </v-col>
         <v-col cols="6" lg="3">
           <StatCard label="Paid" :value="t.costed_cards ? money(t.cost) : '—'" icon="mdi-receipt-text-outline" color="info"

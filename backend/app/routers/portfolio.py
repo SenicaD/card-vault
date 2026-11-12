@@ -89,8 +89,11 @@ def portfolio(span: str = Query("1m", alias="range", pattern="^(7d|1m|3m|1y|all)
     movers.sort(key=lambda m: m["change"])
     top = sorted(cards, key=lambda c: (c.est_value or 0) * c.quantity, reverse=True)[:8]
 
+    with_sold = [c for c in cards if c.sold_value is not None]
     return {
-        "totals": {"cards": sum(c.quantity for c in cards), "distinct": len(cards), "value": round(value, 2),
+        "totals": {"sold_value": round(sum(c.sold_value * c.quantity for c in with_sold), 2), "sold_cards": len(with_sold),
+                   "asking_value_of_sold_cards": round(sum((c.est_value or 0) * c.quantity for c in with_sold), 2),
+                   "cards": sum(c.quantity for c in cards), "distinct": len(cards), "value": round(value, 2),
                    "unpriced": sum(1 for c in cards if c.est_value is None),
                    "cost": round(cost, 2), "costed_cards": len(costed), "uncosted_cards": len(cards) - len(costed),
                    "gain": round(costed_value - cost, 2) if costed else None,

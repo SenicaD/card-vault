@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     sold_auto_refresh: bool = False  # automatic background checks; off unless you turn them on
     sold_refresh_days: int = 7  # how often a card's sold prices are refreshed automatically
     sold_min_value: float = 0  # automatic checks only for cards estimated at or above this
+    sold_min_sales: int = 3  # a card needs at least this many matching sales to get a sold-based value
     sold_window_days: int = 90  # how far back sold prices count
 
     database_url: str = "sqlite:///./data/cardvault.db"

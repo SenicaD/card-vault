@@ -103,6 +103,11 @@ class Card(CardBase, table=True):
     parallel: str | None = None
     # True once you've looked the card over in the review queue, so it stops being offered there.
     reviewed: bool = False
+    # What matching copies actually sold for (median of the last 90 days' sales of the card's own grade and
+    # version), kept beside the asking-price estimate. None until enough sales are on record.
+    sold_value: float | None = None
+    sold_count: int = 0  # sales behind it (counted even when too few to give a value)
+    sold_at: datetime | None = ts(default=None)
     created_at: datetime = ts(default_factory=utcnow)
     updated_at: datetime = ts(default_factory=utcnow)
 
@@ -173,6 +178,9 @@ class CardRead(CardBase):
     grade_counts_at: datetime | None = None
     parallel: str | None = None
     reviewed: bool = False
+    sold_value: float | None = None
+    sold_count: int = 0
+    sold_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
 

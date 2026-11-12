@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useDisplay } from 'vuetify'
-import { CATEGORY_LABELS, type Card, type CardFields, type Listing, type Location, type MatchRow, type SimilarityResult, type SoldCompare, type PriceResult, type PriceSnapshot, type Sale, type Trend, type TrendRange } from '~/types'
+import { CATEGORY_LABELS, type Card, type CardFields, type Listing, type Location, type MatchRow, type SimilarityResult, type PricePoints, type SoldCompare, type PriceResult, type PriceSnapshot, type Sale, type Trend, type TrendRange } from '~/types'
 
 const { api } = useApi()
 const { xs } = useDisplay()
@@ -104,6 +104,14 @@ const soldHeaders = [
   { title: 'Price', key: 'price', align: 'end' as const }, { title: 'vs asking now', key: 'vs_asking_pct', align: 'end' as const },
 ]
 const pctText = (v: number | null | undefined) => (v == null ? '' : `${v > 0 ? '+' : ''}${v}%`)
+const points = ref<PricePoints | null>(null)
+const pointsGrade = ref<string | null>(null)
+const loadPoints = async () => {
+  if (!card.value) return
+  points.value = await api<PricePoints>(`/api/cards/${id}/price-points`, {
+    query: { grade: pointsGrade.value || normalizeGrade(card.value.grade), range: range.value, all_versions: showAllVersions.value },
+  }).catch(() => null)
+}
 const checkingSold = ref(false)
 const soldMsg = ref('')
 async function checkSold() {
@@ -117,6 +125,7 @@ async function checkSold() {
 }
 // loadGone keeps its old name: it is called after every lookup and refresh
 const loadGone = async () => {
+  loadPoints()
   sold.value = await api<SoldCompare>(`/api/cards/${id}/sold-compare`, {
     query: { days: soldDays.value, grades: selectedGrades.value, all_versions: showAllVersions.value },
   }).catch(() => null)
@@ -272,6 +281,7 @@ async function loadMatches() {
 }
 watch(selectedGrades, () => { if (card.value) loadMatches() }, { deep: true })
 watch([selectedGrades, showAllVersions], () => { if (card.value) loadGone() }, { deep: true })
+watch([range, pointsGrade], () => { if (card.value) loadPoints() })
 
 // The versions ("parallels") seen among the listings of the selected grades, most common first.
 const parallelCounts = computed(() => {
@@ -432,7 +442,7 @@ onMounted(() => {
         <!-- Value KPIs -->
         <v-row dense class="mb-2">
           <v-col cols="6" sm="3" class="kpi-wrap">
-            <StatCard label="Estimate" :value="money(card.est_value)" icon="mdi-currency-usd" color="primary" :sub="card.priced_at ? `Priced ${isoDate(card.priced_at).slice(0, 10)}` : 'Not priced'" />
+            <StatCard label="Estimate" :value="money(card.est_value)" icon="mdi-currency-usd" color="primary" :sub="[card.priced_at ? `Priced ${isoDate(card.priced_at).slice(0, 10)}` : 'Not priced', card.sold_value != null ? `sold ${money(card.sold_value)} (${card.sold_count})` : card.sold_count ? `${card.sold_count} sales, too few` : ''].filter(Boolean).join(' · ')" />
             <v-btn v-if="debug.on" icon="mdi-bug-outline" size="x-small" variant="tonal" color="warning" class="kpi-bug" aria-label="Show how this price was calculated" title="Show how this price was calculated" @click="showTrace" />
           </v-col>
           <v-col cols="6" sm="3"><StatCard label="Low" :value="money(latest?.low)" icon="mdi-arrow-down" color="info" /></v-col>
@@ -587,6 +597,14 @@ onMounted(() => {
                   History starts {{ trend.first_recorded }}. Cards are re-priced about once a day.
                 </p>
               </div>
+
+              <!-- Every price, asking vs sold -->
+              <v-divider />
+              <div class="px-5 pt-4 pb-2 d-flex align-center justify-space-between flex-wrap ga-2">
+                <span class="text-body-2 font-weight-medium">Every price: asking vs sold</span>
+                <v-select v-model="pointsGrade" :items="selectedGrades" :placeholder="normalizeGrade(card.grade)" density="compact" hide-details clearable style="max-width: 180px" aria-label="Grade for this chart" />
+              </div>
+              <div class="px-5 pb-4"><PriceScatter :data="points" /></div>
 
               <!-- Asking vs sold -->
               <template v-if="sold && (sold.provider.configured || sold.grades.some((g) => g.sold_count || g.yours_count) || sold.rows.length)">

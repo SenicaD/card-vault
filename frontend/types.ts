@@ -30,6 +30,9 @@ export interface Card extends CardFields {
   grade_counts_at?: string | null
   parallel?: string | null
   reviewed?: boolean
+  sold_value?: number | null // what it sold for (median of recent sales), beside the asking-based estimate
+  sold_count?: number
+  sold_at?: string | null
   created_at: string
   updated_at: string
 }
@@ -204,6 +207,9 @@ export interface Listing {
 export interface Stats {
   total_cards: number
   total_value: number
+  sold_value: number
+  sold_cards: number
+  asking_value_of_sold_cards: number
   by_category: Record<string, number>
   by_status: Record<string, number>
   modes: { identifier: string; ebay: string }
@@ -240,6 +246,7 @@ export interface Portfolio {
   range: string
   totals: {
     cards: number; distinct: number; value: number; unpriced: number
+    sold_value: number; sold_cards: number; asking_value_of_sold_cards: number
     cost: number; costed_cards: number; uncosted_cards: number; gain: number | null; gain_pct: number | null
   }
   series: { date: string; value: number }[]
@@ -330,3 +337,16 @@ export interface IdentTraceRow {
 }
 export interface JobRunRow { id: number; kind: 'daily' | 'bulk'; started_at: string; finished_at: string | null; total: number; refreshed: number; failed: number; errors: { card_id: number; query: string; name?: string; error: string }[] | null }
 export interface EbayEvent { ts: string; api: string; purpose: string; detail: string; ms: number; returned: number | null; error: string | null; rate_limited?: boolean }
+
+export interface PricePoints {
+  grade: string
+  range: string
+  sales: { date: string; price: number; best_offer: boolean; title: string; url: string | null }[]
+  listings: { first: string; last: string; price: number; status: string; title: string; url: string | null }[]
+  asking_line: TrendPoint[]
+  sold_line: TrendPoint[]
+  asking_now: number | null
+  sold_median: number | null
+  sold_count: number
+  asking_count: number
+}
