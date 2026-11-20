@@ -331,7 +331,7 @@ function openRow(_: unknown, row: { item: ScanItem }) {
                 <span v-else>{{ item.merged ? 'Added as a copy' : STATUS[item.status].label }}<template v-if="item.dups.length && item.status === 'ready'"> · already own</template><template v-if="item.scan"> · {{ Math.round(conf(item) * 100) }}%</template></span>
               </v-list-item-subtitle>
               <template #append>
-                <div class="text-right">
+                <div class="text-right ps-3">
                   <div v-if="item.quote" class="num font-weight-semibold">{{ money(item.quote.median) }}</div>
                   <v-progress-circular v-else-if="item.status === 'processing'" indeterminate size="16" width="2" color="primary" />
                   <v-btn v-if="item.status === 'error'" icon="mdi-refresh" variant="text" size="small" aria-label="Retry" @click.stop="q.retry(item.key)" />
