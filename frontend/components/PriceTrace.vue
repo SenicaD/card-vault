@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { Decision, Trace, TraceFunnel, TraceSummary } from '~/types'
+import type { Decision, Trace, TraceFunnel, TraceListing, TraceSummary } from '~/types'
 
 // "How was this price calculated": the searches made, what happened to every listing, and the result.
 const props = defineProps<{ cardId: number; version?: string | null }>()
@@ -42,8 +42,10 @@ const gradeListings = computed(() => (trace.value?.listings ?? []).filter((l) =>
 const rows = computed(() => gradeListings.value.filter((l) => only.value === 'all' || l.d === only.value))
 const headers = [
   { title: 'Treated as', key: 'd', width: 170 }, { title: 'Version', key: 'v' }, { title: 'Listing', key: 't', sortable: false },
-  { title: 'Price', key: 'p', align: 'end' as const },
+  { title: 'Looks alike', key: 's', align: 'end' as const, width: 90 }, { title: 'Price', key: 'p', align: 'end' as const },
 ]
+const lookTitle = (l: TraceListing) => l.s == null ? 'Picture not compared with your photo'
+  : `Confidence that the picture shows your card, 0-100${l.m != null ? `; ${l.m} matching feature points` : ''}`
 const decisionItems = computed(() => [{ value: 'all', title: 'All listings' },
   ...Object.entries(DECISION_LABEL).map(([value, title]) => ({ value, title }))])
 const idx = computed(() => list.value.findIndex((t) => t.id === pick.value))
@@ -126,6 +128,10 @@ const total = computed(() => trace.value?.summary?.after_top_up ?? trace.value?.
                 </template>
                 <template #item.v="{ item }"><span class="text-caption">{{ item.v }}</span></template>
                 <template #item.t="{ item }"><a :href="item.u || undefined" target="_blank" rel="noopener" class="tlink">{{ item.t }}</a></template>
+                <template #item.s="{ item }">
+                  <div class="num text-no-wrap" :title="lookTitle(item)">{{ item.s ?? '–' }}</div>
+                  <div v-if="item.m != null" class="text-caption text-muted-c text-no-wrap" :title="lookTitle(item)">{{ item.m }} pts</div>
+                </template>
                 <template #item.p="{ item }"><span class="num">{{ money(item.p) }}</span></template>
               </v-data-table>
             </template>
@@ -161,6 +167,6 @@ const total = computed(() => trace.value?.summary?.after_top_up ?? trace.value?.
 .funnel tbody tr { cursor: pointer; }
 .funnel tbody tr.on { background: rgb(var(--v-theme-brand-muted)); }
 .detail { max-width: 340px; overflow-wrap: anywhere; font-size: 13px; }
-.tlink { color: inherit; text-decoration: none; display: block; max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tlink { color: inherit; text-decoration: none; display: block; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tlink:hover { color: rgb(var(--v-theme-primary)); }
 </style>

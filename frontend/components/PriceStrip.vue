@@ -68,7 +68,7 @@ const med = computed(() => props.funnel?.median ?? null)
     </svg>
     <div class="legend">
       <span><i class="sw used" />Counted</span><span><i class="sw out" />Price outlier</span>
-      <span><i class="sw excl" />You unticked it</span><span><i class="sw other" />Different version</span>
+      <span><i class="sw excl" />You unticked it</span><span><i class="sw other" />Different card or version</span>
       <span v-if="funnel?.fences"><i class="sw band" />Range kept (1.5× the middle half)</span>
     </div>
   </div>
