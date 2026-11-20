@@ -74,6 +74,20 @@ are clearly the same listing. The matches double as the price comps, so each sca
 Visually identical cards (base vs. colour parallels, raw vs. slabbed) can mix, so check the fields and
 re-price with a tighter search when it matters. See `app/services/identify/ebay_image.py`.
 
+### Look-alike pricing (CLIP + OpenCV, optional)
+```bash
+cd backend
+pip install --extra-index-url https://download.pytorch.org/whl/cpu -r requirements-clip.txt   # drop the index for a GPU build
+```
+With a card photo, a lookup compares each listing's picture with it (the first 40 in eBay's order) and
+leaves out the listings that clearly show another card. Both pictures are cropped to the card and straightened
+with OpenCV, then compared with CLIP (`ViT-B-32`, about 600 MB, downloaded on first use into the Hugging Face
+cache; the first lookup after a restart takes a few seconds longer). A confidence below 60 is left out; from
+60 to 70 the listing is kept only if SIFT feature matching finds the same printed design (40+ matching points).
+Debug mode shows each listing's confidence in "How this price was calculated". Without this install, or if
+the model can't be downloaded, pictures are compared by colour instead: a listing below 60% of the best colour
+score in its grade is left out. The thresholds are in `app/services/lookalike.py`.
+
 ### eBay
 Set `EBAY_MODE=live` and fill in keys from developer.ebay.com. Start with `EBAY_ENV=sandbox`.
 
