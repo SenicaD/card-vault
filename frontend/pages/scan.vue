@@ -115,12 +115,12 @@ function sortRaw(key: string, val: (i: ScanItem) => string | number | null | und
 }
 
 const headers = [
-  { title: 'Card', key: 'card', sortRaw: sortRaw('card', (i) => i.form?.name?.toLowerCase() || null) },
+  { title: 'Card', key: 'card', cellProps: { class: 'col-card' }, sortRaw: sortRaw('card', (i) => i.form?.name?.toLowerCase() || null) },
   { title: 'Confidence', key: 'conf', sortRaw: sortRaw('conf', (i) => i.scan?.identification.confidence) },
   { title: 'Stored in', key: 'loc', sortable: false },
   { title: 'eBay value', key: 'value', align: 'end' as const, sortRaw: sortRaw('value', (i) => i.quote?.median) },
   { title: 'Status', key: 'status', sortRaw: sortRaw('status', (i) => STATUS_ORDER.indexOf(i.status)) },
-  { title: '', key: 'actions', sortable: false, align: 'end' as const, width: 150 },
+  { title: '', key: 'actions', sortable: false, align: 'end' as const, width: 150, headerProps: { class: 'col-pin' }, cellProps: { class: 'col-pin' } },
 ]
 
 function openRow(_: unknown, row: { item: ScanItem }) {
@@ -378,5 +378,9 @@ function openRow(_: unknown, row: { item: ScanItem }) {
 .mini-thumb { width: 40px; flex-shrink: 0; }
 .mini-thumb :deep(.thumb) { border-radius: 5px; padding: 1px; }
 .mini-thumb :deep(img), .mini-thumb :deep(.empty) { border-radius: 4px; }
+/* Card takes the room the other columns leave and truncates; the row actions stay in view if the table still scrolls. */
+.v-data-table :deep(td.col-card) { width: 100%; min-width: 200px; max-width: 0; }
+.v-data-table :deep(.col-pin) { position: sticky !important; right: 0; z-index: 1; }
+.v-data-table :deep(td.col-pin) { background: rgb(var(--v-theme-surface)); }
 .shutter { position: fixed !important; right: 16px; bottom: calc(16px + env(safe-area-inset-bottom, 0px)); z-index: 1005; }
 </style>
