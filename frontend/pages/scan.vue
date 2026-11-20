@@ -26,6 +26,7 @@ function newSession() {
 const locations = ref<Location[]>([])
 const camera = ref<HTMLInputElement>()
 const upload = ref<HTMLInputElement>()
+const folder = ref<HTMLInputElement>()
 const dragging = ref(false)
 const editingKey = ref<number | null>(null)
 const editing = computed(() => items.value.find((i) => i.key === editingKey.value) ?? null)
@@ -52,14 +53,26 @@ function guard(e: BeforeUnloadEvent) {
   if (counts.value.pending || counts.value.ready) e.preventDefault()
 }
 
+// Only says something when files were left out; the queue counters already show what was added.
+function report({ added, skipped }: { added: number; skipped: number }) {
+  if (!skipped) return
+  const skip = `skipped ${skipped} ${skipped === 1 ? "file that isn't an image" : "files that aren't images"}`
+  notice.value = added ? `Added ${added} ${added === 1 ? 'photo' : 'photos'} · ${skip}` : `No photos added · ${skip}`
+}
 function onPick(e: Event) {
   const input = e.target as HTMLInputElement
-  if (input.files) q.addFiles(input.files)
+  if (input.files) report(q.addFiles(input.files))
   input.value = ''
 }
-function onDrop(e: DragEvent) {
+// A folder pick lists subfolders too, in no particular order; queue it in path order.
+function onPickFolder(e: Event) {
+  const input = e.target as HTMLInputElement
+  if (input.files) report(q.addFiles([...input.files].sort((a, b) => comparePaths(a.webkitRelativePath, b.webkitRelativePath))))
+  input.value = ''
+}
+async function onDrop(e: DragEvent) {
   dragging.value = false
-  if (e.dataTransfer?.files) q.addFiles(e.dataTransfer.files)
+  if (e.dataTransfer) report(q.addFiles(await filesFromDrop(e.dataTransfer)))
 }
 
 async function addAll() {
@@ -135,8 +148,9 @@ function openRow(_: unknown, row: { item: ScanItem }) {
     @dragleave.self="dragging = false"
     @drop.prevent="onDrop"
   >
-    <input ref="camera" type="file" accept="image/*" capture="environment" hidden @change="onPick" />
+    <input ref="camera" type="file" accept="image/*" capture="environment" multiple hidden @change="onPick" />
     <input ref="upload" type="file" accept="image/*" multiple hidden @change="onPick" />
+    <input ref="folder" type="file" webkitdirectory multiple hidden @change="onPickFolder" />
 
     <PageHeader
       title="Scan & price"
@@ -144,6 +158,7 @@ function openRow(_: unknown, row: { item: ScanItem }) {
       :crumbs="[{ title: 'Inventory', to: '/' }, { title: 'Scan' }]"
     >
       <template #actions>
+        <v-btn variant="outlined" prepend-icon="mdi-folder-multiple-image" @click="folder?.click()">Choose folder</v-btn>
         <v-btn variant="outlined" prepend-icon="mdi-upload-multiple-outline" @click="upload?.click()">Upload photos</v-btn>
         <v-btn color="primary" variant="flat" prepend-icon="mdi-camera-plus-outline" @click="camera?.click()">Take photo</v-btn>
       </template>
@@ -189,17 +204,18 @@ function openRow(_: unknown, row: { item: ScanItem }) {
         <v-btn variant="text" size="small" prepend-icon="mdi-restart" @click="newSession">New session</v-btn>
       </div>
     </v-card>
-    <v-snackbar :model-value="!!notice" timeout="2500" @update:model-value="notice = ''">{{ notice }}</v-snackbar>
+    <v-snackbar :model-value="!!notice" timeout="4000" @update:model-value="notice = ''">{{ notice }}</v-snackbar>
 
     <!-- Drop zone -->
     <v-card v-if="!items.length || dragging" class="drop mb-4" :class="{ over: dragging }" @click="upload?.click()">
       <div class="drop-inner">
         <div class="drop-icon"><v-icon icon="mdi-image-multiple-outline" size="34" /></div>
         <h2>{{ dragging ? 'Drop to scan' : 'Drop card photos here' }}</h2>
-        <p>Or use <strong>Take photo</strong> to shoot cards one after another, or <strong>Upload photos</strong> to pick a batch. JPEG, PNG or WebP.</p>
+        <p>Or use <strong>Take photo</strong> to shoot cards one after another, <strong>Upload photos</strong> to pick a batch, or <strong>Choose folder</strong> to add every photo in a folder. You can also drop folders here. JPEG, PNG or WebP.</p>
         <div class="d-flex ga-2 mt-2 flex-wrap justify-center">
           <v-btn color="primary" variant="flat" prepend-icon="mdi-camera-plus-outline" @click.stop="camera?.click()">Take photo</v-btn>
           <v-btn variant="outlined" prepend-icon="mdi-upload-multiple-outline" @click.stop="upload?.click()">Upload photos</v-btn>
+          <v-btn variant="outlined" prepend-icon="mdi-folder-multiple-image" @click.stop="folder?.click()">Choose folder</v-btn>
         </div>
       </div>
     </v-card>

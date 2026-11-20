@@ -75,14 +75,17 @@ export function useScanQueue() {
   )
 
   function addFiles(files: Iterable<File>) {
+    const res = { added: 0, skipped: 0 }
     for (const file of files) {
-      if (!file.type.startsWith('image/')) continue
+      if (!file.type.startsWith('image/')) { res.skipped++; continue }
+      res.added++
       items.value.push({
         key: ++seq.value, fileName: file.name, file, preview: URL.createObjectURL(file), status: 'queued',
         scan: null, form: null, quote: null, comps: [], priceError: '', error: '', repricing: false, card: null, dups: [], merged: false,
       })
     }
     pump()
+    return res
   }
 
   // Reactive proxy for an item, so mutations made here re-render the UI.

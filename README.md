@@ -36,6 +36,7 @@ Tests: `cd backend && pytest`. API docs: `http://localhost:8000/docs`.
 
 1. **Storage**: create the binders, boxes and shelves your cards live in.
 2. **Scan & price**: take photos one after another, upload a batch, or drag photos onto the page.
+   You can also choose or drop a whole folder (subfolders included); files that aren't images are skipped with a message.
    Each photo joins a queue and is downscaled, uploaded, identified, and priced against eBay in one call
    (`POST /api/scan?price=true`), three at a time. Pick a "File new cards in" location once for the batch.
 3. **Review**: the queue shows each card's identification, confidence and eBay median (low–high).
