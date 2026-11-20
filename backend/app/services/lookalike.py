@@ -16,9 +16,9 @@ import httpx
 
 from .similarity import _MAX_BYTES, _ebay_image, score_urls
 
-LOOKALIKE_MIN_CONFIDENCE = 60  # CLIP confidence below this is clearly not your card: the listing is left out
-LOOKALIKE_BORDERLINE = 70  # from LOOKALIKE_MIN_CONFIDENCE up to this, kept only if the feature check finds your card
-LOOKALIKE_MIN_MATCHES = 40  # matching feature points (RANSAC inliers) that confirm the same card
+LOOKALIKE_MIN_CONFIDENCE = 55  # CLIP confidence below this is clearly not your card: the listing is left out
+LOOKALIKE_BORDERLINE = 80  # from LOOKALIKE_MIN_CONFIDENCE up to this, kept only if the feature check finds your card
+LOOKALIKE_MIN_MATCHES = 30  # matching feature points (RANSAC inliers) that confirm the same card
 
 CLIP_MODEL = ("ViT-B-32", "laion2b_s34b_b79k")  # weights are downloaded on first use
 _RETRY_AFTER = 600  # seconds before trying to load the model again after it failed

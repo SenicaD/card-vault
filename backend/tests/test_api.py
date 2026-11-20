@@ -1590,7 +1590,7 @@ def test_borderline_look_alikes_are_kept_only_when_the_feature_check_finds_the_c
     p = asyncio.run(pricing.quote_grades("q", ["Raw"], image=b"photo", trace=trace))
     assert p.not_alike == {"C", "E"} and {i.item_id for i in p.groups["Raw"]} == {"A", "B", "D"}
     assert {r["id"]: r["m"] for r in trace.listings} == {"A": None, "B": 120, "C": 10, "D": None, "E": None}
-    assert any("below 60, or below 70 with fewer than 40 matching feature points" in n for n in trace.notes)
+    assert any("below 55, or below 80 with fewer than 30 matching feature points" in n for n in trace.notes)
 
 
 @pytest.mark.parametrize("problem,note", [("missing", "CLIP isn't installed"), ("download", "couldn't be loaded")])
