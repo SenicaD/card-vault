@@ -9,6 +9,7 @@ from ..config import get_settings
 from ..db import engine
 from ..models import PriceQuote
 from ..services.ebay import EbayItem
+from ..services.heic import HeicError, heic_to_jpeg, is_heic
 from ..services.imagecrop import CropBox, CropError, crop_saved_image
 from ..services.identify import CardIdentification, get_identifier
 from ..services.pricing import quote, summarize, top_listings
@@ -39,18 +40,26 @@ async def scan_card(file: UploadFile = File(...),
     With price=true the identification's search query is priced against eBay in the same call.
     A pricing failure doesn't fail the scan; it comes back as price_error.
     """
-    if file.content_type not in _ALLOWED:
-        raise HTTPException(415, f"Unsupported image type {file.content_type}. Use JPEG, PNG or WebP.")
     data = await file.read()
+    content_type = file.content_type
+    heic = content_type not in _ALLOWED and is_heic(content_type, file.filename, data)
+    if content_type not in _ALLOWED and not heic:
+        raise HTTPException(415, f"Unsupported image type {content_type}. Use JPEG, PNG, WebP, GIF or HEIC.")
     if len(data) > _MAX_BYTES:
         raise HTTPException(413, "Image is larger than 10 MB")
+    if heic:  # stored and identified as a JPEG, so crop and re-scan work unchanged
+        try:
+            data = heic_to_jpeg(data)
+        except HeicError as e:
+            raise HTTPException(422, str(e)) from e
+        content_type = "image/jpeg"
 
     settings = get_settings()
     settings.image_dir.mkdir(parents=True, exist_ok=True)
-    name = f"{uuid.uuid4().hex}.{_ALLOWED[file.content_type]}"
+    name = f"{uuid.uuid4().hex}.{_ALLOWED[content_type]}"
     (settings.image_dir / name).write_bytes(data)
 
-    return await _identify_and_price(data, file.content_type, name, price, trigger="scan")
+    return await _identify_and_price(data, content_type, name, price, trigger="scan")
 
 
 class CropRequest(BaseModel):

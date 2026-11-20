@@ -657,6 +657,56 @@ def test_crop_changes_the_photo(tmp_path):
         assert out.status_code == 200 and out.json()["image_url"] != card["image_url"]
 
 
+def _heic(w, h):
+    import pillow_heif
+    from PIL import Image
+    pillow_heif.register_heif_opener()
+    buf = io.BytesIO(); Image.new("RGB", (w, h), "blue").save(buf, "HEIF")
+    return buf.getvalue()
+
+
+def test_heic_upload_is_saved_as_jpeg_and_can_be_cropped():
+    with TestClient(app) as c:
+        r = c.post("/api/scan", files={"file": ("IMG_0001.HEIC", io.BytesIO(_heic(300, 400)), "application/octet-stream")})
+        assert r.status_code == 200, r.text
+        s = r.json()
+        assert s["image_path"].endswith(".jpg")
+        img = c.get(s["image_url"])
+        assert img.status_code == 200 and img.content.startswith(b"\xff\xd8")
+        crop = c.post("/api/scan/crop", json={"image_path": s["image_path"], "box": {"x": .1, "y": .1, "w": .5, "h": .5}})
+        assert crop.status_code == 200, crop.text
+        assert crop.json()["image_path"] != s["image_path"]
+
+
+def test_heic_is_recognised_by_bytes_or_type():
+    data = _heic(300, 400)
+    with TestClient(app) as c:
+        assert c.post("/api/scan", files={"file": ("blob", io.BytesIO(data), "application/octet-stream")}).status_code == 200
+        assert c.post("/api/scan", files={"file": ("x.heif", io.BytesIO(data), "image/heif")}).status_code == 200
+
+
+def test_heic_upload_is_shrunk_to_1600px():
+    from PIL import Image
+    from app.config import get_settings
+    with TestClient(app) as c:
+        s = c.post("/api/scan", files={"file": ("big.heic", io.BytesIO(_heic(2000, 1000)), "image/heic")}).json()
+        assert Image.open(get_settings().image_dir / s["image_path"]).size == (1600, 800)
+
+
+def test_unreadable_heic_and_other_types_are_rejected():
+    from app.config import get_settings
+    with TestClient(app) as c:
+        get_settings().image_dir.mkdir(parents=True, exist_ok=True)
+        before = set(get_settings().image_dir.iterdir())
+        r = c.post("/api/scan", files={"file": ("bad.heic", io.BytesIO(b"not a heic photo"), "application/octet-stream")})
+        assert r.status_code == 422 and "HEIC" in r.json()["detail"]
+        assert set(get_settings().image_dir.iterdir()) == before
+        r = c.post("/api/scan", files={"file": ("x.txt", io.BytesIO(b"hi"), "text/plain")})
+        assert r.status_code == 415 and "HEIC" in r.json()["detail"] and "GIF" in r.json()["detail"]
+        r = c.post("/api/scan", files={"file": ("x.jpg", io.BytesIO(b"\xff\xd8\xff\xe0 not heic"), "application/octet-stream")})
+        assert r.status_code == 415
+
+
 def test_image_priced_snapshots_count_as_asking_prices_in_the_trend():
     with TestClient(app) as c:
         s = c.post("/api/scan", files={"file": ("card.png", io.BytesIO(PNG), "image/png")}).json()
