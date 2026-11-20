@@ -1441,16 +1441,19 @@ def _alike_ebay(monkeypatch, found, photo_finds=True):
     monkeypatch.setattr(pricing, "get_ebay", lambda: FakeEbay())
 
 
-def _alike_scores(monkeypatch, scores, calls=None):
-    """Fake colour scores by listing id; ids missing from `scores` are pictures that didn't load."""
+def _alike_scores(monkeypatch, scores, calls=None, matches=None):
+    """Fake CLIP confidences (and borderline feature matches) by listing id; ids missing from `scores` are
+    pictures that didn't load."""
     from app.services import pricing
+    from app.services.lookalike import Look
 
     async def fake(photo, urls):
         if calls is not None:
             calls.append(list(urls))
         ids = {u: u.rsplit("/", 1)[1].removesuffix(".jpg") for u in urls}
-        return {u: scores[k] for u, k in ids.items() if k in scores}
-    monkeypatch.setattr(pricing, "score_urls", fake)
+        return Look("clip", {u: scores[k] for u, k in ids.items() if k in scores},
+                    {u: matches[k] for u, k in ids.items() if k in (matches or {})})
+    monkeypatch.setattr(pricing, "compare_pictures", fake)
 
 
 _ABCDE = (("A", 200), ("B", 210), ("C", 220), ("D", 1), ("E", 2))
@@ -1473,8 +1476,9 @@ def test_listings_that_dont_look_alike_are_left_out(monkeypatch, photo_finds):
         assert ids == {"A", "B", "C"}
     assert p.not_alike == {"D", "E"}
     assert {r["id"] for r in trace.listings if r["d"] == "not_alike"} == {"D", "E"}
-    assert trace.summary["not_alike"] == 2 and trace.summary["returned"] == 5
+    assert trace.summary["not_alike"] == 2 and trace.summary["returned"] == 5 and trace.summary["lookalike"] == "clip"
     assert sum("photo" in n for n in trace.notes if "left out" in n) == 1
+    assert {r["id"]: r["s"] for r in trace.listings} == _ALIKE  # every listing shows its confidence
 
 
 def test_listings_without_a_scored_picture_are_kept_when_judging_look_alike(monkeypatch):
@@ -1546,7 +1550,7 @@ def test_a_failed_look_alike_comparison_prices_as_before(monkeypatch):
 
     async def broken(photo, urls):
         raise OSError("cannot identify image file")
-    monkeypatch.setattr(pricing, "score_urls", broken)
+    monkeypatch.setattr(pricing, "compare_pictures", broken)
     trace = Trace()
     p = asyncio.run(pricing.quote_grades("q", ["Raw"], image=b"photo", trace=trace))
     unfiltered, _ = pricing.build_quotes(pricing.group_by_grade(found), ["Raw"], "q", "ebay-image")
@@ -1571,3 +1575,99 @@ def test_listings_that_dont_look_alike_leave_the_matches_table(monkeypatch):
         fresh, _ = _priced_card(c, grade="Raw", id_confidence=0.4)  # never tracked them in the first place
         c.post(f"/api/cards/{fresh['id']}/price", json={})
         assert {r["item_id"] for r in c.get(f"/api/cards/{fresh['id']}/matches").json()} == {"A", "B", "C"}
+
+
+def test_borderline_look_alikes_are_kept_only_when_the_feature_check_finds_the_card(monkeypatch):
+    import asyncio
+
+    from app.services import pricing
+    from app.services.trace import Trace
+    _alike_ebay(monkeypatch, _pics(("A", 200), ("B", 210), ("C", 220), ("D", 230), ("E", 2)))
+    # B, C and D are borderline: B's design matched, C's didn't, D's picture couldn't be checked
+    _alike_scores(monkeypatch, {"A": 90, "B": 65, "C": 65, "D": 65, "E": 30}, matches={"B": 120, "C": 10})
+    trace = Trace()
+    p = asyncio.run(pricing.quote_grades("q", ["Raw"], image=b"photo", trace=trace))
+    assert p.not_alike == {"C", "E"} and {i.item_id for i in p.groups["Raw"]} == {"A", "B", "D"}
+    assert {r["id"]: r["m"] for r in trace.listings} == {"A": None, "B": 120, "C": 10, "D": None, "E": None}
+    assert any("below 60, or below 70 with fewer than 40 matching feature points" in n for n in trace.notes)
+
+
+@pytest.mark.parametrize("problem,note", [("missing", "CLIP isn't installed"), ("download", "couldn't be loaded")])
+def test_without_clip_look_alike_falls_back_to_the_colour_score(monkeypatch, problem, note):
+    import asyncio
+
+    from app.services import lookalike, pricing
+    from app.services.trace import Trace
+
+    def no_model():
+        if problem == "missing":
+            raise lookalike._NotInstalled("No module named 'open_clip'")
+        raise OSError("could not download the weights")
+
+    async def colour(photo, urls):
+        return {u: {"A": 90, "B": 85, "C": 80, "D": 50, "E": 60}[u.rsplit("/", 1)[1][0]] for u in urls}
+    monkeypatch.setattr(lookalike, "_model", no_model)
+    monkeypatch.setattr(lookalike, "score_urls", colour)
+    _alike_ebay(monkeypatch, _pics(*_ABCDE))
+    trace = Trace()
+    p = asyncio.run(pricing.quote_grades("q", ["Raw"], image=b"photo", trace=trace))
+    assert p.not_alike == {"D"}  # the colour rule: below 60% of the best (54); CLIP's 60 would have taken E too
+    assert trace.summary["lookalike"] == "colour" and any(note in n for n in trace.notes)
+    assert any("60% of the best colour score" in n for n in trace.notes)
+
+
+def test_look_alike_embeddings_are_cached_by_picture_url(monkeypatch):
+    import asyncio
+    from collections import OrderedDict
+
+    from app.services import lookalike
+
+    class Vec(tuple):
+        def __matmul__(self, other):
+            return sum(a * b for a, b in zip(self, other))
+
+    fetched, checked = [], []
+
+    async def fetch(urls):
+        fetched.extend(urls)
+        return {u: u.rsplit("/", 1)[1].removesuffix(".jpg").encode() for u in urls}
+    monkeypatch.setattr(lookalike, "_model", lambda: "clip")
+    monkeypatch.setattr(lookalike, "_embeddings", OrderedDict())
+    monkeypatch.setattr(lookalike, "_fetch", fetch)
+    monkeypatch.setattr(lookalike, "card", lambda data: data)
+    monkeypatch.setattr(lookalike, "_embed", lambda clip, img: Vec((1.0,)) if img == b"photo" else Vec((int(img) / 100,)))
+    monkeypatch.setattr(lookalike, "feature_matches", lambda a, b: checked.append(b) or 50)
+    urls = [f"https://i.ebayimg.com/{n}.jpg" for n in (90, 65, 20)] + ["https://example.com/90.jpg"]
+    first = asyncio.run(lookalike.compare(b"photo", urls))
+    assert first.method == "clip" and first.scores == {urls[0]: 90, urls[1]: 65, urls[2]: 20}  # only eBay pictures
+    assert first.matches == {urls[1]: 50} and checked == [b"65"]  # only the borderline one gets the feature check
+    assert fetched == urls[:3]
+    fetched.clear()
+    again = asyncio.run(lookalike.compare(b"photo", urls))
+    assert again.scores == first.scores and fetched == [urls[1]]  # embeddings were cached; borderline needs the picture
+
+
+def test_card_crop_and_feature_check_on_synthetic_pictures():
+    cv2 = pytest.importorskip("cv2")
+    np = pytest.importorskip("numpy")
+    from app.services import lookalike
+
+    rng = np.random.default_rng(7)
+
+    def design():
+        img = cv2.resize(rng.integers(0, 255, (35, 25, 3), dtype=np.uint8), (500, 700), interpolation=cv2.INTER_NEAREST)
+        for _ in range(40):
+            cv2.circle(img, tuple(int(v) for v in rng.integers(0, 500, 2)), int(rng.integers(5, 40)),
+                       tuple(int(v) for v in rng.integers(0, 255, 3)), -1)
+        return img
+
+    mine, other = design(), design()
+    photo = np.full((1000, 900, 3), 40, np.uint8)  # the card held at an angle on a dark table
+    corners = np.float32([[0, 0], [500, 0], [500, 700], [0, 700]])
+    placed = np.float32([[220, 120], [690, 180], [640, 860], [150, 800]])
+    cv2.warpPerspective(mine, cv2.getPerspectiveTransform(corners, placed), (900, 1000), photo, borderMode=cv2.BORDER_TRANSPARENT)
+    cropped = lookalike.card(cv2.imencode(".png", photo)[1].tobytes())
+    assert cropped.shape[:2] == (700, 500)
+    assert lookalike.feature_matches(cropped, mine) >= lookalike.LOOKALIKE_MIN_MATCHES
+    assert lookalike.feature_matches(cropped, other) < lookalike.LOOKALIKE_MIN_MATCHES
+    assert lookalike.card(b"not a picture") is None
