@@ -117,6 +117,7 @@ def load(job_id):
 
 
 def save(job):
+    job["updated_at"] = now()
     path = job_dir(job["id"]) / "job.json"
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(job, indent=2) + "\n")
@@ -575,7 +576,10 @@ def cmd_queue():
         elif j["stage"] == "merged":
             other_rows.append(("skip", n, j["id"], j["stage"], "merged"))
         else:
-            running_rows.append(("resume", n, j["id"], j["stage"], f"round {j['round']}"))
+            note = f"round {j['round']}"
+            if stalled(j):
+                note += f", STALLED: no activity for {idle_seconds(j) // 60}m"
+            running_rows.append(("resume", n, j["id"], j["stage"], note))
     for n, j in sorted(jobs.items()):
         if n not in open_numbers and j["stage"] not in TERMINAL | WAITING:
             other_rows.append(("skip", n, j["id"], j["stage"], f"issue is closed or no longer labeled {LABELS['queue']}"))
@@ -659,6 +663,24 @@ def cmd_agents(job, spec):
     save(job)
 
 
+def idle_seconds(job):
+    """Seconds since the job last showed life: a state change, a file in its folder, or a worktree commit."""
+    times = [datetime.fromisoformat(job.get("updated_at", job["started"]).replace("Z", "+00:00")).timestamp()]
+    for p in job_dir(job["id"]).rglob("*"):
+        if p.name != ".lock":
+            times.append(p.stat().st_mtime)
+    if Path(job["worktree"]).exists():
+        git_dir = run(["git", "rev-parse", "--absolute-git-dir"], cwd=job["worktree"], check=False).stdout.strip()
+        head = Path(git_dir) / "logs" / "HEAD"
+        if git_dir and head.exists():
+            times.append(head.stat().st_mtime)
+    return int(datetime.now(timezone.utc).timestamp() - max(times))
+
+
+def stalled(job):
+    return job["stage"] not in TERMINAL | WAITING and idle_seconds(job) > CONFIG["agent_timeout_s"]
+
+
 def elapsed(job):
     start = datetime.fromisoformat(job["started"].replace("Z", "+00:00"))
     end = datetime.fromisoformat(job["ended"].replace("Z", "+00:00")) if job["ended"] else datetime.now(timezone.utc)
@@ -668,11 +690,13 @@ def elapsed(job):
 
 def cmd_summary(args):
     jobs = [resolve(a) for a in args] if args else all_jobs()
-    rows = [("job", "issue", "stage", "round", "pr", "cost", "time")]
+    rows = [("job", "issue", "stage", "round", "pr", "cost", "time", "idle")]
     for j in jobs:
         sync(j)  # for display only; the orchestrator owns the saved state
         rows.append((j["id"], f"#{j['issue']}", j["stage"], str(j["round"]),
-                     f"#{j['pr']}" if j["pr"] else "-", f"${j['cost_usd']:.2f}", elapsed(j)))
+                     f"#{j['pr']}" if j["pr"] else "-", f"${j['cost_usd']:.2f}", elapsed(j),
+                     f"{idle_seconds(j) // 60}m" + (" STALLED" if stalled(j) else "")
+                     if j["stage"] not in TERMINAL | WAITING else "-"))
     widths = [max(len(r[i]) for r in rows) for i in range(len(rows[0]))]
     for r in rows:
         print("  ".join(c.ljust(w) for c, w in zip(r, widths)).rstrip())
