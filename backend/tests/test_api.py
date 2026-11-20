@@ -2,6 +2,8 @@ import io
 import os
 import tempfile
 
+import pytest
+
 tmp = tempfile.mkdtemp()
 os.environ.update(DATABASE_URL=f"sqlite:///{tmp}/test.db", IMAGE_DIR=f"{tmp}/images",
                   IDENTIFIER="mock", EBAY_MODE="mock")
@@ -1418,3 +1420,154 @@ def test_lookup_on_add_runs_one_card_at_a_time(monkeypatch):
 
     asyncio.run(overlapping())  # the deleted card is skipped without error
     assert most == 1
+
+
+def _pics(*specs):
+    """Raw listings with eBay pictures: (id, price) or (id, price, title)."""
+    from app.services.ebay import EbayItem
+    return [EbayItem(item_id=k, title=rest[0] if rest else f"Test card {k}", price=p, condition="Ungraded",
+                     url=f"https://ebay.test/{k}", image_url=f"https://i.ebayimg.com/{k}.jpg") for k, p, *rest in specs]
+
+
+def _alike_ebay(monkeypatch, found, photo_finds=True):
+    from app.services import pricing
+
+    class FakeEbay:
+        async def search_by_image(self, image, limit=50):
+            return list(found) if photo_finds else []
+
+        async def search_active(self, query, limit=50):
+            return list(found)
+    monkeypatch.setattr(pricing, "get_ebay", lambda: FakeEbay())
+
+
+def _alike_scores(monkeypatch, scores, calls=None):
+    """Fake colour scores by listing id; ids missing from `scores` are pictures that didn't load."""
+    from app.services import pricing
+
+    async def fake(photo, urls):
+        if calls is not None:
+            calls.append(list(urls))
+        ids = {u: u.rsplit("/", 1)[1].removesuffix(".jpg") for u in urls}
+        return {u: scores[k] for u, k in ids.items() if k in scores}
+    monkeypatch.setattr(pricing, "score_urls", fake)
+
+
+_ABCDE = (("A", 200), ("B", 210), ("C", 220), ("D", 1), ("E", 2))
+_ALIKE = {"A": 90, "B": 85, "C": 80, "D": 30, "E": 35}
+
+
+@pytest.mark.parametrize("photo_finds", [True, False])
+def test_listings_that_dont_look_alike_are_left_out(monkeypatch, photo_finds):
+    import asyncio
+
+    from app.services import pricing
+    from app.services.trace import Trace
+    _alike_ebay(monkeypatch, _pics(*_ABCDE), photo_finds)
+    _alike_scores(monkeypatch, _ALIKE)
+    trace = Trace()
+    p = asyncio.run(pricing.quote_grades("q", ["Raw"], image=b"photo", trace=trace))
+    assert p.source == ("ebay-image" if photo_finds else "ebay-active")
+    assert p.quotes[0].median == 210 and p.quotes[0].sample_size == 3
+    for ids in ({i.item_id for i in p.groups["Raw"]}, {i.item_id for i in p.items}, {i.item_id for i in p.comps}):
+        assert ids == {"A", "B", "C"}
+    assert p.not_alike == {"D", "E"}
+    assert {r["id"] for r in trace.listings if r["d"] == "not_alike"} == {"D", "E"}
+    assert trace.summary["not_alike"] == 2 and trace.summary["returned"] == 5
+    assert sum("photo" in n for n in trace.notes if "left out" in n) == 1
+
+
+def test_listings_without_a_scored_picture_are_kept_when_judging_look_alike(monkeypatch):
+    import asyncio
+
+    from app.services import pricing
+    from app.services.ebay import EbayItem
+    from app.services.trace import Trace
+    found = _pics(("A", 200), ("B", 210), ("L", 2)) + [EbayItem(item_id="N", title="Test card N", price=1,
+                                                                 condition="Ungraded", url="https://ebay.test/N")]
+    _alike_ebay(monkeypatch, found)
+    _alike_scores(monkeypatch, {"A": 95, "B": 90})  # L's picture didn't load, N has none
+    trace = Trace()
+    p = asyncio.run(pricing.quote_grades("q", ["Raw"], image=b"photo", trace=trace))
+    assert {i.item_id for i in p.groups["Raw"]} == {"A", "B", "L", "N"} and not p.not_alike
+    assert p.quotes[0].sample_size == 4 and p.quotes[0].median == 101
+    assert {r["id"] for r in trace.listings if r["d"] == "used"} == {"A", "B", "L", "N"}
+    assert trace.summary["not_alike"] == 0
+
+
+def test_look_alike_fetches_at_most_forty_pictures(monkeypatch):
+    import asyncio
+
+    from app.services import pricing
+    found = _pics(*[(f"x{n}", 100 + n) for n in range(60)])
+    calls = []
+    _alike_ebay(monkeypatch, found)
+    _alike_scores(monkeypatch, {f"x{n}": 90 if n < 40 else 1 for n in range(60)}, calls)
+    p = asyncio.run(pricing.quote_grades("q", ["Raw"], image=b"photo"))
+    assert calls == [[i.image_url for i in found[:40]]]
+    assert len(p.groups["Raw"]) == 60 and not p.not_alike  # 41-60 were never scored, so they stay
+
+
+@pytest.mark.parametrize("exclude,parallel", [({"A"}, None), (set(), "Base")])
+def test_look_alike_filter_is_skipped_when_it_would_leave_nothing_to_price(monkeypatch, exclude, parallel):
+    import asyncio
+
+    from app.services import pricing
+    from app.services.trace import Trace
+    # the only good look-alike is unticked, or another version than the card's
+    _alike_ebay(monkeypatch, _pics(("A", 200, "Test card A Green /99"), ("B", 5), ("C", 6), ("D", 7)))
+    _alike_scores(monkeypatch, {"A": 90, "B": 20, "C": 20, "D": 20})
+    plain = asyncio.run(pricing.quote_grades("q", ["Raw"], parallel=parallel, exclude=exclude))
+    trace = Trace()
+    p = asyncio.run(pricing.quote_grades("q", ["Raw"], image=b"photo", parallel=parallel, exclude=exclude, trace=trace))
+    assert p.quotes[0].median == plain.quotes[0].median == 6 and len(p.groups["Raw"]) == 4 and not p.not_alike
+    assert not [r for r in trace.listings if r["d"] == "not_alike"] and trace.summary["not_alike"] == 0
+    assert any("Raw" in n and "skipped" in n for n in trace.notes)
+
+
+def test_no_photo_means_no_look_alike_scoring(monkeypatch):
+    import asyncio
+
+    from app.services import pricing
+    calls = []
+    _alike_ebay(monkeypatch, _pics(*_ABCDE))
+    _alike_scores(monkeypatch, _ALIKE, calls)
+    p = asyncio.run(pricing.quote_grades("q", ["Raw"], image=None))
+    assert calls == [] and p.quotes[0].median == 200 and p.quotes[0].sample_size == 5 and not p.not_alike
+
+
+def test_a_failed_look_alike_comparison_prices_as_before(monkeypatch):
+    import asyncio
+
+    from app.services import pricing
+    from app.services.trace import Trace
+    found = _pics(*_ABCDE)
+    _alike_ebay(monkeypatch, found)
+
+    async def broken(photo, urls):
+        raise OSError("cannot identify image file")
+    monkeypatch.setattr(pricing, "score_urls", broken)
+    trace = Trace()
+    p = asyncio.run(pricing.quote_grades("q", ["Raw"], image=b"photo", trace=trace))
+    unfiltered, _ = pricing.build_quotes(pricing.group_by_grade(found), ["Raw"], "q", "ebay-image")
+    assert [q.model_dump() for q in p.quotes] == [q.model_dump() for q in unfiltered] and not p.not_alike
+    assert any("photo comparison failed" in n for n in trace.notes)
+
+
+def test_listings_that_dont_look_alike_leave_the_matches_table(monkeypatch):
+    _alike_ebay(monkeypatch, _pics(*_ABCDE))
+    with TestClient(app) as c:
+        card, _ = _priced_card(c, grade="Raw", id_confidence=0.4)  # no name filter, no re-identification
+        cid = card["id"]
+        _alike_scores(monkeypatch, {k: 90 for k in _ALIKE})  # an earlier lookup thought they all looked alike
+        assert c.post(f"/api/cards/{cid}/price", json={}).json()["snapshot"]["median"] == 200
+        assert {r["item_id"] for r in c.get(f"/api/cards/{cid}/matches").json()} == {"A", "B", "C", "D", "E"}
+        _alike_scores(monkeypatch, _ALIKE)
+        assert c.post(f"/api/cards/{cid}/price", json={}).json()["snapshot"]["median"] == 210
+        assert {r["item_id"] for r in c.get(f"/api/cards/{cid}/matches").json()} == {"A", "B", "C"}
+        out = c.post(f"/api/cards/{cid}/matches/exclude", json={"item_ids": ["A"]}).json()
+        assert out["snapshot"]["median"] == 215 and out["snapshot"]["sample_size"] == 2
+
+        fresh, _ = _priced_card(c, grade="Raw", id_confidence=0.4)  # never tracked them in the first place
+        c.post(f"/api/cards/{fresh['id']}/price", json={})
+        assert {r["item_id"] for r in c.get(f"/api/cards/{fresh['id']}/matches").json()} == {"A", "B", "C"}
