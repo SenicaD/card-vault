@@ -47,7 +47,8 @@ Tests: `cd backend && pytest`. API docs: `http://localhost:8000/docs`.
    added in scan order). Turn on **Auto-add** to skip review for cards identified at 80% confidence or
    higher.
 4. **Value**: on a card's page, "Refresh value" re-runs that eBay search (filters lots and reprints, trims
-   outliers) and stores a new low / median / high snapshot. The median becomes the card's estimate.
+   outliers and, for a card with a photo, leaves out listings whose picture clearly doesn't look like it)
+   and stores a new low / median / high snapshot. The median becomes the card's estimate.
 5. **Sell**: "List on eBay" creates an inventory item, an offer, and publishes it. The card moves to Listed.
 
 The queue lives in memory: it survives moving between pages, but not a reload (the browser warns first).
