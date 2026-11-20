@@ -56,7 +56,7 @@ function guard(e: BeforeUnloadEvent) {
 // Only says something when files were left out; the queue counters already show what was added.
 function report({ added, skipped }: { added: number; skipped: number }) {
   if (!skipped) return
-  const skip = `skipped ${skipped} ${skipped === 1 ? "file that isn't an image" : "files that aren't images"}`
+  const skip = `skipped ${skipped} ${skipped === 1 ? 'file' : 'files'} in an unsupported format (use JPEG, PNG, WebP, GIF or HEIC)`
   notice.value = added ? `Added ${added} ${added === 1 ? 'photo' : 'photos'} · ${skip}` : `No photos added · ${skip}`
 }
 function onPick(e: Event) {
@@ -148,8 +148,8 @@ function openRow(_: unknown, row: { item: ScanItem }) {
     @dragleave.self="dragging = false"
     @drop.prevent="onDrop"
   >
-    <input ref="camera" type="file" accept="image/*" capture="environment" multiple hidden @change="onPick" />
-    <input ref="upload" type="file" accept="image/*" multiple hidden @change="onPick" />
+    <input ref="camera" type="file" accept="image/*,.heic,.heif" capture="environment" multiple hidden @change="onPick" />
+    <input ref="upload" type="file" accept="image/*,.heic,.heif" multiple hidden @change="onPick" />
     <input ref="folder" type="file" webkitdirectory multiple hidden @change="onPickFolder" />
 
     <PageHeader
@@ -211,7 +211,7 @@ function openRow(_: unknown, row: { item: ScanItem }) {
       <div class="drop-inner">
         <div class="drop-icon"><v-icon icon="mdi-image-multiple-outline" size="34" /></div>
         <h2>{{ dragging ? 'Drop to scan' : 'Drop card photos here' }}</h2>
-        <p>Or use <strong>Take photo</strong> to shoot cards one after another, <strong>Upload photos</strong> to pick a batch, or <strong>Choose folder</strong> to add every photo in a folder. You can also drop folders here. JPEG, PNG or WebP.</p>
+        <p>Or use <strong>Take photo</strong> to shoot cards one after another, <strong>Upload photos</strong> to pick a batch, or <strong>Choose folder</strong> to add every photo in a folder. You can also drop folders here. JPEG, PNG, WebP, GIF or HEIC.</p>
         <div class="d-flex ga-2 mt-2 flex-wrap justify-center">
           <v-btn color="primary" variant="flat" prepend-icon="mdi-camera-plus-outline" @click.stop="camera?.click()">Take photo</v-btn>
           <v-btn variant="outlined" prepend-icon="mdi-upload-multiple-outline" @click.stop="upload?.click()">Upload photos</v-btn>
