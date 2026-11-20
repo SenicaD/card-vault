@@ -309,7 +309,7 @@ export interface SoldCompare {
 
 export interface TraceCall { api: string; purpose: string; detail: string; ms: number; returned: number | null; error: string | null }
 export interface TraceFunnel {
-  grade: string; found: number; excluded: number; other_card?: number; other_version: number; outliers: number; used: number
+  grade: string; found: number; excluded: number; other_card?: number; other_version: number; not_alike?: number; outliers: number; used: number
   low: number | null; median: number | null; high: number | null; spread: number | null
   fences: { q1: number; q3: number; lo: number; hi: number } | null
 }

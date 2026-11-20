@@ -325,6 +325,8 @@ async def _quote_grades(query, grades, image, parallel, exclude, trace, who=None
     counts = {g: len(v) for g, v in sorted(groups.items(), key=lambda kv: grade_sort_key(kv[0]) if kv[0] != "Unknown" else (9, "", 0))}
     if trace is not None:
         trace.mode, trace.query = source, query
+        for f in trace.funnel:  # left out before build_quotes, so its own counts don't include them
+            f["not_alike"] = sum(g == f["grade"] for _, g in unlike)
         listed = {i.item_id for g in grades for i in groups.get(g, [])}
         everything = list({i.item_id: i for i in [*items, *(i for v in groups.values() for i in v)]}.values())
         for i in rejected:

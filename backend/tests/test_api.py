@@ -1479,6 +1479,7 @@ def test_listings_that_dont_look_alike_are_left_out(monkeypatch, photo_finds):
     assert trace.summary["not_alike"] == 2 and trace.summary["returned"] == 5 and trace.summary["lookalike"] == "clip"
     assert sum("photo" in n for n in trace.notes if "left out" in n) == 1
     assert {r["id"]: r["s"] for r in trace.listings} == _ALIKE  # every listing shows its confidence
+    assert trace.funnel[0]["found"] == 3 and trace.funnel[0]["not_alike"] == 2
 
 
 def test_listings_without_a_scored_picture_are_kept_when_judging_look_alike(monkeypatch):

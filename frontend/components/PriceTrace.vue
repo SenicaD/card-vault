@@ -42,10 +42,9 @@ const gradeListings = computed(() => (trace.value?.listings ?? []).filter((l) =>
 const rows = computed(() => gradeListings.value.filter((l) => only.value === 'all' || l.d === only.value))
 const headers = [
   { title: 'Treated as', key: 'd', width: 170 }, { title: 'Version', key: 'v' }, { title: 'Listing', key: 't', sortable: false },
-  { title: 'Looks alike', key: 's', align: 'end' as const, width: 90 }, { title: 'Price', key: 'p', align: 'end' as const },
+  { title: 'Price', key: 'p', align: 'end' as const },
 ]
-const lookTitle = (l: TraceListing) => l.s == null ? 'Picture not compared with your photo'
-  : `Confidence that the picture shows your card, 0-100${l.m != null ? `; ${l.m} matching feature points` : ''}`
+const lookTitle = (l: TraceListing) => `Confidence that the picture shows your card, 0-100${l.m != null ? `; ${l.m} matching feature points` : ''}`
 const decisionItems = computed(() => [{ value: 'all', title: 'All listings' },
   ...Object.entries(DECISION_LABEL).map(([value, title]) => ({ value, title }))])
 const idx = computed(() => list.value.findIndex((t) => t.id === pick.value))
@@ -94,11 +93,11 @@ const total = computed(() => trace.value?.summary?.after_top_up ?? trace.value?.
             <div v-if="trace.funnel?.length">
               <div class="text-body-2 mb-1">From <strong class="num">{{ total }}</strong> listings eBay returned, to the price:</div>
               <v-table density="compact" class="funnel mb-3">
-                <thead><tr><th>Grade</th><th class="text-right">Found</th><th class="text-right">You unticked</th><th class="text-right">Other versions</th><th class="text-right">Outliers</th><th class="text-right">Used</th><th class="text-right">Low</th><th class="text-right">Median</th><th class="text-right">High</th></tr></thead>
+                <thead><tr><th>Grade</th><th class="text-right">Found</th><th class="text-right">You unticked</th><th class="text-right">Other versions</th><th class="text-right">Doesn't look like photo</th><th class="text-right">Outliers</th><th class="text-right">Used</th><th class="text-right">Low</th><th class="text-right">Median</th><th class="text-right">High</th></tr></thead>
                 <tbody>
                   <tr v-for="f in trace.funnel" :key="f.grade" :class="{ on: f.grade === grade }" @click="grade = f.grade">
                     <td>{{ f.grade }}</td><td class="text-right num">{{ f.found }}</td><td class="text-right num">{{ f.excluded || '' }}</td>
-                    <td class="text-right num">{{ f.other_version || '' }}</td><td class="text-right num">{{ f.outliers || '' }}</td>
+                    <td class="text-right num">{{ f.other_version || '' }}</td><td class="text-right num">{{ f.not_alike || '' }}</td><td class="text-right num">{{ f.outliers || '' }}</td>
                     <td class="text-right num font-weight-bold">{{ f.used }}</td><td class="text-right num">{{ money(f.low) }}</td>
                     <td class="text-right num font-weight-bold">{{ money(f.median) }}</td><td class="text-right num">{{ money(f.high) }}</td>
                   </tr>
@@ -125,13 +124,12 @@ const total = computed(() => trace.value?.summary?.after_top_up ?? trace.value?.
                 <template #item.d="{ item }">
                   <v-chip size="x-small" :color="DECISION_COLOR[item.d]" variant="tonal">{{ DECISION_LABEL[item.d] }}</v-chip>
                   <v-chip v-if="item.r" size="x-small" color="primary" variant="flat" class="ml-1">{{ item.r === 'median' ? 'median' : item.r === 'low' ? 'lowest' : 'highest' }}</v-chip>
+                  <div v-if="item.s != null" class="text-caption text-muted-c text-no-wrap" :title="lookTitle(item)">
+                    Looks alike <span class="num">{{ item.s }}</span><template v-if="item.m != null"> · {{ item.m }} pts</template>
+                  </div>
                 </template>
                 <template #item.v="{ item }"><span class="text-caption">{{ item.v }}</span></template>
                 <template #item.t="{ item }"><a :href="item.u || undefined" target="_blank" rel="noopener" class="tlink">{{ item.t }}</a></template>
-                <template #item.s="{ item }">
-                  <div class="num text-no-wrap" :title="lookTitle(item)">{{ item.s ?? '–' }}</div>
-                  <div v-if="item.m != null" class="text-caption text-muted-c text-no-wrap" :title="lookTitle(item)">{{ item.m }} pts</div>
-                </template>
                 <template #item.p="{ item }"><span class="num">{{ money(item.p) }}</span></template>
               </v-data-table>
             </template>
@@ -165,8 +163,9 @@ const total = computed(() => trace.value?.summary?.after_top_up ?? trace.value?.
 <style scoped>
 .debug-card { border-style: dashed !important; }
 .funnel tbody tr { cursor: pointer; }
+.funnel.v-table th, .funnel.v-table td { padding: 0 10px; } /* ten columns: keep them within the panel */
 .funnel tbody tr.on { background: rgb(var(--v-theme-brand-muted)); }
 .detail { max-width: 340px; overflow-wrap: anywhere; font-size: 13px; }
-.tlink { color: inherit; text-decoration: none; display: block; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tlink { color: inherit; text-decoration: none; display: block; max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tlink:hover { color: rgb(var(--v-theme-primary)); }
 </style>
