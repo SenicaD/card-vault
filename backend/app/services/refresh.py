@@ -24,6 +24,7 @@ log = logging.getLogger("cardvault.refresh")
 CHECK_EVERY_SECONDS = 3600  # how often to look for cards that are due
 PAUSE_BETWEEN_CARDS = 1.0  # be polite to the eBay API
 MAX_TRACKED_GRADES = 6
+LOOKUP_ON_ADD = True  # look a new card up on eBay as soon as it's added (tests switch this off)
 
 
 def _plan(session: Session, c: Card) -> tuple:
@@ -124,6 +125,38 @@ async def refresh_due(max_age: timedelta | None = None, pause: float = PAUSE_BET
         log.info("re-priced %d of %d due cards (%d failed)", refreshed, len(due), failed)
         record_run("daily", started, len(due), refreshed, failed, errors)
     return refreshed, failed
+
+
+_add_lock: asyncio.Lock | None = None
+_add_lock_loop: asyncio.AbstractEventLoop | None = None
+
+
+def _lock_for_adds() -> asyncio.Lock:
+    """One lock shared by every add lookup, made for the running loop (tests start a new loop per client)."""
+    global _add_lock, _add_lock_loop
+    loop = asyncio.get_running_loop()
+    if _add_lock is None or _add_lock_loop is not loop:
+        _add_lock, _add_lock_loop = asyncio.Lock(), loop
+    return _add_lock
+
+
+async def price_new_card(card_id: int) -> None:
+    """Look a just-added card up on eBay, one card at a time with a pause. Failures are logged, never raised."""
+    if not LOOKUP_ON_ADD:
+        return
+    async with _lock_for_adds():
+        query = None
+        try:
+            with Session(engine) as session:
+                card = session.get(Card, card_id)
+                if not card or card.status == CardStatus.sold:  # deleted or sold since: nothing to look up
+                    return
+                plan = _plan(session, card)
+            query = plan[1]
+            await reprice_card(*plan, trigger="add")
+        except Exception as e:  # runs after the response: a failure must never escape
+            log.warning("lookup on add failed for card %s (%r): %s", card_id, query, e)
+        await asyncio.sleep(PAUSE_BETWEEN_CARDS)
 
 
 def record_run(kind: str, started, total: int, refreshed: int, failed: int, errors: list[dict]) -> None:

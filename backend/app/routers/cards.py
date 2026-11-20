@@ -1,6 +1,6 @@
 from datetime import timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlmodel import Session, col, func, or_, select
 
@@ -113,7 +113,7 @@ def stats(session: Session = Depends(get_session)):
 
 
 @router.post("", response_model=CardRead, status_code=201)
-def create_card(body: CardCreate, session: Session = Depends(get_session)):
+def create_card(body: CardCreate, background: BackgroundTasks, session: Session = Depends(get_session)):
     card = Card.model_validate(body.model_dump(exclude={"price"}))
     if not card.search_query:
         card.search_query = build_search_query(CardIdentification(
@@ -129,6 +129,8 @@ def create_card(body: CardCreate, session: Session = Depends(get_session)):
         session.add(PriceSnapshot(card_id=card.id, **body.price.model_dump()))
         session.commit()
         session.refresh(card)
+    if refresh_service.LOOKUP_ON_ADD:  # fills the listings table and graded price after the response
+        background.add_task(refresh_service.price_new_card, card.id)
     return to_read(card)
 
 
