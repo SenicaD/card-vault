@@ -313,7 +313,7 @@ export interface TraceFunnel {
   low: number | null; median: number | null; high: number | null; spread: number | null
   fences: { q1: number; q3: number; lo: number; hi: number } | null
 }
-export type Decision = 'junk' | 'unknown_grade' | 'grade_not_requested' | 'other_card' | 'excluded' | 'other_version' | 'outlier' | 'used'
+export type Decision = 'junk' | 'unknown_grade' | 'grade_not_requested' | 'other_card' | 'not_alike' | 'excluded' | 'other_version' | 'outlier' | 'used'
 export interface TraceListing { id: string; t: string; p: number; g: string | null; v: string | null; d: Decision; r: 'low' | 'median' | 'high' | null; u: string | null }
 export interface TraceSummary {
   id: number; kind: 'lookup' | 'sold'; created_at: string; trigger: string | null; mode: string | null; query: string | null; grades: string[] | null

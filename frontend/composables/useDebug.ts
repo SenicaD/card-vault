@@ -13,12 +13,13 @@ export const DECISION_LABEL: Record<string, string> = {
   grade_not_requested: 'Another grade',
   excluded: 'You unticked it',
   other_card: 'Different card',
+  not_alike: "Doesn't look like your photo",
   other_version: 'Different version',
   outlier: 'Price outlier',
   used: 'Counted',
 }
 export const DECISION_COLOR: Record<string, string> = {
-  junk: 'grey', unknown_grade: 'grey', grade_not_requested: 'grey', excluded: 'warning', other_card: 'warning', other_version: 'warning', outlier: 'error', used: 'success',
+  junk: 'grey', unknown_grade: 'grey', grade_not_requested: 'grey', excluded: 'warning', other_card: 'warning', not_alike: 'warning', other_version: 'warning', outlier: 'error', used: 'success',
 }
 export const TRIGGER_LABEL: Record<string, string> = { manual: 'Look up', daily: 'Daily refresh', bulk: 'Bulk re-price', crop: 'Crop', scan: 'Scan', auto: 'Automatic', add: 'Added to inventory' }
 export const stamp = (s: string | null | undefined) => (s ? isoDate(s).replace('T', ' ').slice(0, 16) : '')
