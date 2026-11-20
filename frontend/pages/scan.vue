@@ -67,6 +67,23 @@ async function addAll() {
   try { await q.saveAll() } finally { savingAll.value = false }
 }
 
+// Ticked rows. Only ready or failed rows can be ticked; anything saved, saving or removed drops out.
+const selected = ref<number[]>([])
+const tickable = (i: ScanItem) => i.status === 'ready' || i.status === 'error'
+watch(() => new Set(items.value.filter(tickable).map((i) => i.key)), (ok) => {
+  if (selected.value.some((k) => !ok.has(k))) selected.value = selected.value.filter((k) => ok.has(k))
+})
+const selectedReady = computed(() => items.value.filter((i) => i.status === 'ready' && selected.value.includes(i.key)).length)
+const toggle = (key: number) => { selected.value = selected.value.includes(key) ? selected.value.filter((x) => x !== key) : [...selected.value, key] }
+async function addSelected() {
+  savingAll.value = true
+  try { await q.saveAll(new Set(selected.value)) } finally { savingAll.value = false }
+}
+function removeSelected() {
+  for (const k of [...selected.value]) q.remove(k)
+  selected.value = []
+}
+
 const subline = (i: ScanItem) =>
   i.form ? [i.form.year, i.form.set_name, i.form.card_number && '#' + i.form.card_number.replace(/^#/, '')].filter(Boolean).join(' ') : ''
 const conf = (i: ScanItem) => i.scan?.identification.confidence ?? 0
@@ -81,12 +98,28 @@ const STATUS: Record<ScanItem['status'], { label: string; color: string; icon?: 
   error: { label: 'Failed', color: 'error', icon: 'mdi-alert-circle-outline' },
 }
 
+// Display only: the table sorts a view of the queue, never the queue itself, so saving stays in scan order.
+const sortBy = ref<{ key: string; order?: boolean | 'asc' | 'desc' }[]>([])
+const STATUS_ORDER: ScanItem['status'][] = ['ready', 'error', 'queued', 'processing', 'saving', 'added']
+// Empty values go last both ways. Vuetify swaps a and b for descending, so this checks the order itself.
+function sortRaw(key: string, val: (i: ScanItem) => string | number | null | undefined) {
+  return (a: ScanItem, b: ScanItem) => {
+    const x = val(a)
+    const y = val(b)
+    if (x == null || y == null) {
+      if (x == null && y == null) return 0
+      return (x == null) !== (sortBy.value.find((s) => s.key === key)?.order === 'desc') ? 1 : -1
+    }
+    return typeof x === 'string' ? x.localeCompare(y as string) : x - (y as number)
+  }
+}
+
 const headers = [
-  { title: 'Card', key: 'card', sortable: false },
-  { title: 'Confidence', key: 'conf', sortable: false },
+  { title: 'Card', key: 'card', sortRaw: sortRaw('card', (i) => i.form?.name?.toLowerCase() || null) },
+  { title: 'Confidence', key: 'conf', sortRaw: sortRaw('conf', (i) => i.scan?.identification.confidence) },
   { title: 'Stored in', key: 'loc', sortable: false },
-  { title: 'eBay value', key: 'value', sortable: false, align: 'end' as const },
-  { title: 'Status', key: 'status', sortable: false },
+  { title: 'eBay value', key: 'value', align: 'end' as const, sortRaw: sortRaw('value', (i) => i.quote?.median) },
+  { title: 'Status', key: 'status', sortRaw: sortRaw('status', (i) => STATUS_ORDER.indexOf(i.status)) },
   { title: '', key: 'actions', sortable: false, align: 'end' as const, width: 150 },
 ]
 
@@ -187,7 +220,15 @@ function openRow(_: unknown, row: { item: ScanItem }) {
             <h2><v-icon icon="mdi-tray-full" size="18" />Scan queue</h2>
             <p>Click a card to review its details and price.</p>
           </div>
-          <div class="d-flex ga-2 flex-wrap justify-end">
+          <div v-if="selected.length" class="d-flex align-center ga-2 flex-wrap justify-end">
+            <strong class="num">{{ selected.length }} selected</strong>
+            <v-btn variant="text" size="small" @click="selected = []">Clear selection</v-btn>
+            <v-btn variant="tonal" color="error" prepend-icon="mdi-close" @click="removeSelected">Remove {{ selected.length }}</v-btn>
+            <v-btn color="primary" variant="flat" prepend-icon="mdi-tray-arrow-down" :disabled="!selectedReady" :loading="savingAll" @click="addSelected">
+              Add {{ selectedReady }} to inventory
+            </v-btn>
+          </div>
+          <div v-else class="d-flex ga-2 flex-wrap justify-end">
             <v-btn v-if="counts.added" variant="text" size="small" prepend-icon="mdi-broom" @click="q.clearAdded">Clear added</v-btn>
             <v-btn color="primary" variant="flat" prepend-icon="mdi-tray-arrow-down" :disabled="!counts.ready" :loading="savingAll" @click="addAll">
               Add {{ counts.ready || '' }} to inventory
@@ -198,7 +239,20 @@ function openRow(_: unknown, row: { item: ScanItem }) {
         <v-progress-linear v-if="counts.pending" :model-value="((counts.total - counts.pending) / counts.total) * 100" color="primary" height="3" />
 
         <!-- Desktop table -->
-        <v-data-table v-if="mdAndUp" :headers="headers" :items="items" item-value="key" items-per-page="-1" hide-default-footer @click:row="openRow">
+        <v-data-table
+          v-if="mdAndUp"
+          v-model="selected"
+          v-model:sort-by="sortBy"
+          :headers="headers"
+          :items="items"
+          item-value="key"
+          :item-selectable="tickable"
+          show-select
+          select-strategy="all"
+          items-per-page="-1"
+          hide-default-footer
+          @click:row="openRow"
+        >
           <template #item.card="{ item }">
             <div class="d-flex align-center ga-3 py-2" style="min-width: 240px">
               <div class="mini-thumb"><CardThumb :src="item.preview" :alt="item.fileName" /></div>
@@ -260,7 +314,17 @@ function openRow(_: unknown, row: { item: ScanItem }) {
           <template v-for="(item, n) in items" :key="item.key">
             <v-divider v-if="n" />
             <v-list-item class="py-3" @click="openRow(null, { item })">
-              <template #prepend><div class="mini-thumb mr-3"><CardThumb :src="item.preview" :alt="item.fileName" /></div></template>
+              <template #prepend>
+                <v-checkbox-btn
+                  :model-value="selected.includes(item.key)"
+                  :disabled="!tickable(item)"
+                  density="compact"
+                  class="mr-1 flex-grow-0"
+                  :aria-label="`Select ${item.form?.name || item.fileName}`"
+                  @click.stop="tickable(item) && toggle(item.key)"
+                />
+                <div class="mini-thumb mr-3"><CardThumb :src="item.preview" :alt="item.fileName" /></div>
+              </template>
               <v-list-item-title class="font-weight-medium">{{ item.form?.name || item.fileName }}</v-list-item-title>
               <v-list-item-subtitle>
                 <span v-if="item.error" class="text-error">{{ item.error }}</span>
