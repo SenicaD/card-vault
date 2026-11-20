@@ -27,7 +27,9 @@ _WEB = {"sandbox": "https://sandbox.ebay.com", "production": "https://www.ebay.c
 
 
 class EbayApiError(RuntimeError):
-    pass
+    def __init__(self, message: str, status: int | None = None, retry_after: str | None = None):
+        super().__init__(message)
+        self.status, self.retry_after = status, retry_after
 
 
 class LiveEbayClient:
@@ -98,7 +100,8 @@ class LiveEbayClient:
                          "X-EBAY-C-MARKETPLACE-ID": self.s.ebay_marketplace_id},
             )
         if r.status_code != 200:
-            raise EbayApiError(f"image search failed: {r.status_code} {r.text}")
+            raise EbayApiError(f"image search failed: {r.status_code} {r.text}", status=r.status_code,
+                               retry_after=r.headers.get("retry-after"))
         return _items(r.json())
 
     async def create_listing(self, req: ListingRequest, publish: bool = True) -> ListingResult:

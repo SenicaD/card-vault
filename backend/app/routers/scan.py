@@ -1,3 +1,4 @@
+import asyncio
 import uuid
 
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile
@@ -49,7 +50,7 @@ async def scan_card(file: UploadFile = File(...),
         raise HTTPException(413, "Image is larger than 10 MB")
     if heic:  # stored and identified as a JPEG, so crop and re-scan work unchanged
         try:
-            data = heic_to_jpeg(data)
+            data = await asyncio.to_thread(heic_to_jpeg, data)  # off the event loop: other requests keep going
         except HeicError as e:
             raise HTTPException(422, str(e)) from e
         content_type = "image/jpeg"
@@ -89,6 +90,10 @@ async def _identify_and_price(data: bytes, content_type: str, name: str, price: 
         else:
             ident = await identifier.identify(data, content_type)
     except Exception as e:  # surface identifier failures without losing the saved photo
+        limited, retry_after = _rate_limit(e)
+        if limited:  # 429 so the scan queue backs off and retries instead of failing the row
+            raise HTTPException(429, f"Identification was rate limited ({identifier.name}). Try again in a moment.",
+                                headers={"Retry-After": retry_after} if retry_after else None) from e
         raise HTTPException(502, f"Identification failed ({identifier.name}): {e}") from e
 
     result = ScanResult(image_path=name, image_url=f"/images/{name}",
@@ -114,6 +119,20 @@ async def _identify_and_price(data: bytes, content_type: str, name: str, price: 
         except Exception as e:
             result.price_error = f"eBay search failed: {e}"
     return result
+
+
+_RATE = ("429", "rate limit", "ratelimit", "too many requests")
+
+
+def _rate_limit(e: Exception) -> tuple[bool, str | None]:
+    """Is this identifier error a rate limit, and did the upstream say when to retry (whole seconds only)?"""
+    limited = 429 in (getattr(e, "status_code", None), getattr(e, "status", None)) or any(
+        k in str(e).lower() for k in _RATE)
+    value = getattr(e, "retry_after", None)
+    if value is None and getattr(e, "response", None) is not None:
+        value = getattr(e.response, "headers", {}).get("retry-after")
+    value = str(value).strip() if value is not None else None
+    return limited, value if value and value.isascii() and value.isdigit() else None
 
 
 price_router = APIRouter(prefix="/api/price", tags=["scan"])
