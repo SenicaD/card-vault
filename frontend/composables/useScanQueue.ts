@@ -18,6 +18,8 @@ export interface ScanItem {
   card: Card | null
   dups: Card[] // cards you already own that look the same
   merged: boolean // saved as one more copy of an existing card instead of a new card
+  attempts: number // scans that hit a rate limit so far
+  retryAt: number // epoch ms; a rate-limited row waits in the queue until then (0 = not waiting)
 }
 
 // Settings for the batch being scanned. Applied to each new card as it is added.
@@ -49,7 +51,9 @@ export function isScanImage(f: File): boolean {
   return f.type.startsWith('image/') || (HEIC_NAME.test(f.name) && (f.type === '' || f.type === 'application/octet-stream'))
 }
 
-const CONCURRENCY = 3
+// HEIC conversion gains flatten past ~6 threads; the Anthropic SDK retries 429s twice itself and the backoff below covers lower limits
+const CONCURRENCY = 6
+const MAX_SCAN_ATTEMPTS = 4 // tries per photo when the scan keeps hitting a rate limit
 export const AUTO_ADD_THRESHOLD = 0.8
 
 /**
@@ -91,6 +95,7 @@ export function useScanQueue() {
         // browsers can't show most HEIC photos, so those wait for the server's JPEG
         key: ++seq.value, fileName: file.name, file, preview: isHeic(file) ? '' : URL.createObjectURL(file), status: 'queued',
         scan: null, form: null, quote: null, comps: [], priceError: '', error: '', repricing: false, card: null, dups: [], merged: false,
+        attempts: 0, retryAt: 0,
       })
     }
     pump()
@@ -102,7 +107,8 @@ export function useScanQueue() {
 
   function pump() {
     const running = items.value.filter((i) => i.status === 'processing').length
-    const next = items.value.filter((i) => i.status === 'queued').slice(0, Math.max(0, CONCURRENCY - running))
+    const now = Date.now() // rows waiting out a rate limit don't take a slot
+    const next = items.value.filter((i) => i.status === 'queued' && i.retryAt <= now).slice(0, Math.max(0, CONCURRENCY - running))
     for (const i of next) process(i.key)
   }
 
@@ -183,6 +189,7 @@ export function useScanQueue() {
     if (!it?.file) return
     it.status = 'processing'
     it.error = ''
+    it.retryAt = 0
     try {
       const blob = await shrinkImage(it.file)
       const fd = new FormData()
@@ -197,7 +204,14 @@ export function useScanQueue() {
       if (autoAdd.value && res.identification.confidence >= AUTO_ADD_THRESHOLD && cur.quote) save(key)
     } catch (e: any) {
       const cur = find(key)
-      if (cur) {
+      if (cur && e.status === 429 && ++cur.attempts < MAX_SCAN_ATTEMPTS) {
+        // rate limited: wait (2 s, 4 s, 8 s, or longer if the server asks) and go again without holding a slot
+        const delay = Math.min(60_000, Math.max((e.retryAfter ?? 0) * 1000, 2000 * 2 ** (cur.attempts - 1)))
+        cur.status = 'queued'
+        cur.error = ''
+        cur.retryAt = Date.now() + delay
+        setTimeout(pump, delay)
+      } else if (cur) {
         cur.status = 'error'
         cur.error = e.message
       }
@@ -214,6 +228,8 @@ export function useScanQueue() {
       it.error = ''
       return save(key) // the failure was on save; the scan itself is fine
     }
+    it.attempts = 0
+    it.retryAt = 0
     it.status = 'queued'
     pump()
   }

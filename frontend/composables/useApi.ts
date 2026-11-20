@@ -14,7 +14,14 @@ export function useApi() {
       const detail = e?.data?.detail
       const msg = typeof detail === 'string' ? detail : detail ? JSON.stringify(detail) : e?.message || 'Request failed'
       note(false, msg)
-      throw new Error(msg)
+      // status and Retry-After (seconds) let callers such as the scan queue back off on a 429
+      const status = e?.status ?? e?.statusCode
+      const ra = e?.response?.headers?.get?.('retry-after')
+      const retryAfter = ra ? Number(ra) : NaN
+      throw Object.assign(new Error(msg), {
+        status: typeof status === 'number' ? status : undefined,
+        retryAfter: Number.isFinite(retryAfter) ? retryAfter : undefined,
+      })
     }
   }
   return { api }

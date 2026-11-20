@@ -110,6 +110,9 @@ const STATUS: Record<ScanItem['status'], { label: string; color: string; icon?: 
   added: { label: 'In inventory', color: 'success', icon: 'mdi-check-circle-outline' },
   error: { label: 'Failed', color: 'error', icon: 'mdi-alert-circle-outline' },
 }
+// A row waiting out a rate limit is still queued; the label says why it hasn't started.
+const statusLabel = (i: ScanItem) =>
+  i.merged ? 'Added as a copy' : i.status === 'queued' && i.retryAt > 0 ? 'Retrying shortly' : STATUS[i.status].label
 
 // Display only: the table sorts a view of the queue, never the queue itself, so saving stays in scan order.
 const sortBy = ref<{ key: string; order?: boolean | 'asc' | 'desc' }[]>([])
@@ -309,7 +312,7 @@ function openRow(_: unknown, row: { item: ScanItem }) {
                 <v-chip v-bind="p" :color="STATUS[item.status].color" variant="tonal" size="small" class="text-no-wrap">
                   <v-progress-circular v-if="item.status === 'processing' || item.status === 'saving'" indeterminate size="12" width="2" class="mr-2" />
                   <v-icon v-else-if="STATUS[item.status].icon" :icon="STATUS[item.status].icon" start size="14" />
-                  {{ item.merged ? 'Added as a copy' : STATUS[item.status].label }}
+                  {{ statusLabel(item) }}
                 </v-chip>
               </template>
             </v-tooltip>
@@ -344,7 +347,7 @@ function openRow(_: unknown, row: { item: ScanItem }) {
               <v-list-item-title class="font-weight-medium">{{ item.form?.name || item.fileName }}</v-list-item-title>
               <v-list-item-subtitle>
                 <span v-if="item.error" class="text-error">{{ item.error }}</span>
-                <span v-else>{{ item.merged ? 'Added as a copy' : STATUS[item.status].label }}<template v-if="item.dups.length && item.status === 'ready'"> · already own</template><template v-if="item.scan"> · {{ Math.round(conf(item) * 100) }}%</template></span>
+                <span v-else>{{ statusLabel(item) }}<template v-if="item.dups.length && item.status === 'ready'"> · already own</template><template v-if="item.scan"> · {{ Math.round(conf(item) * 100) }}%</template></span>
               </v-list-item-subtitle>
               <template #append>
                 <div class="text-right ps-3">
