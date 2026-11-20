@@ -707,6 +707,101 @@ def test_unreadable_heic_and_other_types_are_rejected():
         assert r.status_code == 415
 
 
+def test_heic_conversion_runs_off_the_event_loop(monkeypatch):
+    import asyncio
+
+    import app.routers.scan as scan
+
+    real, seen = scan.heic_to_jpeg, []
+
+    def wrapped(data):
+        try:
+            asyncio.get_running_loop()
+            seen.append("on loop")
+        except RuntimeError:
+            seen.append("off loop")
+        return real(data)
+
+    monkeypatch.setattr(scan, "heic_to_jpeg", wrapped)
+    with TestClient(app) as c:
+        r = c.post("/api/scan", files={"file": ("IMG_0002.HEIC", io.BytesIO(_heic(300, 400)), "image/heic")})
+        assert r.status_code == 200, r.text
+        assert r.json()["image_path"].endswith(".jpg")
+    assert seen == ["off loop"]
+
+
+def _failing_identifier(monkeypatch, err):
+    import app.routers.scan as scan
+
+    class Failing:
+        name = "failing"
+
+        async def identify(self, data, content_type):
+            raise err
+
+    monkeypatch.setattr(scan, "get_identifier", lambda: Failing())
+
+
+def _scan_png(c):
+    return c.post("/api/scan", params={"price": "true"}, files={"file": ("card.png", io.BytesIO(PNG), "image/png")})
+
+
+def test_identifier_rate_limit_is_a_429_with_retry_after(monkeypatch):
+    import anthropic
+    import httpx
+
+    request = httpx.Request("POST", "https://api.anthropic.com")
+    _failing_identifier(monkeypatch, anthropic.RateLimitError(
+        "rate limited", response=httpx.Response(429, headers={"retry-after": "7"}, request=request), body=None))
+    with TestClient(app) as c:
+        r = _scan_png(c)
+        assert r.status_code == 429, r.text
+        assert r.headers["retry-after"] == "7"
+        assert "rate limited" in r.json()["detail"]
+
+
+def test_rate_limits_by_status_or_text_are_429_and_other_failures_502(monkeypatch):
+    from app.services.ebay.live import EbayApiError
+
+    with TestClient(app) as c:
+        _failing_identifier(monkeypatch, EbayApiError("image search failed: 429 Too Many Requests", status=429))
+        r = _scan_png(c)
+        assert r.status_code == 429 and "retry-after" not in r.headers
+        _failing_identifier(monkeypatch, RuntimeError("Too many requests, slow down"))
+        assert _scan_png(c).status_code == 429
+        _failing_identifier(monkeypatch, RuntimeError("boom"))
+        r = _scan_png(c)
+        assert r.status_code == 502 and r.json()["detail"].startswith("Identification failed")
+
+
+def test_live_image_search_error_carries_status_and_retry_after(monkeypatch):
+    import asyncio
+
+    import httpx
+    import pytest
+
+    from app.config import get_settings
+    from app.services.ebay import live
+    from app.services.ebay.live import EbayApiError, LiveEbayClient
+
+    class Fake:
+        def __init__(self, *a, **k): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def post(self, url, **k):
+            if url.endswith("/oauth2/token"):
+                return httpx.Response(200, json={"access_token": "t", "expires_in": 7200})
+            return httpx.Response(429, text="Too Many Requests", headers={"retry-after": "3"})
+
+    monkeypatch.setattr(live.httpx, "AsyncClient", Fake)
+    client = LiveEbayClient(get_settings().model_copy(
+        update={"ebay_mode": "live", "ebay_client_id": "x", "ebay_client_secret": "y"}))
+    with pytest.raises(EbayApiError) as err:
+        asyncio.run(client.search_by_image(PNG))
+    assert err.value.status == 429 and err.value.retry_after == "3"
+    assert str(err.value).startswith("image search failed: 429")
+
+
 def test_image_priced_snapshots_count_as_asking_prices_in_the_trend():
     with TestClient(app) as c:
         s = c.post("/api/scan", files={"file": ("card.png", io.BytesIO(PNG), "image/png")}).json()

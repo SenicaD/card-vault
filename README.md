@@ -39,7 +39,8 @@ Tests: `cd backend && pytest`. API docs: `http://localhost:8000/docs`.
    You can also choose or drop a whole folder (subfolders included); files in unsupported formats are skipped with a message.
    HEIC/HEIF photos (for example from an iPhone) are accepted and converted to JPEG on the server.
    Each photo joins a queue and is downscaled, uploaded, identified, and priced against eBay in one call
-   (`POST /api/scan?price=true`), three at a time. Pick a "File new cards in" location once for the batch.
+   (`POST /api/scan?price=true`), six at a time. A photo that hits a rate limit waits and retries by itself
+   (up to 4 tries) before it shows as failed. Pick a "File new cards in" location once for the batch.
 3. **Review**: the queue shows each card's identification, confidence and eBay median (low–high).
    Click a row to correct fields; if you change the eBay search, "Re-price" (`POST /api/price`) fetches
    a new quote. "Add N to inventory" saves every ready card, and the scan-time quote becomes the card's
