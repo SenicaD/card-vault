@@ -256,8 +256,9 @@ export function useScanQueue() {
     }
   }
 
-  async function saveAll() {
-    const keys = items.value.filter((i) => i.status === 'ready' && i.form?.name).map((i) => i.key)
+  // `only` limits it to those keys (the ticked rows); they are still saved in scan order.
+  async function saveAll(only?: Set<number>) {
+    const keys = items.value.filter((i) => i.status === 'ready' && i.form?.name && (!only || only.has(i.key))).map((i) => i.key)
     for (const k of keys) await save(k) // sequential keeps card ids in scan order
   }
 

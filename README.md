@@ -42,8 +42,10 @@ Tests: `cd backend && pytest`. API docs: `http://localhost:8000/docs`.
    Click a row to correct fields; if you change the eBay search, "Re-price" (`POST /api/price`) fetches
    a new quote. "Add N to inventory" saves every ready card, and the scan-time quote becomes the card's
    first price snapshot. Adding a card also starts a full eBay lookup in the background (one card at a
-   time), which fills its listings table and graded price within a moment. Turn on **Auto-add** to skip
-   review for cards identified at 80% confidence or higher.
+   time), which fills its listings table and graded price within a moment. Tick ready or failed rows to
+   add or remove just those, and on a desktop click a column header to sort the queue (cards are still
+   added in scan order). Turn on **Auto-add** to skip review for cards identified at 80% confidence or
+   higher.
 4. **Value**: on a card's page, "Refresh value" re-runs that eBay search (filters lots and reprints, trims
    outliers) and stores a new low / median / high snapshot. The median becomes the card's estimate.
 5. **Sell**: "List on eBay" creates an inventory item, an offer, and publishes it. The card moves to Listed.
