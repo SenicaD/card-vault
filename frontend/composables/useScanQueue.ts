@@ -41,6 +41,14 @@ export function slotLabel(s: Pick<ScanSession, 'slotPrefix' | 'perPage'>, n: num
   return `${s.slotPrefix}${n}`
 }
 
+const HEIC_NAME = /\.(heic|heif)$/i
+const isHeic = (f: File) => f.type === 'image/heic' || f.type === 'image/heif' || HEIC_NAME.test(f.name)
+
+// Chrome on Windows gives iPhone HEIC photos no type, so those are recognised by name; the server converts them.
+export function isScanImage(f: File): boolean {
+  return f.type.startsWith('image/') || (HEIC_NAME.test(f.name) && (f.type === '' || f.type === 'application/octet-stream'))
+}
+
 const CONCURRENCY = 3
 export const AUTO_ADD_THRESHOLD = 0.8
 
@@ -77,10 +85,11 @@ export function useScanQueue() {
   function addFiles(files: Iterable<File>) {
     const res = { added: 0, skipped: 0 }
     for (const file of files) {
-      if (!file.type.startsWith('image/')) { res.skipped++; continue }
+      if (!isScanImage(file)) { res.skipped++; continue }
       res.added++
       items.value.push({
-        key: ++seq.value, fileName: file.name, file, preview: URL.createObjectURL(file), status: 'queued',
+        // browsers can't show most HEIC photos, so those wait for the server's JPEG
+        key: ++seq.value, fileName: file.name, file, preview: isHeic(file) ? '' : URL.createObjectURL(file), status: 'queued',
         scan: null, form: null, quote: null, comps: [], priceError: '', error: '', repricing: false, card: null, dups: [], merged: false,
       })
     }
@@ -182,6 +191,7 @@ export function useScanQueue() {
       const cur = find(key)
       if (!cur) return // removed while in flight
       applyScan(cur, res)
+      if (!cur.preview) cur.preview = res.image_url
       cur.file = null
       cur.status = 'ready'
       if (autoAdd.value && res.identification.confidence >= AUTO_ADD_THRESHOLD && cur.quote) save(key)

@@ -56,7 +56,7 @@ function guard(e: BeforeUnloadEvent) {
 // Only says something when files were left out; the queue counters already show what was added.
 function report({ added, skipped }: { added: number; skipped: number }) {
   if (!skipped) return
-  const skip = `skipped ${skipped} ${skipped === 1 ? "file that isn't an image" : "files that aren't images"}`
+  const skip = `skipped ${skipped} ${skipped === 1 ? 'file' : 'files'} in an unsupported format (use JPEG, PNG, WebP, GIF or HEIC)`
   notice.value = added ? `Added ${added} ${added === 1 ? 'photo' : 'photos'} · ${skip}` : `No photos added · ${skip}`
 }
 function onPick(e: Event) {
@@ -148,8 +148,8 @@ function openRow(_: unknown, row: { item: ScanItem }) {
     @dragleave.self="dragging = false"
     @drop.prevent="onDrop"
   >
-    <input ref="camera" type="file" accept="image/*" capture="environment" multiple hidden @change="onPick" />
-    <input ref="upload" type="file" accept="image/*" multiple hidden @change="onPick" />
+    <input ref="camera" type="file" accept="image/*,.heic,.heif" capture="environment" multiple hidden @change="onPick" />
+    <input ref="upload" type="file" accept="image/*,.heic,.heif" multiple hidden @change="onPick" />
     <input ref="folder" type="file" webkitdirectory multiple hidden @change="onPickFolder" />
 
     <PageHeader
