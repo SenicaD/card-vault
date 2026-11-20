@@ -19,14 +19,22 @@ log = logging.getLogger("cardvault.tracker")
 MAX_CHECKS_PER_CARD = 20  # single-item lookups per search; the rest are checked next time
 
 
-async def track_listings(session: Session, card_id: int, groups: dict[str, list[EbayItem]]) -> dict[str, int]:
+async def track_listings(session: Session, card_id: int, groups: dict[str, list[EbayItem]],
+                        forget: set[str] = frozenset()) -> dict[str, int]:
     """Record this search's listings and check the ones that were up before but aren't now.
 
+    forget holds item ids this search ruled out (their picture doesn't look like the card's photo): their active
+    rows are deleted, unless you unticked them, so they leave the matches table and can't come back into a re-price.
     Returns counts: seen, new, gone (newly gone), checked, unknown (couldn't be checked).
     Never raises on an eBay error: tracking must not break a price lookup.
     """
     now = utcnow()
     rows = {r.item_id: r for r in session.exec(select(ListingSeen).where(ListingSeen.card_id == card_id)).all()}
+    for item_id in forget:
+        row = rows.get(item_id)
+        if row is not None and row.status == "active" and not row.excluded:
+            session.delete(row)
+            del rows[item_id]
     stats = dict(seen=0, new=0, gone=0, checked=0, unknown=0)
     in_results: set[str] = set()
 

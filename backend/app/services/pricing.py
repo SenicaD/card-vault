@@ -12,6 +12,8 @@ from .ebay import EbayItem, get_ebay
 from .grading import grade_sort_key, parse_grade
 from .identity import Who, same_card
 from .parallels import parse_parallel
+from .lookalike import LOOKALIKE_BORDERLINE, LOOKALIKE_MIN_CONFIDENCE, LOOKALIKE_MIN_MATCHES
+from .lookalike import compare as compare_pictures
 
 # Titles that are clearly not a single copy of the card
 _JUNK = re.compile(r"\b(lot|lots|bundle|set of|choose|pick|you pick|reprint|proxy|custom|digital)\b", re.I)
@@ -138,6 +140,69 @@ async def _top_up_graded(items: list[EbayItem], groups: dict[str, list[EbayItem]
     current_purpose.reset(token)
 
 
+LOOKALIKE_MIN_SHARE = 0.6  # without CLIP: a colour score below this share of the best in its grade is left out
+LOOKALIKE_MAX_IMAGES = 40  # listing pictures fetched per lookup
+
+
+async def _not_alike(image: bytes, items: list[EbayItem], groups: dict[str, list[EbayItem]], grades: list[str],
+                     parallel: str | None, exclude: set[str], trace=None) -> tuple[list[tuple[EbayItem, str]], str | None]:
+    """The listings of the requested grades whose picture clearly doesn't look like the card's photo, with their
+    grade, and how the pictures were compared ("clip", "colour", or None when nothing was).
+
+    With CLIP, a listing is left out when its confidence is below LOOKALIKE_MIN_CONFIDENCE, or borderline (below
+    LOOKALIKE_BORDERLINE) and the feature check didn't find the card. With the colour score, when it is below
+    LOOKALIKE_MIN_SHARE of the best in its grade. Only the first LOOKALIKE_MAX_IMAGES pictures in eBay's order are
+    compared. Listings with no picture, past that limit or whose picture didn't load are kept, and so is every
+    listing of a grade the rule would leave with nothing to price.
+    """
+    in_items = {i.item_id for i in items}
+    wanted = {i.item_id for g in grades for i in groups.get(g, [])}
+    # eBay's best-match order: the search results first, then the listings the top-up searches added
+    walk = [i for i in items if i.item_id in wanted] + [i for g in grades for i in groups.get(g, []) if i.item_id not in in_items]
+    urls = list(dict.fromkeys(i.image_url for i in walk if i.image_url))[:LOOKALIKE_MAX_IMAGES]
+    if not urls:
+        return [], None
+    try:
+        look = await compare_pictures(image, urls)
+    except Exception as e:
+        if trace is not None:
+            trace.note(f"The photo comparison failed ({e!r}), so no listing was left out for not looking like the photo.")
+        return [], None
+    scores = look.scores
+    if trace is not None:
+        if look.note:
+            trace.note(look.note)
+        for i in walk:
+            if i.image_url in scores:
+                trace.looks[i.item_id] = {"s": scores[i.image_url], "m": look.matches.get(i.image_url)}
+    priceable = lambda i: i.item_id not in exclude and (not parallel or parse_parallel(i.title) == parallel)  # noqa: E731
+    out = []
+    for g in grades:
+        group = groups.get(g, [])
+        scored = [scores[i.image_url] for i in group if i.image_url in scores]
+        if not scored:
+            continue
+        if look.method == "clip":
+            drop = {i.item_id for i in group if i.image_url in scores and _unlike(scores[i.image_url], look.matches.get(i.image_url))}
+        else:
+            cut = LOOKALIKE_MIN_SHARE * max(scored)
+            drop = {i.item_id for i in group if i.image_url in scores and scores[i.image_url] < cut}
+        if any(map(priceable, group)) and not any(priceable(i) for i in group if i.item_id not in drop):
+            if trace is not None and drop:
+                trace.note(f"{g}: the look-alike filter was skipped, because leaving out the listings that don't "
+                           "look like the photo would have left nothing to price.")
+            continue
+        out += [(i, g) for i in group if i.item_id in drop]
+    return out, look.method
+
+
+def _unlike(confidence: int, matches: int | None) -> bool:
+    """CLIP's verdict: clearly low, or borderline with too few matching feature points (kept if never checked)."""
+    if confidence < LOOKALIKE_MIN_CONFIDENCE:
+        return True
+    return confidence < LOOKALIKE_BORDERLINE and matches is not None and matches < LOOKALIKE_MIN_MATCHES
+
+
 class Priced(NamedTuple):
     quotes: list[PriceQuote]  # one per grade asked for, in the order asked
     counts: dict[str, int]  # listings eBay showed per grade (every grade, every version of the card)
@@ -145,6 +210,7 @@ class Priced(NamedTuple):
     groups: dict[str, list[EbayItem]]  # every listing found, by grade
     items: list[EbayItem]  # what the search returned, in eBay's order
     source: str  # "ebay-image" or "ebay-active"
+    not_alike: frozenset[str] = frozenset()  # item ids left out because their picture doesn't look like the photo
 
 
 def build_quotes(groups: dict[str, list[EbayItem]], grades: list[str], query: str, source: str,
@@ -240,14 +306,33 @@ async def _quote_grades(query, grades, image, parallel, exclude, trace, who=None
         items = [i for i in items if same_card(i.title, who)]
     if rejected and trace is not None:
         trace.note(f"{len(rejected)} look-alike listings were left out before pricing: another player, year or card number.")
+    unlike: list[tuple[EbayItem, str]] = []  # pictures that clearly don't look like the card's photo
+    method = None
+    if image:
+        unlike, method = await _not_alike(image, items, groups, grades, parallel, exclude, trace)
+    gone = {i.item_id for i, _ in unlike}
+    if gone:
+        for g in grades:
+            if g in groups:
+                groups[g] = [i for i in groups[g] if i.item_id not in gone]
+        items = [i for i in items if i.item_id not in gone]
+        if trace is not None:
+            rule = (f"CLIP confidence below {LOOKALIKE_MIN_CONFIDENCE}, or below {LOOKALIKE_BORDERLINE} with fewer than "
+                    f"{LOOKALIKE_MIN_MATCHES} matching feature points" if method == "clip" else
+                    f"below {LOOKALIKE_MIN_SHARE:.0%} of the best colour score in their grade")
+            trace.note(f"{len(unlike)} listings were left out because their picture doesn't look like the card's photo ({rule}).")
     quotes, used = build_quotes(groups, grades, query, source, parallel, exclude, trace)
     counts = {g: len(v) for g, v in sorted(groups.items(), key=lambda kv: grade_sort_key(kv[0]) if kv[0] != "Unknown" else (9, "", 0))}
     if trace is not None:
         trace.mode, trace.query = source, query
+        for f in trace.funnel:  # left out before build_quotes, so its own counts don't include them
+            f["not_alike"] = sum(g == f["grade"] for _, g in unlike)
         listed = {i.item_id for g in grades for i in groups.get(g, [])}
         everything = list({i.item_id: i for i in [*items, *(i for v in groups.values() for i in v)]}.values())
         for i in rejected:
             trace.decide(i, parse_grade(i.title, i.condition), "other_card", parse_parallel(i.title))
+        for i, g in unlike:
+            trace.decide(i, g, "not_alike", parse_parallel(i.title))
         for i in everything:
             if i.item_id in listed:
                 continue  # already decided in build_quotes
@@ -256,10 +341,11 @@ async def _quote_grades(query, grades, image, parallel, exclude, trace, who=None
             else:
                 g = parse_grade(i.title, i.condition)
                 trace.decide(i, g, "unknown_grade" if g is None else "grade_not_requested", parse_parallel(i.title))
-        trace.summary = {"returned": len(items) + len(rejected), "after_top_up": len(everything) + len(rejected),
-                         "other_card": len(rejected), "mode": source,
+        trace.summary = {"returned": len(items) + len(rejected) + len(unlike),
+                         "after_top_up": len(everything) + len(rejected) + len(unlike),
+                         "other_card": len(rejected), "not_alike": len(unlike), "lookalike": method, "mode": source,
                          "junk": sum(1 for i in everything if _JUNK.search(i.title)),
                          "unknown_grade": len(groups.get("Unknown", [])),
                          "grades_found": counts}
         trace.raw = [i.model_dump() for i in everything]
-    return Priced(quotes, counts, used[:100], groups, items, source)
+    return Priced(quotes, counts, used[:100], groups, items, source, frozenset(gone))

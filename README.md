@@ -50,7 +50,8 @@ Tests: `cd backend && pytest`. API docs: `http://localhost:8000/docs`.
    added in scan order). Turn on **Auto-add** to skip review for cards identified at 80% confidence or
    higher.
 4. **Value**: on a card's page, "Refresh value" re-runs that eBay search (filters lots and reprints, trims
-   outliers) and stores a new low / median / high snapshot. The median becomes the card's estimate.
+   outliers and, for a card with a photo, leaves out listings whose picture clearly doesn't look like it)
+   and stores a new low / median / high snapshot. The median becomes the card's estimate.
 5. **Sell**: "List on eBay" creates an inventory item, an offer, and publishes it. The card moves to Listed.
 
 The queue lives in memory: it survives moving between pages, but not a reload (the browser warns first).
@@ -75,6 +76,20 @@ grade from what the best-matching listing titles agree on. Confidence is how man
 are clearly the same listing. The matches double as the price comps, so each scan is one eBay call.
 Visually identical cards (base vs. colour parallels, raw vs. slabbed) can mix, so check the fields and
 re-price with a tighter search when it matters. See `app/services/identify/ebay_image.py`.
+
+### Look-alike pricing (CLIP + OpenCV, optional)
+```bash
+cd backend
+pip install --extra-index-url https://download.pytorch.org/whl/cpu -r requirements-clip.txt   # drop the index for a GPU build
+```
+With a card photo, a lookup compares each listing's picture with it (the first 40 in eBay's order) and
+leaves out the listings that clearly show another card. Both pictures are cropped to the card and straightened
+with OpenCV, then compared with CLIP (`ViT-B-32`, about 600 MB, downloaded on first use into the Hugging Face
+cache; the first lookup after a restart takes a few seconds longer). A confidence below 55 is left out; from
+55 to 80 the listing is kept only if SIFT feature matching finds the same printed design (30+ matching points).
+Debug mode shows each listing's confidence in "How this price was calculated". Without this install, or if
+the model can't be downloaded, pictures are compared by colour instead: a listing below 60% of the best colour
+score in its grade is left out. The thresholds are in `app/services/lookalike.py`.
 
 ### eBay
 Set `EBAY_MODE=live` and fill in keys from developer.ebay.com. Start with `EBAY_ENV=sandbox`.

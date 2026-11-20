@@ -97,7 +97,7 @@ async def price_card(card_id: int, body: PriceRequest | None = None,
     except Exception:  # a debugging aid must never break a price lookup
         session.rollback()
     try:  # after the commit, so a failure here can never lose the price lookup
-        await track_listings(session, card.id, groups)
+        await track_listings(session, card.id, groups, forget=priced.not_alike)
     except Exception:
         session.rollback()
     for s in snaps:  # tracking commits too, which expires these; reload them before they are serialised
