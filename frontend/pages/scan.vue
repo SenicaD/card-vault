@@ -225,7 +225,7 @@ function openRow(_: unknown, row: { item: ScanItem }) {
             <v-btn variant="text" size="small" @click="selected = []">Clear selection</v-btn>
             <v-btn variant="tonal" color="error" prepend-icon="mdi-close" @click="removeSelected">Remove {{ selected.length }}</v-btn>
             <v-btn color="primary" variant="flat" prepend-icon="mdi-tray-arrow-down" :disabled="!selectedReady" :loading="savingAll" @click="addSelected">
-              Add {{ selectedReady }} to inventory
+              Add {{ selectedReady || '' }} to inventory
             </v-btn>
           </div>
           <div v-else class="d-flex ga-2 flex-wrap justify-end">
