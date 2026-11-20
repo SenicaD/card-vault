@@ -281,7 +281,7 @@ class PriceTrace(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     card_id: int | None = Field(default=None, index=True)
     kind: str = "lookup"  # lookup | identify
-    trigger: str | None = None  # manual | daily | bulk | crop | scan
+    trigger: str | None = None  # manual | daily | bulk | crop | scan | add
     created_at: datetime = ts(default_factory=utcnow)
     image_path: str | None = Field(default=None, index=True)  # photo used (identify traces)
     source_image: str | None = None  # the photo a crop was cut from

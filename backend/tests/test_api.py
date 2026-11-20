@@ -1323,3 +1323,98 @@ def test_manual_value_overrides_and_can_be_cleared():
         assert c.get(f"/api/cards/{cid}").json()["value"] == 150
         got = c.patch(f"/api/cards/{cid}", json={"manual_value": None}).json()
         assert got["value"] is None and got["value_basis"] is None
+
+
+def _lookup_on_add(monkeypatch, search=None):
+    """Turn the lookup on add back on, with no pause, counting (or replacing) eBay searches."""
+    from app.services import pricing, refresh
+    from app.services.ebay import get_ebay
+
+    monkeypatch.setattr(refresh, "LOOKUP_ON_ADD", True)
+    monkeypatch.setattr(refresh, "PAUSE_BETWEEN_CARDS", 0)
+    calls = []
+    real = get_ebay().search_active
+
+    async def counting(query, limit=50):
+        calls.append(query)
+        if search:
+            return await search(query, limit)
+        return await real(query, limit)
+
+    monkeypatch.setattr(get_ebay(), "search_active", counting)
+    monkeypatch.setattr(pricing, "get_ebay", lambda: get_ebay())
+    return calls
+
+
+SCAN_QUOTE = {"query": "add lookup pikachu", "source": "ebay-active", "sample_size": 3,
+              "low": 4.0, "median": 7.5, "mean": 7.0, "high": 12.0}
+
+
+def test_adding_a_card_looks_it_up_on_ebay(monkeypatch):
+    calls = _lookup_on_add(monkeypatch)
+    with TestClient(app) as c:
+        r = c.post("/api/cards", json={"category": "pokemon", "name": "Add Lookup Pikachu",
+                                       "search_query": "add lookup pikachu", "price": SCAN_QUOTE})
+        assert r.status_code == 201, r.text
+        card = r.json()
+        # the response is the card as saved, with the scan-time quote
+        assert card["est_value"] == SCAN_QUOTE["median"] and card["grade_counts"] is None
+        assert calls == ["add lookup pikachu"]
+
+        assert c.get(f"/api/cards/{card['id']}/matches").json()  # the listings table fills on its own
+        grades = [s["grade"] for s in c.get(f"/api/cards/{card['id']}/prices").json()]
+        assert None in grades and "Raw" in grades  # scan snapshot kept, plus the card's own grade
+        assert c.get(f"/api/cards/{card['id']}").json()["grade_counts"]
+        assert c.get(f"/api/cards/{card['id']}/debug/traces").json()[0]["trigger"] == "add"
+
+
+def test_lookup_on_add_failure_keeps_the_card(monkeypatch):
+    async def down(query, limit=50):
+        raise RuntimeError("eBay is down")
+
+    _lookup_on_add(monkeypatch, search=down)
+    with TestClient(app) as c:
+        r = c.post("/api/cards", json={"category": "pokemon", "name": "Add Lookup Down",
+                                       "search_query": "add lookup down", "price": SCAN_QUOTE})
+        assert r.status_code == 201, r.text
+        got = c.get(f"/api/cards/{r.json()['id']}")
+        assert got.status_code == 200 and got.json()["name"] == "Add Lookup Down"
+        assert got.json()["est_value"] == SCAN_QUOTE["median"]  # scan-time data stays
+        trace = c.get(f"/api/cards/{r.json()['id']}/debug/traces").json()[0]
+        assert trace["trigger"] == "add" and trace["error"]
+
+
+def test_adding_several_cards_looks_each_up_once(monkeypatch):
+    calls = _lookup_on_add(monkeypatch)
+    with TestClient(app) as c:
+        ids = [c.post("/api/cards", json={"category": "pokemon", "name": f"Add Batch {i}",
+                                          "search_query": f"add batch {i}"}).json()["id"] for i in range(3)]
+        assert sorted(calls) == ["add batch 0", "add batch 1", "add batch 2"]  # one search per card
+        assert all(c.get(f"/api/cards/{i}/matches").json() for i in ids)
+
+
+def test_lookup_on_add_runs_one_card_at_a_time(monkeypatch):
+    import asyncio
+
+    from app.services import refresh
+
+    active, most = 0, 0
+
+    async def slow(query, limit=50):
+        nonlocal active, most
+        active += 1
+        most = max(most, active)
+        await asyncio.sleep(0.01)
+        active -= 1
+        return []
+
+    _lookup_on_add(monkeypatch, search=slow)
+    with TestClient(app) as c:
+        ids = [_mk(c, name=f"Add Serial {i}")["id"] for i in range(3)]
+        c.delete(f"/api/cards/{ids[2]}")
+
+    async def overlapping():
+        await asyncio.gather(*(refresh.price_new_card(i) for i in ids))
+
+    asyncio.run(overlapping())  # the deleted card is skipped without error
+    assert most == 1
