@@ -101,6 +101,7 @@ const soldDays = ref(90)
 const sold = ref<SoldCompare | null>(null)
 const pctText = (v: number | null | undefined) => (v == null ? '' : `${v > 0 ? '+' : ''}${v}%`)
 const soldHeaders: TableHeader<SoldRow>[] = [
+  { title: '', key: 'image_url', sortable: false, width: 64 },
   { title: 'Sold / gone', key: 'gone_at', text: (r) => (r.gone_at ? isoDate(r.gone_at).slice(0, 10) : '') },
   { title: 'Grade', key: 'grade' }, { title: 'Version', key: 'parallel' }, { title: 'Listing', key: 'title' },
   { title: 'Days up', key: 'days_listed', align: 'end' },
@@ -739,6 +740,7 @@ onMounted(() => {
                   </tbody>
                 </v-table>
                 <div v-if="sold.rows.length" class="sold-scroll"><DataTable :headers="soldHeaders" :items="sold.rows" :sort-by="SOLD_SORT" search-placeholder="Search sold listings">
+                  <template #item.image_url="{ item }"><ListingThumb :src="item.image_url" :url="item.url" :title="item.title" /></template>
                   <template #item.gone_at="{ item }"><span class="num text-no-wrap">{{ item.gone_at ? isoDate(item.gone_at).slice(0, 10) : '' }}</span></template>
                   <template #item.parallel="{ item }"><v-chip size="x-small" variant="tonal">{{ item.parallel }}</v-chip></template>
                   <template #item.title="{ item }"><span class="truncate d-block gone-title">{{ item.title }}</span></template>
@@ -776,10 +778,7 @@ onMounted(() => {
                     <v-checkbox-btn :model-value="item.included" density="compact" :aria-label="`Use this listing in the prices: ${item.title}`" :disabled="busy === 'exclude'" @update:model-value="toggleInclude(item)" />
                   </template>
                   <template #item.image_url="{ item }">
-                    <a :href="item.url || undefined" target="_blank" rel="noopener" class="comp-thumb" :class="{ dim: !item.included }">
-                      <img v-if="item.image_url" :src="item.image_url" alt="" loading="lazy" />
-                      <v-icon v-else icon="mdi-image-off-outline" size="small" />
-                    </a>
+                    <ListingThumb :src="item.image_url" :url="item.url" :title="item.title" :dim="!item.included" />
                   </template>
                   <template #item.title="{ item }">
                     <a v-if="item.url" :href="item.url" target="_blank" rel="noopener" class="comp-link comp-title" :class="{ dim: !item.included }">{{ item.title }}</a>
@@ -920,8 +919,6 @@ onMounted(() => {
 .footer-actions { display: flex; gap: 8px; padding: 12px 18px; background: rgb(var(--v-theme-surface-chrome)); }
 .font-weight-semibold { font-weight: 600; }
 .comp-link { color: rgb(var(--v-theme-primary)); text-decoration: none; }
-.comp-thumb { width: 48px; height: 48px; border-radius: 6px; overflow: hidden; display: grid; place-items: center; background: rgb(var(--v-theme-surface-sunken)); color: rgb(var(--v-theme-text-muted)); }
-.comp-thumb img { width: 100%; height: 100%; object-fit: cover; }
 .comp-title { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; max-width: 460px; white-space: normal; }
 .dim { opacity: 0.4; text-decoration: line-through; }
 .comp-link:hover { text-decoration: underline; }
