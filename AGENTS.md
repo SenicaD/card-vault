@@ -33,7 +33,9 @@ Follow the existing code style and keep diffs small. Add backend pytest tests fo
 
 `/factory run` builds every open GitHub issue labeled `factory` through
 intake → spec → build → gate → review → approve, one PR per issue. State is in
-`factory/jobs/` (gitignored); `factory/bin/job` is its only writer. Checks:
+`factory/jobs/` (gitignored); `factory/bin/job` is its only writer. Several windows can run it at once (per-job
+leases); `/factory solo` works one job in a single agent; `/factory review` finds
+where the pipeline churns. Checks:
 `factory/checks.sh`. Dashboard: `cd factory && python3 -m http.server`, then
 open http://localhost:8000/dashboard.html.
 
