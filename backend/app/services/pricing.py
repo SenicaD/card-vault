@@ -326,7 +326,12 @@ async def _quote_grades(query, grades, image, parallel, exclude, trace, who=None
         trace.note(f"{len(rejected)} look-alike listings were left out before pricing: another player, year or card number.")
     unlike: list[tuple[EbayItem, str]] = []  # pictures that clearly don't look like the card's photo
     method = None
-    if image:
+    if image and ident is not None and ident.redemption:  # every redemption shares the same generic back
+        if trace is not None:
+            trace.note("Photo matching was skipped because this is a redemption card: redemption cards share a generic "
+                       "back, so pictures can't tell them apart. Listings were matched on card number and redemption "
+                       "status instead.")
+    elif image:
         unlike, method = await _not_alike(image, items, groups, grades, parallel, exclude, trace, ident)
     gone = {i.item_id for i, _ in unlike}
     if gone:
