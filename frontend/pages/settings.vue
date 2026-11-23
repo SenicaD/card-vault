@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { AppSettings } from '~/types'
+import { WIDE_SPREAD_ACTIONS, type AppSettings } from '~/types'
 
 const { api } = useApi()
 const size = ref('')
@@ -8,11 +8,6 @@ const error = ref('')
 const notice = ref('')
 const loading = ref(true)
 const saving = ref(false)
-
-const ACTIONS = [
-  { value: 'flag', title: 'Flag the card and leave it unvalued', hint: 'The card shows a "wide spread" warning and gets no asking value until you pick its version or untick listings.' },
-  { value: 'highest_group', title: 'Use the highest price group', hint: 'The card is valued at the typical price of its most expensive price group. The card page says so. If no price groups are found, the card is flagged.' },
-]
 
 // Shown under the field as you type; a bad value is never sent
 const sizeError = computed(() => {
@@ -84,8 +79,8 @@ onMounted(load)
               style="max-width: 360px"
             />
             <div>
-              <v-radio-group v-model="action" label="When prices spread too widely" :disabled="loading" hide-details>
-                <v-radio v-for="a in ACTIONS" :key="a.value" :value="a.value" class="mb-2">
+              <v-radio-group v-model="action" label="When prices spread too widely, by default" :disabled="loading" hide-details>
+                <v-radio v-for="a in WIDE_SPREAD_ACTIONS" :key="a.value" :value="a.value" class="mb-2">
                   <template #label>
                     <div>
                       <div>{{ a.title }}</div>
@@ -94,6 +89,7 @@ onMounted(load)
                   </template>
                 </v-radio>
               </v-radio-group>
+              <div class="text-caption text-secondary-c mt-1">Each card can override this on its own page. The card page says which rule set its value.</div>
             </div>
             <v-alert type="info" variant="tonal" density="compact" icon="mdi-information-outline">
               Changes apply the next time a card is priced: Refresh value, ticking or unticking listings, or the daily and bulk re-price. Saving does not re-price your existing cards.

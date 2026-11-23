@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useDisplay } from 'vuetify'
-import { CATEGORY_LABELS, type Card, type CardFields, type Listing, type Location, type MatchRow, type PriceCluster, type SimilarityResult, type PricePoints, type SoldCompare, type PriceResult, type PriceSnapshot, type Sale, type Trend, type TrendRange } from '~/types'
+import { CATEGORY_LABELS, WIDE_SPREAD_ACTIONS, type AppSettings, type Card, type CardFields, type Listing, type Location, type MatchRow, type PriceCluster, type SimilarityResult, type PricePoints, type SoldCompare, type PriceResult, type PriceSnapshot, type Sale, type Trend, type TrendRange } from '~/types'
 
 const { api } = useApi()
 const { xs } = useDisplay()
@@ -253,7 +253,7 @@ const lookUp = () => run('price', async () => {
   loadMatches()
   scores.value = {}
   suggestion.value = null
-  if (!listPrice.value && !card.value.wide_spread) listPrice.value = card.value.from_price_group ? card.value.est_value : res.snapshot.median
+  if (!listPrice.value && !card.value.wide_spread) listPrice.value = card.value.spread_rule ? card.value.est_value : res.snapshot.median
   loadTrend()
 })
 
@@ -318,12 +318,24 @@ const toggleInclude = (m: MatchRow) => run('exclude', async () => {
   await loadMatches()
 })
 
-// The price groups behind a "prices vary too widely" flag or a value taken from the highest group, refetched whenever
-// the card is reloaded or changed.
+// The price groups behind a "prices vary too widely" flag or a value one of the wide-spread rules set, refetched
+// whenever the card is reloaded or changed.
 const clusters = ref<PriceCluster[]>([])
 watch(card, async (c) => {
-  const got = c?.wide_spread || c?.from_price_group ? await api<PriceCluster[]>(`/api/cards/${id}/price-clusters`).catch(() => []) : []
+  const got = c?.wide_spread || c?.spread_rule ? await api<PriceCluster[]>(`/api/cards/${id}/price-clusters`).catch(() => []) : []
   if (card.value === c) clusters.value = got // a newer reload wins
+})
+
+// What this card gets when its prices spread too widely: its own choice, or the Settings page default
+const defaultRule = ref<AppSettings['wide_spread_action'] | null>(null)
+const ruleTitle = (v: string | null | undefined) => WIDE_SPREAD_ACTIONS.find((a) => a.value === v)?.title
+const ruleItems = computed(() => [
+  { value: 'default', title: `Use the default${defaultRule.value ? ` (${ruleTitle(defaultRule.value)})` : ''}` },
+  ...WIDE_SPREAD_ACTIONS.map((a) => ({ value: a.value, title: a.title })),
+])
+const RULE_TEXT = { highest_group: 'the typical price of the highest price group', median: 'the median of all the listings', lowest_group: 'the typical price of the lowest price group' }
+const setRule = (v: string) => run('rule', async () => {
+  card.value = await api<Card>(`/api/cards/${id}`, { method: 'PATCH', body: { wide_spread_action: v === 'default' ? null : v } })
 })
 
 const rankByLook = () => run('rank', async () => {
@@ -377,6 +389,7 @@ onMounted(() => {
     if (saved && RANGES.some((r) => r.value === saved)) range.value = saved
   } catch {}
   load() // selects the card's own grade, which loads the trend
+  api<AppSettings>('/api/settings').then((s) => (defaultRule.value = s.wide_spread_action)).catch(() => {})
 })
 </script>
 
@@ -544,8 +557,8 @@ onMounted(() => {
                     <div class="mt-1">Pick your version above, or untick the listings that aren't yours in the listings table.</div>
                   </template>
                 </v-alert>
-                <v-alert v-else-if="card.from_price_group" type="info" variant="tonal" density="compact" class="mt-3" icon="mdi-chart-bell-curve">
-                  These listings' prices vary too widely<template v-if="latest?.spread != null"> (the middle half spans {{ Math.round(latest.spread * 100) }}% of the median)</template>, so the asking value of {{ money(card.est_value) }} is the typical price of the highest price group, as set on the Settings page.
+                <v-alert v-else-if="card.spread_rule" type="info" variant="tonal" density="compact" class="mt-3" icon="mdi-chart-bell-curve">
+                  These listings' prices vary too widely<template v-if="latest?.spread != null"> (the middle half spans {{ Math.round(latest.spread * 100) }}% of the median)</template>, so the asking value of {{ money(card.est_value) }} is {{ RULE_TEXT[card.spread_rule] }}, {{ card.wide_spread_action ? 'as chosen for this card below' : 'the default on the Settings page' }}.
                   <div v-for="(g, i) in clusters" :key="i" class="mt-1">
                     ~{{ money(g.median) }} · {{ money(g.low) }}–{{ money(g.high) }} · {{ g.count }} {{ g.count === 1 ? 'listing' : 'listings' }}<template v-if="g.versions.length"> · {{ g.versions[0].name }}</template>
                   </div>
@@ -554,6 +567,19 @@ onMounted(() => {
                 <v-alert v-else-if="latest && !card.parallel && (latest.spread ?? 0) >= 0.8" type="warning" variant="tonal" density="compact" class="mt-3" icon="mdi-chart-bell-curve">
                   These prices vary a lot (the middle half spans {{ Math.round((latest.spread ?? 0) * 100) }}% of the median), which usually means several versions of this card are mixed together. Pick your version above, or use the listings table to leave out ones that aren't yours.
                 </v-alert>
+                <v-select
+                  v-if="card.wide_spread || card.spread_rule || card.wide_spread_action"
+                  :model-value="card.wide_spread_action ?? 'default'"
+                  :items="ruleItems"
+                  label="When this card's prices spread too widely"
+                  density="compact"
+                  hide-details
+                  class="mt-3"
+                  style="max-width: 420px"
+                  :loading="busy === 'rule'"
+                  :disabled="busy === 'rule'"
+                  @update:model-value="setRule"
+                />
                 <p v-if="!latest" class="text-body-2 text-secondary-c mt-4 mb-0">No value yet. Look it up to see what similar cards are listed for.</p>
               </div>
 
