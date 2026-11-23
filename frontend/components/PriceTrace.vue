@@ -93,12 +93,12 @@ const total = computed(() => trace.value?.summary?.after_top_up ?? trace.value?.
             <div v-if="trace.funnel?.length">
               <div class="text-body-2 mb-1">From <strong class="num">{{ total }}</strong> listings eBay returned, to the price:</div>
               <v-table density="compact" class="funnel mb-3">
-                <thead><tr><th>Grade</th><th class="text-right">Found</th><th class="text-right">You unticked</th><th class="text-right">Other number or redemption</th><th class="text-right">Other versions</th><th class="text-right">Doesn't look like your photo</th><th class="text-right">Outliers</th><th class="text-right">Used</th><th class="text-right">Low</th><th class="text-right">Median</th><th class="text-right">High</th></tr></thead>
+                <thead><tr><th>Grade</th><th class="d-none d-sm-table-cell text-right">Found</th><th class="d-none d-sm-table-cell text-right">You unticked</th><th class="text-right">Other number or redemption</th><th class="text-right">Other versions</th><th class="text-right">Doesn't look like your photo</th><th class="d-none d-sm-table-cell text-right">Outliers</th><th class="text-right">Used</th><th class="text-right">Low</th><th class="text-right">Median</th><th class="text-right">High</th></tr></thead>
                 <tbody>
                   <tr v-for="f in trace.funnel" :key="f.grade" :class="{ on: f.grade === grade }" @click="grade = f.grade">
-                    <td>{{ f.grade }}</td><td class="text-right num">{{ f.found }}</td><td class="text-right num">{{ f.excluded || '' }}</td>
+                    <td>{{ f.grade }}</td><td class="d-none d-sm-table-cell text-right num">{{ f.found }}</td><td class="d-none d-sm-table-cell text-right num">{{ f.excluded || '' }}</td>
                     <td class="text-right num">{{ f.other_identity || '' }}</td>
-                    <td class="text-right num">{{ f.other_version || '' }}</td><td class="text-right num">{{ f.not_alike || '' }}</td><td class="text-right num">{{ f.outliers || '' }}</td>
+                    <td class="text-right num">{{ f.other_version || '' }}</td><td class="text-right num">{{ f.not_alike || '' }}</td><td class="d-none d-sm-table-cell text-right num">{{ f.outliers || '' }}</td>
                     <td class="text-right num font-weight-bold">{{ f.used }}</td><td class="text-right num">{{ money(f.low) }}</td>
                     <td class="text-right num font-weight-bold">{{ money(f.median) }}</td><td class="text-right num">{{ money(f.high) }}</td>
                   </tr>
@@ -167,7 +167,7 @@ const total = computed(() => trace.value?.summary?.after_top_up ?? trace.value?.
 <style scoped>
 .debug-card { border-style: dashed !important; }
 .funnel tbody tr { cursor: pointer; }
-.funnel.v-table th, .funnel.v-table td { padding: 0 10px; } /* ten columns: keep them within the panel */
+.funnel.v-table th, .funnel.v-table td { padding: 0 6px; } /* eleven columns: keep them within the panel (phones hide three) */
 .funnel tbody tr.on { background: rgb(var(--v-theme-brand-muted)); }
 .detail { max-width: 340px; overflow-wrap: anywhere; font-size: 13px; }
 .tlink { color: inherit; text-decoration: none; display: block; max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
