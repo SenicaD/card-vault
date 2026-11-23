@@ -132,6 +132,104 @@ def test_ebay_image_parser_reads_titles():
     assert parse_matches([]).confidence == 0
 
 
+def _parse(titles):
+    from app.services.ebay import EbayItem
+    from app.services.identify.ebay_image import parse_matches
+
+    return parse_matches([EbayItem(item_id=str(i), title=t, price=10) for i, t in enumerate(titles)])
+
+
+def test_ebay_image_parser_reads_letter_codes_and_redemption_auto_flags():
+    r = _parse(["2026 Bowman Chrome Jacob Misiorowski #CRA-JMI Refractor Auto RC Redemption",
+                "2026 Bowman Chrome Jacob Misiorowski CRA-JMI Auto Redemption RC",
+                "Jacob Misiorowski 2026 Bowman Chrome # CRA-JMI Refractor Auto Redemption",
+                "2026 Bowman Chrome Jacob Misiorowski CRA-JMI Rookie Autograph Redemption",
+                "2026 Bowman Chrome Refractor Jacob Misiorowski #CRA-JMI RC",
+                "Jacob Misiorowski 2026 Bowman Chrome Refractor RC Brewers"])
+    assert (r.card_number, r.year, r.set_name, r.is_auto, r.is_redemption) == ("CRA-JMI", "2026", "Bowman Chrome", True, True)
+    assert "Misiorowski" in r.name and "CRA" not in r.name.upper() and "JMI" not in r.name.upper()
+    empty = _parse([])
+    assert (empty.is_auto, empty.is_redemption) == (False, False)
+
+
+def test_ebay_image_parser_keeps_numbers_and_skips_uppercase_words():
+    r = _parse(["2018 Panini Prizm Luka Doncic Rookie RC #280 Dallas Mavericks",
+                "2018-19 Panini Prizm Luka Doncic RC #280 Mavericks Rookie",
+                "Luka Doncic 2018 Prizm Base Rookie Card #280 INVEST",
+                "2018 Prizm #280 Luka Doncic RC Rookie Mavs",
+                "2018 Panini Prizm Luka Doncic #280 Rookie Card",
+                "2018 Prizm Trae Young Rookie #78 Hawks",
+                "Lot of 5 Luka Doncic cards"])
+    assert (r.card_number, r.is_auto, r.is_redemption) == ("280", False, False)
+
+    bad = {"NM-MT", "YU-GI", "GI-OH", "BLUE-EYES", "PRE-ORDER", "PSA-10", "ALL-STAR", "EX-MT", "ONE-OFF"}
+    yugioh = _parse(["2002 YU-GI-OH BLUE-EYES WHITE DRAGON LOB-001 NM-MT"] * 3
+                    + ["YU-GI-OH BLUE-EYES WHITE DRAGON LOB-001 1ST EDITION EX-MT", "NM-MT LOB-001 BLUE-EYES WHITE DRAGON"])
+    prizm = _parse(["PRE-ORDER 2023 PRIZM WEMBANYAMA #136 PSA-10"] * 3 + ["2023 PRIZM WEMBANYAMA # 136 PSA-10 ALL-STAR"])
+    none = _parse(["YU-GI-OH BLUE-EYES WHITE DRAGON NM-MT ALL-STAR"] * 3 + ["YU-GI-OH ONE-OFF BLUE-EYES WHITE DRAGON EX-MT"])
+    assert (yugioh.card_number, prizm.card_number, none.card_number) == ("LOB-001", "136", None)
+    assert "Blue-Eyes" in none.name
+    for r in (yugioh, prizm, none):
+        assert r.card_number not in bad and not r.is_auto and not r.is_redemption
+
+
+def test_letter_code_pattern_shapes():
+    from app.services.identify.ebay_image import _LETTER_CODE
+
+    def code(t):
+        m = _LETTER_CODE.search(t)
+        return m.group(1) if m else None
+
+    assert [code(t) for t in ("x #CRA-JMI y", "x # CRA-JMI", "CRA-JMI auto", "BCRA-AB")] == ["CRA-JMI"] * 3 + ["BCRA-AB"]
+    for t in ("YU-GI-OH", "ONE-OF-ONE", "NM-MT", "EX-MT", "VG-EX", "GEM-MT", "ONE-OFF", "BLUE-EYES", "ALL-STAR",
+              "PRE-ORDER", "Yu-Gi-Oh", "Pre-Order", "PSA-10", "cra-jmi"):
+        assert code(t) is None, t
+
+
+def test_identification_flags_default_false_and_accept_null():
+    from app.services.identify.base import CardIdentification
+
+    base = {"category": "sports", "name": "Jacob Misiorowski", "set_name": "Bowman Chrome", "year": "2026",
+            "card_number": "CRA-JMI", "variant": None, "grade": "Raw", "condition": None, "confidence": 0.9,
+            "search_query": "2026 Bowman Chrome Jacob Misiorowski CRA-JMI"}
+    present = CardIdentification.model_validate({**base, "is_redemption": True, "is_auto": True})
+    absent = CardIdentification.model_validate(base)
+    null = CardIdentification.model_validate({**base, "is_redemption": None, "is_auto": None})
+    assert (present.is_redemption, present.is_auto) == (True, True)
+    assert (absent.is_redemption, absent.is_auto) == (False, False)
+    assert (null.is_redemption, null.is_auto) == (False, False)
+    assert present.card_number == "CRA-JMI"
+
+
+def test_claude_prompt_asks_for_flags_and_letter_codes():
+    from app.services.identify.claude import _PROMPT
+
+    assert "is_redemption" in _PROMPT and "is_auto" in _PROMPT and "CRA-JMI" in _PROMPT
+
+
+def test_mock_has_redemption_auto_sample():
+    from app.services.identify.base import CardIdentification, build_search_query
+    from app.services.identify.mock import _SAMPLES
+
+    found = [s for s in _SAMPLES if s.get("card_number") == "CRA-JMI"]
+    assert len(found) == 1
+    s = found[0]
+    assert (s["name"], s["set_name"], s["year"], s["category"]) == ("Jacob Misiorowski", "Bowman Chrome", "2026", "sports")
+    assert (s["variant"], s["grade"], s["is_redemption"], s["is_auto"]) == ("Refractor, Auto, RC", "Raw", True, True)
+    ident = CardIdentification(**s, search_query="")
+    assert "#CRA-JMI" in build_search_query(ident)
+    for other in _SAMPLES:
+        if other is not s:
+            i = CardIdentification(**other, search_query="")
+            assert (i.is_redemption, i.is_auto) == (False, False)
+
+
+def test_scan_identification_has_flags():
+    with TestClient(app) as c:
+        ident = c.post("/api/scan", files={"file": ("card.png", io.BytesIO(PNG), "image/png")}).json()["identification"]
+        assert {"is_redemption", "is_auto"} <= set(ident)
+
+
 def _card(c, name="Charizard Base Set"):
     return c.post("/api/cards", json={"category": "pokemon", "name": name, "search_query": name}).json()
 
@@ -1190,7 +1288,10 @@ def test_soldcomps_response_parsing_and_errors(monkeypatch):
 
 def test_sold_prices_flow_into_the_comparison_and_trend(monkeypatch):
     from app.config import get_settings
+    import app.services.identify.mock as mock
     monkeypatch.setattr(get_settings(), "sold_monthly_budget", 2)
+    # pinned card: the median comparison below assumes its sales have no outliers to trim
+    monkeypatch.setattr(mock, "_SAMPLES", [x for x in mock._SAMPLES if x["name"] == "Tom Brady"])
     with TestClient(app) as c:
         card, _ = _priced_card(c, grade="Raw")
         cid = card["id"]

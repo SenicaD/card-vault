@@ -63,8 +63,9 @@ The queue lives in memory: it survives moving between pages, but not a reload (t
 IDENTIFIER=claude
 ANTHROPIC_API_KEY=sk-ant-...
 ```
-The prompt asks for category, name, set, year, number, variant, slab grade, condition, a confidence
-score, and an eBay-ready search query. See `app/services/identify/claude.py`.
+The prompt asks for category, name, set, year, number (as printed, letter-only codes like `CRA-JMI`
+too), variant, slab grade, condition, a confidence score, an eBay-ready search query, and whether the
+card is a redemption and/or an autograph (`is_redemption`, `is_auto`). See `app/services/identify/claude.py`.
 
 ### Card identification by eBay image search (no AI key)
 ```
@@ -72,7 +73,9 @@ IDENTIFIER=ebay
 EBAY_MODE=live
 ```
 Sends the photo to eBay's Browse `search_by_image`, then reads name, year, set, number, variant and
-grade from what the best-matching listing titles agree on. Confidence is how many of the top matches
+grade from what the best-matching listing titles agree on. Letter-only codes like `CRA-JMI` are read
+when a title has no numeric one, and the redemption and autograph flags are set when at least half the
+titles say "redemption" or "auto"/"autograph"/"RPA". Confidence is how many of the top matches
 are clearly the same listing. The matches double as the price comps, so each scan is one eBay call.
 Visually identical cards (base vs. colour parallels, raw vs. slabbed) can mix, so check the fields and
 re-price with a tighter search when it matters. See `app/services/identify/ebay_image.py`.
