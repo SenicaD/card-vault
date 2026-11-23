@@ -16,6 +16,11 @@ _JUNK = re.compile(r"\b(lot|lots|bundle|set of|choose|pick|you pick|reprint|prox
 _YEAR = re.compile(r"\b(19[5-9]\d|20[0-4]\d)(?:-(\d{2}))?\b")
 _GRADE = re.compile(r"\b(PSA|BGS|CGC|SGC|BCCG|Beckett)\s*(10|[1-9](?:\.5)?)\b", re.I)
 _NUMBER = re.compile(r"(?:#\s?([A-Z]{0,4}-?\d{1,4}[A-Z]?)\b|\b(\d{1,3}/\d{2,3})\b|\b([A-Z]{2,5}-[A-Z]{0,2}\d{3})\b)")
+# All-letter codes like "CRA-JMI" (set prefix + player initials), only tried when a title has no
+# _NUMBER match. Not inside longer hyphenated runs ("YU-GI-OH") and not condition labels ("NM-MT").
+_LETTER_CODE = re.compile(r"(?<![\w-])(?!(?:NM-MT|EX-MT|VG-EX|EX-NM|GEM-MT|ONE-OFF)(?![\w-]))([A-Z]{2,5}-[A-Z]{2,3})(?![\w-])")
+_AUTO = re.compile(r"\b(auto|autograph|autographed|rpa)\b", re.I)
+_REDEMPTION = re.compile(r"\bredemption\b", re.I)
 # Words that say nothing about which card it is
 _NOISE = {
     "rc", "rookie", "card", "cards", "mint", "nm", "near", "invest", "hot", "rare", "look", "l@@k", "wow",
@@ -96,7 +101,7 @@ def parse_matches(matches: list[EbayItem]) -> CardIdentification:
     joined = " ".join(titles)
     year_m = [m.group(0) for t in titles for m in [_YEAR.search(t)] if m]
     grade_m = [f"{m.group(1).upper().replace('BECKETT', 'BGS')} {m.group(2)}" for t in titles for m in [_GRADE.search(t)] if m]
-    num_m = [next(g for g in m.groups() if g) for t in titles for m in [_NUMBER.search(t)] if m]
+    num_m = [next(g for g in m.groups() if g) for t in titles for m in [_NUMBER.search(t) or _LETTER_CODE.search(t)] if m]
 
     year = _most_common(year_m, 0.4, n)
     grade = _most_common(grade_m, 0.5, n) or ("Raw" if len(grade_m) / n < 0.3 else None)
@@ -110,6 +115,8 @@ def parse_matches(matches: list[EbayItem]) -> CardIdentification:
     if "rookie" in variants and "rc" in variants:
         variants.remove("rc")
     variant = ", ".join(dict.fromkeys(v.title() if v not in ("rc", "sp") else v.upper() for v in variants)) or None
+    is_auto = sum(bool(_AUTO.search(t)) for t in titles) / n >= 0.5
+    is_redemption = sum(bool(_REDEMPTION.search(t)) for t in titles) / n >= 0.5
 
     # Name: consensus words minus the ones already captured in other fields
     taken = set()
@@ -132,7 +139,7 @@ def parse_matches(matches: list[EbayItem]) -> CardIdentification:
     return CardIdentification(
         category=category, name=name, set_name=set_name.title() if set_name else None, year=year,
         card_number=number, variant=variant, grade=grade, condition=None, confidence=confidence,
-        search_query=" ".join(query_words) or titles[centre][:80],
+        search_query=" ".join(query_words) or titles[centre][:80], is_redemption=is_redemption, is_auto=is_auto,
     )
 
 

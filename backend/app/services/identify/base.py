@@ -1,6 +1,6 @@
 from typing import Protocol
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from ...models import CardCategory
 
@@ -18,6 +18,13 @@ class CardIdentification(BaseModel):
     condition: str | None = None
     confidence: float = Field(ge=0, le=1, default=0.5)
     search_query: str = Field(description="Query string tuned for eBay search")
+    is_redemption: bool = False
+    is_auto: bool = False
+
+    @field_validator("is_redemption", "is_auto", mode="before")
+    @classmethod
+    def _null_is_false(cls, v):
+        return False if v is None else v
 
 
 class CardIdentifier(Protocol):
