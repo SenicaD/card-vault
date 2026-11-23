@@ -204,7 +204,7 @@ def price_groups(card_id: int, session: Session = Depends(get_session)):
     own = _active_rows(session, card_id, [normalize_grade(card.grade)])
     rows = asking_listings(own, card.parallel, {r.item_id for r in own if r.excluded}, identity_of_card(card))
     out = []
-    for c in price_clusters([r.price for r in rows], load_app_settings(session).min_group_size):
+    for c in price_clusters([r.price for r in rows], load_app_settings(session).cluster_min_size):
         names = Counter(parse_parallel(rows[i].title) for i in c.members)
         top = sorted(names.items(), key=lambda kv: (-kv[1], kv[0]))[:3]
         out.append(PriceGroup(median=c.median, low=c.low, high=c.high, count=c.count,

@@ -30,7 +30,7 @@ def apply_asking(card, median: float | None, spread: float | None, prices: list[
     card.from_price_group = False
     if median is not None and spread is not None and spread > get_settings().max_price_spread:
         use_group = prices is not None and app_settings is not None and app_settings.wide_spread_action == "highest_group"
-        groups = price_clusters(prices, app_settings.min_group_size) if use_group else []
+        groups = price_clusters(prices, app_settings.cluster_min_size) if use_group else []
         if groups:
             card.wide_spread, card.est_value, card.from_price_group = False, groups[-1].median, True
         else:

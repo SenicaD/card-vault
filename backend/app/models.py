@@ -211,7 +211,7 @@ class AppSettings(SQLModel, table=True):
     """A single row; until it is saved the defaults apply."""
 
     id: int | None = Field(default=None, primary_key=True)
-    min_group_size: int = 2  # a price group needs at least this many listings
+    cluster_min_size: int = 2  # a price group needs at least this many listings
     wide_spread_action: str = "flag"  # "flag" (no asking value) | "highest_group" (value from the highest price group)
 
 
