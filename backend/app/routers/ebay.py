@@ -12,9 +12,9 @@ from ..db import get_session
 from ..models import ASKING_SOURCES, Card, CardCategory, CardStatus, Listing, ListingSeen, PriceSnapshot, Sale, SoldSale, utcnow
 from ..services.ebay import EbayItem, ListingRequest, get_ebay
 from ..services.grading import grade_sort_key, normalize_grade
-from ..services.identity import identity_of_card, who_of_card
+from ..services.identity import fits_identity, identity_of_card, who_of_card
 from ..services.parallels import BASE, parse_parallel
-from ..services.pricing import apply_asking, build_quotes, card_image, quote_grades
+from ..services.pricing import _JUNK, apply_asking, build_quotes, card_image, price_clusters, quote_grades
 from ..services.similarity import score_urls
 from ..services.trace import Trace, save_trace
 from ..services.tracker import track_listings
@@ -176,6 +176,37 @@ def exclude_matches(card_id: int, body: ExcludeRequest, session: Session = Depen
         session.refresh(s)
     return PriceResult(snapshot=next((s for s in snaps if s.grade == own), snaps[0]), snapshots=snaps, comps=[],
                        grade_counts=card.grade_counts or {})
+
+
+class VersionCount(BaseModel):
+    name: str
+    count: int
+
+
+class PriceGroup(BaseModel):
+    median: float
+    low: float
+    high: float
+    count: int
+    versions: list[VersionCount]  # up to 3, most common first
+
+
+@router.get("/price-clusters", response_model=list[PriceGroup])
+def price_groups(card_id: int, session: Session = Depends(get_session)):
+    """The price groups among the saved listings that price the card's asking value (its own grade and version,
+    not ruled out, before the outlier trim), so a card whose prices vary too widely shows which version is which."""
+    card = get_card_or_404(session, card_id)
+    ident = identity_of_card(card)
+    rows = [r for r in _active_rows(session, card_id, [normalize_grade(card.grade)])
+            if not r.excluded and (not card.parallel or parse_parallel(r.title) == card.parallel)
+            and fits_identity(r.title, ident) and not _JUNK.search(r.title)]
+    out = []
+    for c in price_clusters([r.price for r in rows]):
+        names = Counter(parse_parallel(rows[i].title) for i in c.members)
+        top = sorted(names.items(), key=lambda kv: (-kv[1], kv[0]))[:3]
+        out.append(PriceGroup(median=c.median, low=c.low, high=c.high, count=c.count,
+                              versions=[VersionCount(name=n, count=k) for n, k in top]))
+    return out
 
 
 class SimilarityRequest(BaseModel):

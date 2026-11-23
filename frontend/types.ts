@@ -130,6 +130,14 @@ export interface SimilarityResult {
   of: number
 }
 
+export interface PriceCluster {
+  median: number
+  low: number
+  high: number
+  count: number
+  versions: { name: string; count: number }[]
+}
+
 export interface TrendPoint {
   date: string
   median: number
