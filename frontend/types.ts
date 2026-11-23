@@ -33,6 +33,7 @@ export interface Card extends CardFields {
   parallel?: string | null
   reviewed?: boolean
   wide_spread?: boolean // asking prices spread too widely to give an asking value
+  from_price_group?: boolean // the asking value is the highest price group's median, used because prices spread too widely
   sold_value?: number | null // what it sold for (median of recent sales), beside the asking-based estimate
   sold_count?: number
   sold_low?: number | null
@@ -128,6 +129,11 @@ export interface SimilarityResult {
   suggested_parallel: string | null
   votes: number
   of: number
+}
+
+export interface AppSettings {
+  cluster_min_size: number
+  wide_spread_action: 'flag' | 'highest_group'
 }
 
 export interface PriceCluster {
