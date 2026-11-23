@@ -14,7 +14,7 @@ from ..services.ebay import EbayItem, ListingRequest, get_ebay
 from ..services.grading import grade_sort_key, normalize_grade
 from ..services.identity import fits_identity, identity_of_card, who_of_card
 from ..services.parallels import BASE, parse_parallel
-from ..services.pricing import _JUNK, apply_asking, build_quotes, card_image, price_clusters, quote_grades
+from ..services.pricing import _JUNK, apply_asking, build_quotes, card_image, price_clusters, quote_grades, summarize
 from ..services.similarity import score_urls
 from ..services.trace import Trace, save_trace
 from ..services.tracker import track_listings
@@ -438,7 +438,7 @@ class PricePoints(BaseModel):
     asking_line: list[TrendPoint]  # median asking price per day, with the low-high spread
     sold_line: list[TrendPoint]  # median sold price per day (week, for long ranges)
     asking_now: float | None
-    sold_median: float | None
+    sold_median: float | None  # outlier-trimmed median of the sales (same rule as the card's sold value)
     sold_count: int
     asking_count: int
 
@@ -474,5 +474,5 @@ def price_points(card_id: int, grade: str | None = None, range: str = Query("3m"
                    "status": r.status, "title": r.title, "url": r.url} for r in seen[:300]],
         asking_line=_daily(snaps), sold_line=_sales_points(sales, weekly),
         asking_now=round(_median(active), 2) if active else None,
-        sold_median=round(_median(r.price for r in sales), 2) if sales else None,
+        sold_median=summarize([EbayItem(item_id=r.item_id, title=r.title, price=r.price) for r in sales])["median"],
         sold_count=len(sales), asking_count=len(active))
