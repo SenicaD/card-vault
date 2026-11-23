@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 
 from sqlalchemy import Column
 from sqlalchemy.types import JSON, DateTime, TypeDecorator
@@ -70,6 +70,10 @@ class LocationRead(LocationBase):
 
 # ---------- Cards ----------
 
+# What a card whose asking prices spread too widely gets: flagged with no asking value, or valued at the highest or
+# lowest price group's median, or at the median of all its listings
+WideSpreadAction = Literal["flag", "highest_group", "median", "lowest_group"]
+
 class CardBase(SQLModel):
     category: CardCategory = CardCategory.other
     name: str  # player or card name
@@ -109,6 +113,11 @@ class Card(CardBase, table=True):
     reviewed: bool = False
     # True when the asking prices spread too widely (above MAX_PRICE_SPREAD) to give an asking value.
     wide_spread: bool = False
+    # This card's own choice of what it gets when its prices spread too widely; None follows the Settings page.
+    wide_spread_action: str | None = None
+    # The rule that set the asking value because the prices spread too widely ("highest_group" | "median" |
+    # "lowest_group"); None when the value is the plain median or there is none.
+    spread_rule: str | None = None
     # What matching copies actually sold for (median of the last 90 days' sales of the card's own grade and
     # version), kept beside the asking-price estimate. None until enough sales are on record.
     sold_value: float | None = None
@@ -176,6 +185,7 @@ class CardUpdate(SQLModel):
     reviewed: bool | None = None
     is_redemption: bool | None = None
     is_auto: bool | None = None
+    wide_spread_action: WideSpreadAction | None = None  # null follows the Settings page
 
 
 class CardRead(CardBase):
@@ -190,6 +200,8 @@ class CardRead(CardBase):
     parallel: str | None = None
     reviewed: bool = False
     wide_spread: bool = False
+    wide_spread_action: str | None = None
+    spread_rule: str | None = None
     sold_value: float | None = None
     sold_count: int = 0
     sold_low: float | None = None
@@ -200,6 +212,16 @@ class CardRead(CardBase):
     value_basis: str | None = None  # "manual" | "sold" | "asking" | None (no price yet)
     created_at: datetime
     updated_at: datetime
+
+
+# ---------- App settings you change on the Settings page ----------
+
+class AppSettings(SQLModel, table=True):
+    """A single row; until it is saved the defaults apply."""
+
+    id: int | None = Field(default=None, primary_key=True)
+    cluster_min_size: int = 2  # a price group needs at least this many listings
+    wide_spread_action: str = "flag"  # the default for every card without its own choice; see WideSpreadAction
 
 
 # ---------- Price snapshots ----------

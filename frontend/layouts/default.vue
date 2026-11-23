@@ -23,6 +23,7 @@ const baseNav = [
   { to: '/review', title: 'Review queue', icon: 'mdi-clipboard-check-outline', match: (p: string) => p.startsWith('/review') },
   { to: '/scan', title: 'Scan cards', icon: 'mdi-camera-outline', match: (p: string) => p.startsWith('/scan') },
   { to: '/locations', title: 'Storage', icon: 'mdi-archive-outline', match: (p: string) => p.startsWith('/locations') },
+  { to: '/settings', title: 'Settings', icon: 'mdi-cog-outline', match: (p: string) => p.startsWith('/settings') },
 ]
 const nav = computed(() => (debug.on.value
   ? [...baseNav, { to: '/debug', title: 'Debug', icon: 'mdi-bug-outline', match: (p: string) => p.startsWith('/debug') }]

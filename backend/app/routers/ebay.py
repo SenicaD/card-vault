@@ -12,9 +12,10 @@ from ..db import get_session
 from ..models import ASKING_SOURCES, Card, CardCategory, CardStatus, Listing, ListingSeen, PriceSnapshot, Sale, SoldSale, utcnow
 from ..services.ebay import EbayItem, ListingRequest, get_ebay
 from ..services.grading import grade_sort_key, normalize_grade
-from ..services.identity import fits_identity, identity_of_card, who_of_card
+from ..services.identity import identity_of_card, who_of_card
 from ..services.parallels import BASE, parse_parallel
-from ..services.pricing import _JUNK, apply_asking, build_quotes, card_image, price_clusters, quote_grades, summarize
+from ..services.app_settings import load_app_settings
+from ..services.pricing import apply_asking, asking_listings, build_quotes, card_image, price_clusters, quote_grades, summarize
 from ..services.similarity import score_urls
 from ..services.trace import Trace, save_trace
 from ..services.tracker import track_listings
@@ -53,10 +54,11 @@ async def price_card(card_id: int, body: PriceRequest | None = None,
     asked = body.grades if body and body.grades else [own]
     grades = list(dict.fromkeys(normalize_grade(g) for g in asked))[:8]
     trace = Trace("lookup", "manual", query, grades, card.parallel)
+    skip, card_ident = excluded_ids(session, card.id), identity_of_card(card)
     try:
         priced = await quote_grades(query, grades, None if (body and body.text_only) else card_image(card),
-                                    parallel=card.parallel, exclude=excluded_ids(session, card.id), trace=trace,
-                                    who=who_of_card(card), ident=identity_of_card(card))
+                                    parallel=card.parallel, exclude=skip, trace=trace,
+                                    who=who_of_card(card), ident=card_ident)
     except Exception as e:
         trace.error = repr(e)[:400]
         save_trace(session, trace, card.id, keep_raw=True)  # a failed lookup is the one you most want to see
@@ -85,10 +87,11 @@ async def price_card(card_id: int, body: PriceRequest | None = None,
     # The estimate only ever follows the card's own grade, so comparing other grades can't change it.
     own_snap = next((s for s in snaps if s.grade == own), None)
     if own_snap and own_snap.median is not None:
-        apply_asking(card, own_snap.median, own_snap.spread)
+        listings = asking_listings(groups.get(own, []), card.parallel, skip, card_ident)
+        apply_asking(card, own_snap.median, own_snap.spread, [i.price for i in listings], load_app_settings(session))
         card.priced_at = utcnow()
     elif own_snap:  # the search ran but nothing matched this card: don't keep an old, wrong number
-        card.est_value, card.wide_spread, card.priced_at = None, False, utcnow()
+        card.est_value, card.wide_spread, card.spread_rule, card.priced_at = None, False, None, utcnow()
     card.updated_at = utcnow()
     session.add(card)
     session.commit()
@@ -161,13 +164,15 @@ def exclude_matches(card_id: int, body: ExcludeRequest, session: Session = Depen
     for r in rows:
         groups.setdefault(r.grade, []).append(EbayItem(item_id=r.item_id, title=r.title, price=r.price, currency=r.currency,
                                                        condition=r.condition, url=r.url, image_url=r.image_url))
-    quotes, _ = build_quotes(groups, grades, card.search_query or card.name, "ebay-image", card.parallel,
-                             {r.item_id for r in rows if r.excluded}, ident=identity_of_card(card))
+    excluded, ident = {r.item_id for r in rows if r.excluded}, identity_of_card(card)
+    quotes, _ = build_quotes(groups, grades, card.search_query or card.name, "ebay-image", card.parallel, excluded,
+                             ident=ident)
     snaps = [PriceSnapshot(card_id=card.id, **q.model_dump()) for q in quotes]
     session.add_all(snaps)
     own_snap = next((s for s in snaps if s.grade == own), None)
     if own_snap and own_snap.median is not None:
-        apply_asking(card, own_snap.median, own_snap.spread)
+        listings = asking_listings(groups.get(own, []), card.parallel, excluded, ident)
+        apply_asking(card, own_snap.median, own_snap.spread, [i.price for i in listings], load_app_settings(session))
         card.priced_at = utcnow()
     card.updated_at = utcnow()
     session.add(card)
@@ -196,12 +201,10 @@ def price_groups(card_id: int, session: Session = Depends(get_session)):
     """The price groups among the saved listings that price the card's asking value (its own grade and version,
     not ruled out, before the outlier trim), so a card whose prices vary too widely shows which version is which."""
     card = get_card_or_404(session, card_id)
-    ident = identity_of_card(card)
-    rows = [r for r in _active_rows(session, card_id, [normalize_grade(card.grade)])
-            if not r.excluded and (not card.parallel or parse_parallel(r.title) == card.parallel)
-            and fits_identity(r.title, ident) and not _JUNK.search(r.title)]
+    own = _active_rows(session, card_id, [normalize_grade(card.grade)])
+    rows = asking_listings(own, card.parallel, {r.item_id for r in own if r.excluded}, identity_of_card(card))
     out = []
-    for c in price_clusters([r.price for r in rows]):
+    for c in price_clusters([r.price for r in rows], load_app_settings(session).cluster_min_size):
         names = Counter(parse_parallel(rows[i].title) for i in c.members)
         top = sorted(names.items(), key=lambda kv: (-kv[1], kv[0]))[:3]
         out.append(PriceGroup(median=c.median, low=c.low, high=c.high, count=c.count,

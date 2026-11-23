@@ -33,6 +33,8 @@ export interface Card extends CardFields {
   parallel?: string | null
   reviewed?: boolean
   wide_spread?: boolean // asking prices spread too widely to give an asking value
+  wide_spread_action?: WideSpreadAction | null // this card's own choice when prices spread too widely; null follows the Settings page
+  spread_rule?: Exclude<WideSpreadAction, 'flag'> | null // the rule that set the asking value because prices spread too widely
   sold_value?: number | null // what it sold for (median of recent sales), beside the asking-based estimate
   sold_count?: number
   sold_low?: number | null
@@ -128,6 +130,19 @@ export interface SimilarityResult {
   suggested_parallel: string | null
   votes: number
   of: number
+}
+
+export type WideSpreadAction = 'flag' | 'highest_group' | 'median' | 'lowest_group'
+export const WIDE_SPREAD_ACTIONS: { value: WideSpreadAction; title: string; hint: string }[] = [
+  { value: 'flag', title: 'Flag the card and leave it unvalued', hint: 'The card shows a "wide spread" warning and gets no asking value until you pick its version or untick listings.' },
+  { value: 'highest_group', title: 'Higher price group', hint: 'The typical price of the most expensive price group. If no price groups are found, the card is flagged.' },
+  { value: 'median', title: 'Median price', hint: 'The median of all the listings, however widely they spread.' },
+  { value: 'lowest_group', title: 'Lower price group', hint: 'The typical price of the cheapest price group. If no price groups are found, the card is flagged.' },
+]
+
+export interface AppSettings {
+  cluster_min_size: number
+  wide_spread_action: WideSpreadAction
 }
 
 export interface PriceCluster {

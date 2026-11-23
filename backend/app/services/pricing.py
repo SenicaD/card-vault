@@ -19,15 +19,35 @@ from .lookalike import compare as compare_pictures
 _JUNK = re.compile(r"\b(lot|lots|bundle|set of|choose|pick|you pick|reprint|proxy|custom|digital)\b", re.I)
 
 
-def apply_asking(card, median: float | None, spread: float | None) -> None:
+def apply_asking(card, median: float | None, spread: float | None, prices: list[float] | None = None,
+                 app_settings=None) -> None:
     """Set the card's asking estimate from a quote, unless its prices spread too widely to trust.
 
-    Above MAX_PRICE_SPREAD the card is flagged and gets no asking value; otherwise the flag is cleared.
+    Above MAX_PRICE_SPREAD the card is flagged and gets no asking value; otherwise the flag is cleared. With
+    app_settings, the card's own wide_spread_action (else the saved default) can value it instead: at the median of
+    all its listings, or at the highest or lowest price group's median when the asking listings' prices form groups.
+    spread_rule records which rule did.
     """
+    card.spread_rule = None
     if median is not None and spread is not None and spread > get_settings().max_price_spread:
-        card.wide_spread, card.est_value = True, None
+        rule = (card.wide_spread_action or app_settings.wide_spread_action) if app_settings is not None else "flag"
+        value = median if rule == "median" else None
+        if rule in ("highest_group", "lowest_group") and prices is not None:
+            groups = price_clusters(prices, app_settings.cluster_min_size)
+            value = (groups[-1] if rule == "highest_group" else groups[0]).median if groups else None
+        if value is not None:
+            card.wide_spread, card.est_value, card.spread_rule = False, value, rule
+        else:
+            card.wide_spread, card.est_value = True, None
     else:
         card.wide_spread, card.est_value = False, median
+
+
+def asking_listings(items: list, parallel: str | None, exclude: set[str], ident: CardIdentity | None) -> list:
+    """The listings of the card's own grade that price its asking value, before the outlier trim: not ruled out,
+    of its version when one is set, of its card code and redemption status, and not junk."""
+    return [i for i in items if i.item_id not in exclude and (not parallel or parse_parallel(i.title) == parallel)
+            and fits_identity(i.title, ident) and not _JUNK.search(i.title)]
 
 
 def top_listings(items: list[EbayItem], n: int = 4) -> list[dict]:
@@ -103,12 +123,12 @@ class PriceCluster(NamedTuple):
     members: list[int]  # positions in the input list
 
 
-def price_clusters(prices: list[float]) -> list[PriceCluster]:
+def price_clusters(prices: list[float], min_size: int = CLUSTER_MIN_SIZE) -> list[PriceCluster]:
     """Split listing prices into groups, cheapest first, so a card mixing several versions shows each one's price.
 
     Prices of 0 or less are ignored; with fewer than CLUSTER_MIN_PRICES left there are no groups. The sorted prices
     are split wherever a price is at least CLUSTER_GAP_RATIO times the one before it, and groups of fewer than
-    CLUSTER_MIN_SIZE listings are dropped as strays. While more than CLUSTER_MAX groups remain, the two neighbouring
+    min_size listings are dropped as strays. While more than CLUSTER_MAX groups remain, the two neighbouring
     groups closest in price (the higher one's low divided by the lower one's high; the cheaper pair on a tie) are
     merged. Fewer than 2 groups means there is nothing to tell apart, so [] is returned.
     """
@@ -121,7 +141,7 @@ def price_clusters(prices: list[float]) -> list[PriceCluster]:
             groups.append([b])
         else:
             groups[-1].append(b)
-    groups = [g for g in groups if len(g) >= CLUSTER_MIN_SIZE]
+    groups = [g for g in groups if len(g) >= min_size]
     while len(groups) > CLUSTER_MAX:
         k = min(range(len(groups) - 1), key=lambda k: prices[groups[k + 1][0]] / prices[groups[k][-1]])
         groups[k:k + 2] = [groups[k] + groups[k + 1]]

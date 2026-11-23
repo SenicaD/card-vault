@@ -6,12 +6,14 @@ from sqlmodel import Session, col, func, or_, select
 
 from ..config import get_settings
 from ..db import engine, get_session
-from ..models import ASKING_SOURCES, Card, CardCategory, CardCreate, CardRead, CardStatus, CardUpdate, PriceSnapshot, utcnow
+from ..models import ASKING_SOURCES, Card, CardCategory, CardCreate, CardRead, CardStatus, CardUpdate, ListingSeen, PriceSnapshot, utcnow
 from ..services.imagecrop import CropBox, CropError, crop_saved_image
 from ..services.grading import normalize_grade
 from ..services.identify import CardIdentification, build_search_query, get_identifier
 from ..services import refresh as refresh_service
-from ..services.pricing import apply_asking
+from ..services.app_settings import load_app_settings
+from ..services.identity import identity_of_card
+from ..services.pricing import apply_asking, asking_listings
 from ..services.sold_refresh import recompute_sold
 from ..services.trace import identification_trace, save_trace
 from .common import get_card_or_404, to_read
@@ -218,6 +220,13 @@ def get_card(card_id: int, session: Session = Depends(get_session)):
     return to_read(get_card_or_404(session, card_id))
 
 
+def _own_snap(session: Session, card: Card) -> PriceSnapshot | None:
+    """The newest asking price for the card's own grade and version."""
+    return session.exec(select(PriceSnapshot).where(
+        PriceSnapshot.card_id == card.id, col(PriceSnapshot.source).in_(ASKING_SOURCES), PriceSnapshot.grade == normalize_grade(card.grade), PriceSnapshot.parallel == card.parallel,
+        col(PriceSnapshot.median).is_not(None)).order_by(col(PriceSnapshot.created_at).desc()).limit(1)).first()
+
+
 def apply_update(session: Session, card: Card, changes: dict) -> None:
     """Apply field changes to a card (single edit or bulk)."""
     old_grade, old_parallel = normalize_grade(card.grade), card.parallel
@@ -226,15 +235,19 @@ def apply_update(session: Session, card: Card, changes: dict) -> None:
     if new_grade != old_grade or card.parallel != old_parallel:
         # The estimate belonged to the old grade or version. Use the newest price we already have for the new one,
         # or clear it until the card is priced, rather than keep showing the old grade's value.
-        snap = session.exec(select(PriceSnapshot).where(
-            PriceSnapshot.card_id == card.id, col(PriceSnapshot.source).in_(ASKING_SOURCES), PriceSnapshot.grade == new_grade, PriceSnapshot.parallel == card.parallel,
-            col(PriceSnapshot.median).is_not(None)).order_by(col(PriceSnapshot.created_at).desc()).limit(1)).first()
+        snap = _own_snap(session, card)
         apply_asking(card, snap.median if snap else None, snap.spread if snap else None)
         card.priced_at = snap.created_at if snap else None
         recompute_sold(session, card)  # the sold-based value belongs to the grade and version too
     elif {"name", "year", "card_number", "id_confidence", "set_name", "variant", "search_query", "is_redemption"} & changes.keys():
         session.flush()
         recompute_sold(session, card)  # who the card is (and whether it's a redemption) decides which sales count
+    if "wide_spread_action" in changes and (snap := _own_snap(session, card)):
+        # A new choice for wide-spread prices shows at once: re-value from the newest quote and the saved listings.
+        rows = session.exec(select(ListingSeen).where(ListingSeen.card_id == card.id, ListingSeen.status == "active",
+                                                      ListingSeen.grade == new_grade)).all()
+        listings = asking_listings(rows, card.parallel, {r.item_id for r in rows if r.excluded}, identity_of_card(card))
+        apply_asking(card, snap.median, snap.spread, [r.price for r in listings], load_app_settings(session))
     card.updated_at = utcnow()
     session.add(card)
 

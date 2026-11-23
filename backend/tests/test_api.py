@@ -2548,3 +2548,260 @@ def test_price_clusters_endpoint_unknown_card_and_no_listings():
         card = _mk(c, name="Spread Clusters Empty")
         r = c.get(f"/api/cards/{card['id']}/price-clusters")
         assert r.status_code == 200 and r.json() == []
+
+
+DEFAULT_SETTINGS = {"cluster_min_size": 2, "wide_spread_action": "flag"}
+HIGHEST_GROUP = {"cluster_min_size": 2, "wide_spread_action": "highest_group"}
+
+
+@pytest.fixture
+def restore_settings():
+    """The test database is shared, so a test that saves settings gets the defaults back afterwards, even if it fails."""
+    yield
+    with TestClient(app) as c:
+        assert c.put("/api/settings", json=DEFAULT_SETTINGS).status_code == 200
+
+
+def test_settings_are_the_defaults_when_nothing_is_saved():
+    from sqlalchemy import delete
+    from sqlmodel import Session
+    from app.db import engine
+    from app.models import AppSettings
+    with TestClient(app) as c:
+        with Session(engine) as session:
+            session.execute(delete(AppSettings))
+            session.commit()
+        r = c.get("/api/settings")
+        assert r.status_code == 200 and r.json() == DEFAULT_SETTINGS
+
+
+def test_settings_are_saved_and_kept_after_a_restart(restore_settings):
+    saved = {"cluster_min_size": 5, "wide_spread_action": "highest_group"}
+    with TestClient(app) as c:
+        r = c.put("/api/settings", json=saved)
+        assert r.status_code == 200 and r.json() == saved
+        assert c.get("/api/settings").json() == saved
+    with TestClient(app) as c:
+        assert c.get("/api/settings").json() == saved
+
+
+@pytest.mark.parametrize("bad, message", [({"cluster_min_size": 1}, "from 2 to 20"),
+                                          ({"cluster_min_size": 21}, "from 2 to 20"),
+                                          ({"cluster_min_size": 2.5}, None),
+                                          ({"wide_spread_action": "lowest"}, "flag, highest_group")])
+def test_settings_reject_invalid_values_and_keep_the_saved_ones(restore_settings, bad, message):
+    saved = {"cluster_min_size": 4, "wide_spread_action": "highest_group"}
+    with TestClient(app) as c:
+        assert c.put("/api/settings", json=saved).status_code == 200
+        r = c.put("/api/settings", json={**saved, **bad})
+        assert r.status_code == 422
+        if message:
+            assert isinstance(r.json()["detail"], str) and message in r.json()["detail"]
+        assert c.get("/api/settings").json() == saved
+
+
+def test_price_clusters_minimum_group_size():
+    from app.services.pricing import price_clusters
+    assert [g.count for g in price_clusters([3, 3.2, 3.5, 3.8, 400, 500, 700, 900])] == [4, 4]
+    assert price_clusters([3, 3.2, 3.5, 3.8, 400, 500, 700, 900], min_size=5) == []
+    assert [g.count for g in price_clusters([3, 3.2, 400, 500, 700, 900], min_size=2)] == [2, 4]
+    assert price_clusters([3, 3.2, 400, 500, 700, 900], min_size=3) == []
+
+
+def test_price_clusters_endpoint_uses_the_saved_minimum_group_size(restore_settings):
+    from sqlmodel import Session
+    from app.db import engine
+    from app.models import ListingSeen
+    with TestClient(app) as c:
+        card = _mk(c, name="Group Size Clusters", grade="PSA 10", price=_quote(spread=1.96, grade="PSA 10"))
+        c.patch(f"/api/cards/{card['id']}", json={"parallel": "Green /99"})
+        rows = [(f"ok{n}", p, {}) for n, p in enumerate([3, 3.2, 3.5, 3.8, 400, 500, 700, 900])]
+        for n in range(2):
+            rows += [(f"raw{n}", 50, {"grade": "Raw"}), (f"excl{n}", 50, {"excluded": True}),
+                     (f"red{n}", 51, {"title": "Group Size Clusters Red /49 PSA 10"}),
+                     (f"junk{n}", 52, {"title": "Group Size Clusters Green /99 PSA 10 lot"}),
+                     (f"gone{n}", 53, {"status": "gone"})]
+        with Session(engine) as session:
+            for item_id, p, kw in rows:
+                session.add(ListingSeen(**{"card_id": card["id"], "item_id": f"{card['id']}-{item_id}", "grade": "PSA 10",
+                                           "title": "Group Size Clusters Green /99 PSA 10", "price": p, **kw}))
+            session.commit()
+        got = c.get(f"/api/cards/{card['id']}/price-clusters").json()
+        assert [(g["count"], g["low"], g["high"]) for g in got] == [(4, 3, 3.8), (4, 400, 900)]
+        assert c.put("/api/settings", json={**DEFAULT_SETTINGS, "cluster_min_size": 5}).status_code == 200
+        assert c.get(f"/api/cards/{card['id']}/price-clusters").json() == []
+
+
+def _spread_card(c, name):
+    """A flagged Raw card with saved listings in two clear price groups: 3 to 3.8 and 400 to 900 (median 600)."""
+    from sqlmodel import Session
+    from app.db import engine
+    from app.models import ListingSeen
+    card = _mk(c, name=name, grade="Raw", price=_quote(spread=1.96, grade="Raw"))
+    assert card["wide_spread"] is True
+    with Session(engine) as session:
+        for n, p in enumerate([3, 3.2, 3.5, 3.8, 400, 500, 700, 900]):
+            session.add(ListingSeen(card_id=card["id"], item_id=f"{card['id']}-l{n}", grade="Raw", title=f"{name} l{n}",
+                                    price=p))
+        session.commit()
+    return card
+
+
+def _reprice_from_saved(c, card):
+    """Untick a listing that was never ticked: re-prices the card from its saved listings, still too spread out."""
+    out = c.post(f"/api/cards/{card['id']}/matches/exclude", json={"item_ids": [f"{card['id']}-l0"], "excluded": False})
+    assert out.status_code == 200 and out.json()["snapshot"]["spread"] > 1.0
+    return c.get(f"/api/cards/{card['id']}").json()
+
+
+def test_highest_group_values_a_wide_spread_card_when_listings_are_ticked(restore_settings):
+    with TestClient(app) as c:
+        assert c.put("/api/settings", json=HIGHEST_GROUP).status_code == 200
+        card = _spread_card(c, "Group Untick")
+        before = c.get("/api/cards/stats").json()
+        got = _reprice_from_saved(c, card)
+        assert got["est_value"] == 600 and got["wide_spread"] is False and got["spread_rule"] == "highest_group"
+        assert got["value"] == 600 and got["value_basis"] == "asking"
+        after = c.get("/api/cards/stats").json()
+        assert after["asking_value"] == pytest.approx(before["asking_value"] + 600)
+        assert after["total_value"] == pytest.approx(before["total_value"] + 600)
+        assert after["flagged_cards"] == before["flagged_cards"] - 1
+
+
+def test_highest_group_falls_back_to_the_flag_when_no_groups_are_found(restore_settings):
+    with TestClient(app) as c:
+        assert c.put("/api/settings", json={**HIGHEST_GROUP, "cluster_min_size": 5}).status_code == 200
+        got = _reprice_from_saved(c, _spread_card(c, "Group Fallback"))
+        assert got["wide_spread"] is True and got["est_value"] is None and got["spread_rule"] is None
+
+
+def test_default_settings_still_flag_a_wide_spread_card():
+    with TestClient(app) as c:
+        assert c.get("/api/settings").json() == DEFAULT_SETTINGS
+        got = _reprice_from_saved(c, _spread_card(c, "Group Default"))
+        assert got["wide_spread"] is True and got["est_value"] is None and got["spread_rule"] is None
+
+
+def _fake_quote_grades(quote, prefix, extra=()):
+    """A quote_grades stand-in: one Raw quote from `quote` (median, spread), and Raw listings in two price groups
+    (3 to 3.8 and 400 to 900, median 600) plus `extra` listings."""
+    from app.models import PriceQuote
+    from app.services.ebay import EbayItem
+    from app.services.pricing import Priced
+
+    async def fake(query, grades, image=None, **kw):
+        q = PriceQuote(query=query, grade="Raw", sample_size=8, low=3, median=quote["median"], mean=300, high=900,
+                       spread=quote["spread"])
+        items = [EbayItem(item_id=f"{prefix}-{n}", title=f"{prefix} CRA-JMI Green /99", price=p)
+                 for n, p in enumerate([3, 3.2, 3.5, 3.8, 400, 500, 700, 900])]
+        items += [EbayItem(item_id=f"{prefix}-x{n}", title=t, price=p) for n, (t, p) in enumerate(extra)]
+        return Priced([q], {"Raw": len(items)}, [], {"Raw": items}, [], "ebay-active")
+    return fake
+
+
+def test_highest_group_on_reprice(monkeypatch, restore_settings):
+    import asyncio
+
+    from app.services import refresh
+    monkeypatch.setattr(refresh, "quote_grades", _fake_quote_grades({"median": 201.9, "spread": 1.9}, "group-reprice"))
+    with TestClient(app) as c:
+        assert c.put("/api/settings", json=HIGHEST_GROUP).status_code == 200
+        card = _mk(c, name="Group Reprice", grade="Raw")
+        before = c.get("/api/cards/stats").json()
+        asyncio.run(refresh.reprice_card(card["id"], "q", "Raw", ["Raw"], None, None))
+        got = c.get(f"/api/cards/{card['id']}").json()
+        assert got["est_value"] == 600 and got["wide_spread"] is False and got["spread_rule"] == "highest_group"
+        assert got["value"] == 600 and got["value_basis"] == "asking"
+        after = c.get("/api/cards/stats").json()
+        assert after["total_value"] == pytest.approx(before["total_value"] + 600)
+        assert after["asking_value"] == pytest.approx(before["asking_value"] + 600)
+        assert after["flagged_cards"] == before["flagged_cards"]
+
+
+def test_a_group_value_is_replaced_by_the_next_pricing(monkeypatch, restore_settings):
+    import asyncio
+
+    from app.services import refresh
+    quote = {"median": 201.9, "spread": 1.9}
+    monkeypatch.setattr(refresh, "quote_grades", _fake_quote_grades(quote, "group-next"))
+    with TestClient(app) as c:
+        assert c.put("/api/settings", json=HIGHEST_GROUP).status_code == 200
+        card = _mk(c, name="Group Next", grade="Raw")
+        reprice = lambda: asyncio.run(refresh.reprice_card(card["id"], "q", "Raw", ["Raw"], None, None))  # noqa: E731
+        reprice()
+        assert c.get(f"/api/cards/{card['id']}").json()["spread_rule"] == "highest_group"
+        quote.update(median=123.0, spread=0.5)  # within MAX_PRICE_SPREAD: the plain median
+        reprice()
+        got = c.get(f"/api/cards/{card['id']}").json()
+        assert got["est_value"] == 123 and got["wide_spread"] is False and got["spread_rule"] is None
+        quote.update(median=201.9, spread=1.9)
+        reprice()
+        assert c.get(f"/api/cards/{card['id']}").json()["spread_rule"] == "highest_group"
+        assert c.put("/api/settings", json=DEFAULT_SETTINGS).status_code == 200
+        reprice()
+        got = c.get(f"/api/cards/{card['id']}").json()
+        assert got["wide_spread"] is True and got["est_value"] is None and got["spread_rule"] is None
+
+
+def test_highest_group_on_refresh_value_uses_only_the_asking_listings(monkeypatch, restore_settings):
+    from sqlmodel import Session
+    from app.db import engine
+    from app.models import ListingSeen
+    from app.routers import ebay
+    p = "group-refresh"
+    # Two of each at ~$5,000: any that leaked into the groups would form the highest group.
+    extra = [(f"{p} CRA-JMI Green /99", 5000), (f"{p} CRA-JMI Green /99", 5100),  # excluded below
+             (f"{p} CRA-JMI Red /49", 5000), (f"{p} CRA-JMI Red /49", 5100),  # another version
+             (f"{p} CRA-XYZ Green /99", 5000), (f"{p} CRA-XYZ Green /99", 5100),  # another card code
+             (f"{p} CRA-JMI Green /99 lot", 5000), (f"{p} CRA-JMI Green /99 lot", 5100)]  # junk
+    monkeypatch.setattr(ebay, "quote_grades", _fake_quote_grades({"median": 201.9, "spread": 1.9}, p, extra))
+    with TestClient(app) as c:
+        assert c.put("/api/settings", json=HIGHEST_GROUP).status_code == 200
+        card = _mk(c, name="Group Refresh", grade="Raw", card_number="CRA-JMI")
+        c.patch(f"/api/cards/{card['id']}", json={"parallel": "Green /99"})
+        with Session(engine) as session:
+            for n in range(2):
+                session.add(ListingSeen(card_id=card["id"], item_id=f"{p}-x{n}", grade="Raw", title=extra[n][0],
+                                        price=extra[n][1], excluded=True))
+            session.commit()
+        assert c.post(f"/api/cards/{card['id']}/price").status_code == 200
+        got = c.get(f"/api/cards/{card['id']}").json()
+        assert got["est_value"] == 600 and got["wide_spread"] is False and got["spread_rule"] == "highest_group"
+
+
+@pytest.mark.parametrize("rule, value", [("lowest_group", 3.35), ("median", "snapshot")])
+def test_lowest_group_and_median_rules_value_a_wide_spread_card(restore_settings, rule, value):
+    with TestClient(app) as c:
+        assert c.put("/api/settings", json={**DEFAULT_SETTINGS, "wide_spread_action": rule}).json()["wide_spread_action"] == rule
+        card = _spread_card(c, f"Rule {rule}")
+        got = _reprice_from_saved(c, card)
+        if value == "snapshot":  # the median of all the listings, as the quote has it
+            value = c.get(f"/api/cards/{card['id']}/prices").json()[0]["median"]
+        assert got["est_value"] == value and got["wide_spread"] is False and got["spread_rule"] == rule
+        assert got["value_basis"] == "asking"
+
+
+def test_a_cards_own_rule_overrides_the_default_and_applies_at_once(restore_settings):
+    with TestClient(app) as c:
+        card = _spread_card(c, "Rule Override")
+        assert _reprice_from_saved(c, card)["wide_spread"] is True  # the default flags it
+        url = f"/api/cards/{card['id']}"
+        got = c.patch(url, json={"wide_spread_action": "highest_group"}).json()
+        assert got["wide_spread_action"] == "highest_group" and got["est_value"] == 600 and got["spread_rule"] == "highest_group"
+        got = c.patch(url, json={"wide_spread_action": "lowest_group"}).json()
+        assert got["est_value"] == 3.35 and got["spread_rule"] == "lowest_group" and got["wide_spread"] is False
+        # the card's own choice wins over the saved default, also at the next pricing
+        assert c.put("/api/settings", json={**DEFAULT_SETTINGS, "wide_spread_action": "highest_group"}).status_code == 200
+        got = c.patch(url, json={"wide_spread_action": "flag"}).json()
+        assert got["wide_spread"] is True and got["est_value"] is None and got["spread_rule"] is None
+        assert _reprice_from_saved(c, card)["wide_spread"] is True
+        # null goes back to the saved default
+        got = c.patch(url, json={"wide_spread_action": None}).json()
+        assert got["wide_spread_action"] is None and got["est_value"] == 600 and got["spread_rule"] == "highest_group"
+
+
+def test_a_cards_own_rule_must_be_a_known_one():
+    with TestClient(app) as c:
+        card = _mk(c, name="Rule Unknown")
+        assert c.patch(f"/api/cards/{card['id']}", json={"wide_spread_action": "sometimes"}).status_code == 422
+        assert c.get(f"/api/cards/{card['id']}").json()["wide_spread_action"] is None
