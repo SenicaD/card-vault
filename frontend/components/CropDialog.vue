@@ -13,6 +13,10 @@ const pts = ref<Pt[]>(fresh())
 const stage = ref<HTMLElement | null>(null)
 const NAMES = ['Top left', 'Top right', 'Bottom right', 'Bottom left']
 let drag: { i: number | 'all'; sx: number; sy: number; start: Pt[] } | null = null
+// The spyglass: while a corner is held, a magnified circle shows the spot under it, offset so a finger doesn't hide it.
+const LOUPE = 130, ZOOM = 4
+const active = ref<number | null>(null)
+const size = ref({ w: 1, h: 1 })
 
 watch(() => props.modelValue, (open) => { if (open) pts.value = fresh() })
 
@@ -22,6 +26,8 @@ function down(e: PointerEvent, i: number | 'all') {
   e.preventDefault()
   ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
   drag = { i, sx: e.clientX, sy: e.clientY, start: pts.value.map((p) => ({ ...p })) }
+  if (stage.value) { const r = stage.value.getBoundingClientRect(); size.value = { w: r.width, h: r.height } }
+  active.value = i === 'all' ? null : i
 }
 function move(e: PointerEvent) {
   if (!drag || !stage.value) return
@@ -38,7 +44,22 @@ function move(e: PointerEvent) {
     pts.value = pts.value.map((p, k) => (k === drag!.i ? { x: clamp(s.x + dx), y: clamp(s.y + dy) } : p))
   }
 }
-const up = () => { drag = null }
+const up = () => { drag = null; active.value = null }
+
+const loupe = computed(() => {
+  const i = active.value
+  if (i === null) return null
+  const { w, h } = size.value, p = pts.value[i]
+  const px = p.x * w, py = p.y * h
+  let left = Math.min(Math.max(px - LOUPE / 2, 0), Math.max(0, w - LOUPE))
+  let top = py - LOUPE - 36 // above the corner; below it when there is no room
+  if (top < 0) top = Math.min(py + 36, Math.max(0, h - LOUPE))
+  return {
+    left: `${left}px`, top: `${top}px`, width: `${LOUPE}px`, height: `${LOUPE}px`,
+    backgroundImage: `url("${props.src}")`, backgroundSize: `${w * ZOOM}px ${h * ZOOM}px`,
+    backgroundPosition: `${LOUPE / 2 - px * ZOOM}px ${LOUPE / 2 - py * ZOOM}px`,
+  }
+})
 
 const pct = (v: number) => `${(v * 100).toFixed(2)}`
 const outline = computed(() => pts.value.map((p) => `${pct(p.x)},${pct(p.y)}`).join(' '))
@@ -60,7 +81,7 @@ function apply() {
       <div class="card-head">
         <div>
           <h2><v-icon icon="mdi-crop" size="18" />Crop to the card</h2>
-          <p>Drag each corner onto a corner of the card. A tilted card gets straightened.</p>
+          <p>Drag each corner onto a corner of the card; a magnifier shows the exact spot. A tilted card gets straightened.</p>
         </div>
         <v-btn icon="mdi-close" variant="text" size="small" aria-label="Close" @click="emit('update:modelValue', false)" />
       </div>
@@ -73,6 +94,7 @@ function apply() {
           </svg>
           <span v-for="(p, i) in pts" :key="i" class="handle" role="slider" :aria-label="NAMES[i] + ' corner'"
             :style="{ left: p.x * 100 + '%', top: p.y * 100 + '%' }" @pointerdown.stop="down($event, i)" />
+          <div v-if="loupe" class="loupe" :style="loupe" aria-hidden="true"><span class="cross-h" /><span class="cross-v" /></div>
         </div>
       </v-card-text>
       <v-divider />
@@ -90,4 +112,8 @@ function apply() {
 .stage img { max-width: 100%; max-height: 62vh; display: block; border-radius: 6px; }
 .overlay { position: absolute; inset: 0; width: 100%; height: 100%; cursor: move; touch-action: none; }
 .handle { position: absolute; width: 28px; height: 28px; margin: -14px 0 0 -14px; background: rgb(var(--v-theme-primary)); border: 2px solid #fff; border-radius: 50%; touch-action: none; cursor: grab; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4); }
+.loupe { position: absolute; border-radius: 50%; border: 3px solid #fff; box-shadow: 0 2px 10px rgba(0, 0, 0, 0.55); background-repeat: no-repeat; background-color: #000; pointer-events: none; overflow: hidden; }
+.loupe span { position: absolute; background: rgb(var(--v-theme-primary)); }
+.cross-h { left: 0; right: 0; top: 50%; height: 1px; }
+.cross-v { top: 0; bottom: 0; left: 50%; width: 1px; }
 </style>
