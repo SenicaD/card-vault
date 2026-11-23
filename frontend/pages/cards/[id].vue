@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useDisplay } from 'vuetify'
-import { CATEGORY_LABELS, type Card, type CardFields, type Listing, type Location, type MatchRow, type SimilarityResult, type PricePoints, type SoldCompare, type PriceResult, type PriceSnapshot, type Sale, type Trend, type TrendRange } from '~/types'
+import { CATEGORY_LABELS, type Card, type CardFields, type Listing, type Location, type MatchRow, type PriceCluster, type SimilarityResult, type PricePoints, type SoldCompare, type PriceResult, type PriceSnapshot, type Sale, type Trend, type TrendRange } from '~/types'
 
 const { api } = useApi()
 const { xs } = useDisplay()
@@ -318,6 +318,13 @@ const toggleInclude = (m: MatchRow) => run('exclude', async () => {
   await loadMatches()
 })
 
+// The price groups behind a "prices vary too widely" flag, refetched whenever the card is reloaded or changed.
+const clusters = ref<PriceCluster[]>([])
+watch(card, async (c) => {
+  const got = c?.wide_spread ? await api<PriceCluster[]>(`/api/cards/${id}/price-clusters`).catch(() => []) : []
+  if (card.value === c) clusters.value = got // a newer reload wins
+})
+
 const rankByLook = () => run('rank', async () => {
   const res = await api<SimilarityResult>(`/api/cards/${id}/matches/similarity`, { method: 'POST', body: { grades: selectedGrades.value } })
   scores.value = res.scores
@@ -529,6 +536,12 @@ onMounted(() => {
                 </v-alert>
                 <v-alert v-if="card.wide_spread" type="warning" variant="tonal" density="compact" class="mt-3" icon="mdi-chart-bell-curve">
                   No asking value is shown because these listings vary too much<template v-if="latest?.spread != null"> (the middle half spans {{ Math.round(latest.spread * 100) }}% of the median)</template>. Picking your version above, or unticking listings that aren't this card in the listings table, clears this and brings the asking value back.
+                  <template v-if="clusters.length">
+                    <div v-for="(g, i) in clusters" :key="i" class="mt-1">
+                      ~{{ money(g.median) }} · {{ money(g.low) }}–{{ money(g.high) }} · {{ g.count }} {{ g.count === 1 ? 'listing' : 'listings' }}<template v-if="g.versions.length"> · {{ g.versions[0].name }}</template>
+                    </div>
+                    <div class="mt-1">Pick your version above, or untick the listings that aren't yours in the listings table.</div>
+                  </template>
                 </v-alert>
                 <v-alert v-else-if="latest && !card.parallel && (latest.spread ?? 0) >= 0.8" type="warning" variant="tonal" density="compact" class="mt-3" icon="mdi-chart-bell-curve">
                   These prices vary a lot (the middle half spans {{ Math.round((latest.spread ?? 0) * 100) }}% of the median), which usually means several versions of this card are mixed together. Pick your version above, or use the listings table to leave out ones that aren't yours.
