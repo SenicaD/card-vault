@@ -79,7 +79,8 @@ onMounted(load)
               style="max-width: 360px"
             />
             <div>
-              <v-radio-group v-model="action" label="When prices spread too widely, by default" :disabled="loading" hide-details>
+              <div id="wide-spread-label" class="text-body-2 font-weight-medium mb-1">When prices spread too widely, by default</div>
+              <v-radio-group v-model="action" aria-labelledby="wide-spread-label" :disabled="loading" hide-details>
                 <v-radio v-for="a in WIDE_SPREAD_ACTIONS" :key="a.value" :value="a.value" class="mb-2">
                   <template #label>
                     <div>
