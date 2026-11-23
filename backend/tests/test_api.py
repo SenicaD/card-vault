@@ -1212,6 +1212,7 @@ def test_sold_compare_asking_vs_gone():
         g = r["grades"][0]
         assert g["grade"] == "PSA 10" and g["asking_median"] == 110 and g["asking_count"] == 2
         assert g["sold_median"] == 85 and g["sold_count"] == 2  # the 300-day-old one is outside the window
+        assert g["sold_source"] == "estimated" and g["sold_left_out"] == 0
         assert g["gap"] == -25 and g["gap_pct"] == -22.7 and g["days_median"] == 8
         assert len(r["rows"]) == 2 and r["rows"][0]["days_listed"] == 8 and r["source"] == "estimated"
         assert len(c.get(f"/api/cards/{card['id']}/sold-compare", params={"days": 0}).json()["rows"]) == 3
@@ -1462,7 +1463,40 @@ def test_sold_compare_median_trims_outliers_like_sold_refresh(monkeypatch):
         assert g["sold_source"] == "sold"
         assert g["sold_median"] == out["median"] == out["sold_value"] == c.get(f"/api/cards/{card['id']}").json()["sold_value"]
         assert g["sold_median"] == 13.5 and g["sold_median"] != median(prices) == 14  # the outlier is trimmed, as in the sold value
-        assert g["sold_count"] == 9  # every real sale is counted, trimmed or not
+        assert g["sold_count"] == 8 and g["sold_left_out"] == 1  # the count is the sales the median used
+        assert g["sold_count"] == c.get(f"/api/cards/{card['id']}").json()["sold_count"]
+
+
+def test_scatter_and_portfolio_history_agree_on_the_trimmed_sold_median(monkeypatch):
+    from statistics import median
+
+    from sqlmodel import Session
+
+    from app.config import get_settings
+    from app.db import engine
+    from app.models import Card, utcnow
+    from app.routers.portfolio import _sales_history, _sold_at
+    from app.services import sold_refresh
+    s = get_settings()
+    monkeypatch.setattr(s, "sold_monthly_budget", 50)
+    prices = [10, 11, 12, 13, 14, 15, 16, 17, 500]  # the $500 sale is far outside the others
+    page = [_sale(i, "Agree Card", p, i + 1) for i, p in enumerate(prices)]
+    monkeypatch.setattr(sold_refresh, "get_sold", lambda: _FakeSold([page]))
+    with TestClient(app) as c:
+        card = c.post("/api/cards", json={"name": "Agree Card", "category": "sports", "grade": "Raw"}).json()
+        cid = card["id"]
+        c.post(f"/api/cards/{cid}/sold/refresh")
+        sold_value = c.get(f"/api/cards/{cid}").json()["sold_value"]
+        pts = c.get(f"/api/cards/{cid}/price-points").json()
+        g = next(x for x in c.get(f"/api/cards/{cid}/sold-compare").json()["grades"] if x["grade"] == "Raw")
+        with Session(engine) as session:
+            k = session.get(Card, cid)
+            hist = _sold_at(_sales_history(session, [k])[cid], utcnow().date(), s.sold_window_days, s.sold_min_sales)
+        assert sold_value == pts["sold_median"] == g["sold_median"] == hist
+        assert hist == 13.5 and hist != median(prices) == 14  # the outlier is trimmed everywhere
+        assert pts["sold_count"] == 9  # the scatter still counts every sale it plots
+        empty = c.get(f"/api/cards/{cid}/price-points", params={"grade": "PSA 10"}).json()
+        assert empty["sold_median"] is None and empty["sold_count"] == 0
 
 
 def test_paging_back_only_when_there_may_be_a_gap(monkeypatch):

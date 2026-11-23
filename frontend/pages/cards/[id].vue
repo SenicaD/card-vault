@@ -674,7 +674,7 @@ onMounted(() => {
                     <tr v-for="g in sold.grades" :key="g.grade">
                       <td class="text-no-wrap">{{ g.grade }}</td>
                       <td class="text-right num">{{ money(g.asking_median) }}<span class="text-muted-c text-caption"> ({{ g.asking_count }})</span></td>
-                      <td class="text-right num">{{ money(g.sold_median) }}<span v-if="g.sold_count" class="text-muted-c text-caption"> ({{ g.sold_count }}{{ g.sold_source === 'estimated' ? ', likely' : '' }})</span></td>
+                      <td class="text-right num">{{ money(g.sold_median) }}<span v-if="g.sold_count" class="text-muted-c text-caption"> ({{ g.sold_count }}{{ g.sold_left_out > 0 ? `, ${g.sold_left_out} left out` : g.sold_source === 'estimated' ? ', likely' : '' }})</span></td>
                       <td class="text-right num text-no-wrap" :class="g.gap == null ? '' : g.gap < 0 ? 'text-error' : 'text-success'">
                         <template v-if="g.gap != null">{{ g.gap < 0 ? '−' : '+' }}{{ money(Math.abs(g.gap)) }} ({{ pctText(g.gap_pct) }})</template><template v-else>—</template>
                       </td>
