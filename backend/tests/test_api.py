@@ -2368,3 +2368,76 @@ def test_flagged_card_keeps_its_manual_value():
         card = _mk(c, name="Spread Manual", manual_value=42.0, price=_quote(spread=1.96))
         assert card["wide_spread"] is True and card["est_value"] is None
         assert card["value"] == 42.0 and card["value_basis"] == "manual"
+
+
+def test_price_clusters_split_two_well_separated_groups():
+    from app.services.pricing import price_clusters
+    got = price_clusters([3, 3.2, 3.5, 3.8, 400, 500, 700, 900])
+    assert [(g.count, g.low, g.high, g.median) for g in got] == [(4, 3, 3.8, 3.35), (4, 400, 900, 600)]
+
+
+def test_price_clusters_come_back_cheapest_first_with_input_positions():
+    from app.services.pricing import price_clusters
+    prices = [700, 3.5, 400, 3, 900, 3.8, 500, 3.2]
+    got = price_clusters(prices)
+    assert [(g.low, g.high) for g in got] == [(3, 3.8), (400, 900)]
+    assert sorted(got[0].members) == [1, 3, 5, 7] and sorted(got[1].members) == [0, 2, 4, 6]
+
+
+def test_price_clusters_tightly_packed_prices_give_no_groups():
+    from app.services.pricing import price_clusters
+    assert price_clusters([10, 11, 12, 13, 14, 15]) == []
+
+
+def test_price_clusters_leave_strays_out():
+    from app.services.pricing import price_clusters
+    assert price_clusters([3, 400, 500, 700, 900]) == []
+    prices = [3, 3.2, 3.5, 3.8, 50, 400, 500, 700, 900]
+    got = price_clusters(prices)
+    assert [g.count for g in got] == [4, 4]
+    assert all(4 not in g.members for g in got)
+
+
+def test_price_clusters_need_enough_prices():
+    from app.services.pricing import price_clusters
+    assert price_clusters([3, 400, 500]) == []
+    assert price_clusters([]) == []
+    assert price_clusters([0, -1, 3, 400, 500]) == []
+
+
+def test_price_clusters_merge_the_closest_groups_down_to_the_cap():
+    from app.services.pricing import price_clusters
+    got = price_clusters([1, 1.1, 4, 4.4, 20, 22, 110, 120, 700, 750])
+    assert [(g.low, g.high, g.count) for g in got] == [(1, 4.4, 4), (20, 22, 2), (110, 120, 2), (700, 750, 2)]
+
+
+def test_price_clusters_endpoint_groups_only_the_listings_that_price_the_asking_value():
+    from sqlmodel import Session
+    from app.db import engine
+    from app.models import ListingSeen
+    with TestClient(app) as c:
+        card = _mk(c, name="Spread Clusters", grade="PSA 10", price=_quote(spread=1.96, grade="PSA 10"))
+        assert card["wide_spread"] is True
+        c.patch(f"/api/cards/{card['id']}", json={"parallel": "Green /99"})
+        rows = [(f"ok{n}", p, {}) for n, p in enumerate([3, 3.2, 3.5, 3.8, 400, 500, 700, 900])]
+        for n in range(2):  # noise at ~$50: any leak would form its own group
+            rows += [(f"raw{n}", 50, {"grade": "Raw"}), (f"excl{n}", 50, {"excluded": True}),
+                     (f"red{n}", 51, {"title": "Spread Clusters Red /49 PSA 10"}),
+                     (f"junk{n}", 52, {"title": "Spread Clusters Green /99 PSA 10 lot"}),
+                     (f"gone{n}", 53, {"status": "gone"})]
+        with Session(engine) as session:
+            for item_id, p, kw in rows:
+                session.add(ListingSeen(**{"card_id": card["id"], "item_id": f"{card['id']}-{item_id}", "grade": "PSA 10",
+                                           "title": "Spread Clusters Green /99 PSA 10", "price": p, **kw}))
+            session.commit()
+        got = c.get(f"/api/cards/{card['id']}/price-clusters").json()
+        assert [(g["count"], g["low"], g["high"]) for g in got] == [(4, 3, 3.8), (4, 400, 900)]
+        assert all(g["versions"][0] == {"name": "Green /99", "count": 4} for g in got)
+
+
+def test_price_clusters_endpoint_unknown_card_and_no_listings():
+    with TestClient(app) as c:
+        assert c.get("/api/cards/999999/price-clusters").status_code == 404
+        card = _mk(c, name="Spread Clusters Empty")
+        r = c.get(f"/api/cards/{card['id']}/price-clusters")
+        assert r.status_code == 200 and r.json() == []

@@ -89,6 +89,48 @@ def summarize_ex(items: list[EbayItem]) -> tuple[dict, list[EbayItem], dict | No
     ), dropped, fences)
 
 
+CLUSTER_GAP_RATIO = 2.5  # split where the next price is at least this many times the one before it
+CLUSTER_MIN_SIZE = 2  # a smaller group is a stray: left out, not shown and not counted
+CLUSTER_MAX = 4  # the most groups returned
+CLUSTER_MIN_PRICES = 4  # with fewer usable prices there are no groups
+
+
+class PriceCluster(NamedTuple):
+    median: float  # rounded to 2 places
+    low: float
+    high: float
+    count: int
+    members: list[int]  # positions in the input list
+
+
+def price_clusters(prices: list[float]) -> list[PriceCluster]:
+    """Split listing prices into groups, cheapest first, so a card mixing several versions shows each one's price.
+
+    Prices of 0 or less are ignored; with fewer than CLUSTER_MIN_PRICES left there are no groups. The sorted prices
+    are split wherever a price is at least CLUSTER_GAP_RATIO times the one before it, and groups of fewer than
+    CLUSTER_MIN_SIZE listings are dropped as strays. While more than CLUSTER_MAX groups remain, the two neighbouring
+    groups closest in price (the higher one's low divided by the lower one's high; the cheaper pair on a tie) are
+    merged. Fewer than 2 groups means there is nothing to tell apart, so [] is returned.
+    """
+    order = sorted((i for i, p in enumerate(prices) if p > 0), key=lambda i: prices[i])
+    if len(order) < CLUSTER_MIN_PRICES:
+        return []
+    groups = [[order[0]]]
+    for a, b in zip(order, order[1:]):
+        if prices[b] >= CLUSTER_GAP_RATIO * prices[a]:
+            groups.append([b])
+        else:
+            groups[-1].append(b)
+    groups = [g for g in groups if len(g) >= CLUSTER_MIN_SIZE]
+    while len(groups) > CLUSTER_MAX:
+        k = min(range(len(groups) - 1), key=lambda k: prices[groups[k + 1][0]] / prices[groups[k][-1]])
+        groups[k:k + 2] = [groups[k] + groups[k + 1]]
+    if len(groups) < 2:
+        return []
+    return [PriceCluster(round(statistics.median(prices[i] for i in g), 2), prices[g[0]], prices[g[-1]], len(g), g)
+            for g in groups]
+
+
 async def quote(query: str) -> tuple[PriceQuote, list[EbayItem]]:
     """Search active eBay listings and summarise them. Returns the quote and the cheapest 25 comps."""
     comps = await get_ebay().search_active(query)
