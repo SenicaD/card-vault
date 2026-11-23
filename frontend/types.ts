@@ -34,7 +34,7 @@ export interface Card extends CardFields {
   reviewed?: boolean
   wide_spread?: boolean // asking prices spread too widely to give an asking value
   wide_spread_action?: WideSpreadAction | null // this card's own choice when prices spread too widely; null follows the Settings page
-  spread_rule?: Exclude<WideSpreadAction, 'flag'> | null // the rule that set the asking value because prices spread too widely
+  spread_rule?: Exclude<WideSpreadAction, 'flag'> | null // the window rule that set the asking value
   sold_value?: number | null // what it sold for (median of recent sales), beside the asking-based estimate
   sold_count?: number
   sold_low?: number | null
@@ -144,7 +144,7 @@ const windowHint = (rule: Exclude<WideSpreadAction, 'flag'>) => (n: number) => {
   return `${text[0].toUpperCase()}${text.slice(1)}, after outliers are left out.${n > 1 ? ` With ${n} or fewer listings, the median of all of them.` : ''}`
 }
 export const WIDE_SPREAD_ACTIONS: { value: WideSpreadAction; title: string; hint: (n: number) => string }[] = [
-  { value: 'flag', title: 'Flag the card and leave it unvalued', hint: () => 'The card shows a "wide spread" warning and gets no asking value until you pick its version or untick listings.' },
+  { value: 'flag', title: 'Median of all listings, flag wide spreads', hint: () => 'The median of every listing. If prices spread too widely the card shows a "wide spread" warning and gets no asking value until you pick its version or untick listings.' },
   { value: 'highest_group', title: 'Highest', hint: windowHint('highest_group') },
   { value: 'median', title: 'Median', hint: windowHint('median') },
   { value: 'lowest_group', title: 'Lowest', hint: windowHint('lowest_group') },

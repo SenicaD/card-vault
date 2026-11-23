@@ -2795,10 +2795,10 @@ def test_a_group_value_is_replaced_by_the_next_pricing(monkeypatch, restore_sett
         reprice = lambda: asyncio.run(refresh.reprice_card(card["id"], "q", "Raw", ["Raw"], None, None))  # noqa: E731
         reprice()
         assert c.get(f"/api/cards/{card['id']}").json()["spread_rule"] == "highest_group"
-        quote.update(median=123.0, spread=0.5)  # within MAX_PRICE_SPREAD: the plain median
+        quote.update(median=123.0, spread=0.5)  # within MAX_PRICE_SPREAD: the window still applies to every card
         reprice()
         got = c.get(f"/api/cards/{card['id']}").json()
-        assert got["est_value"] == 123 and got["wide_spread"] is False and got["spread_rule"] is None
+        assert got["wide_spread"] is False and got["spread_rule"] == "highest_group" and got["est_value"] == 700
         quote.update(median=201.9, spread=1.9)
         reprice()
         assert c.get(f"/api/cards/{card['id']}").json()["spread_rule"] == "highest_group"
@@ -2918,3 +2918,10 @@ def test_matches_flag_the_listings_the_wide_spread_rule_prices_from(restore_sett
         c.post("/api/cards/bulk/revalue")
         rows = c.get(f"/api/cards/{card['id']}/matches").json()
         assert sorted(r["price"] for r in rows if r["in_window"]) == [500, 700, 900]
+
+
+def test_flag_rule_values_a_card_within_the_spread_from_all_its_listings(restore_settings):
+    with TestClient(app) as c:
+        assert c.put("/api/settings", json=DEFAULT_SETTINGS).status_code == 200
+        card = _mk(c, name="Flag Narrow", grade="Raw", price=_quote(spread=0.5, grade="Raw"))
+        assert card["wide_spread"] is False and card["spread_rule"] is None and card["est_value"] is not None

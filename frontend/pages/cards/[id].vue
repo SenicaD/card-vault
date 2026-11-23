@@ -604,12 +604,12 @@ onMounted(() => {
                   </template>
                 </v-alert>
                 <v-alert v-else-if="card.spread_rule" type="info" variant="tonal" density="compact" class="mt-3" icon="mdi-chart-bell-curve">
-                  These listings' prices vary too widely<template v-if="latest?.spread != null"> (the middle half spans {{ Math.round(latest.spread * 100) }}% of the median)</template>, so the asking value of {{ money(card.est_value) }}<template v-if="ruleText"> is {{ ruleText }}</template>, {{ card.wide_spread_action ? 'as chosen for this card below' : 'the default on the Settings page' }}.
+                  The asking value of {{ money(card.est_value) }}<template v-if="ruleText"> is {{ ruleText }}</template>, {{ card.wide_spread_action ? 'the rule chosen for this card below' : 'the default on the Settings page' }}.<template v-if="latest?.spread != null"> The middle half of the prices spans {{ Math.round(latest.spread * 100) }}% of the median.</template>
                   <div v-if="windowCounts.used" class="mt-1 font-weight-medium">{{ windowCounts.used }} of the {{ windowCounts.all }} listings counted set this value (outliers and the rest are left out); they're marked in the listings table.</div>
                   <template v-if="ruleText"> This uses the current "Listings to price from" setting; if you changed it after this card was priced, the value updates the next time it's priced.</template>
-                  <div v-for="(g, i) in clusters" :key="i" class="mt-1">
+                  <template v-if="(latest?.spread ?? 0) >= 0.8"><div v-for="(g, i) in clusters" :key="i" class="mt-1">
                     ~{{ money(g.median) }} · {{ money(g.low) }}–{{ money(g.high) }} · {{ g.count }} {{ g.count === 1 ? 'listing' : 'listings' }}<template v-if="g.versions.length"> · {{ g.versions[0].name }}</template>
-                  </div>
+                  </div></template>
                   <div class="mt-1">If that's not your card, pick your version above, or untick the listings that aren't yours in the listings table.</div>
                 </v-alert>
                 <v-alert v-else-if="latest && !card.parallel && (latest.spread ?? 0) >= 0.8" type="warning" variant="tonal" density="compact" class="mt-3" icon="mdi-chart-bell-curve">

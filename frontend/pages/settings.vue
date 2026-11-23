@@ -72,7 +72,7 @@ onMounted(load)
   <div>
     <PageHeader
       title="Settings"
-      subtitle="How CardVault values a card whose eBay asking prices spread too widely, usually because several versions of the card are mixed together."
+      subtitle="How CardVault turns a card's eBay asking listings into one value."
     />
 
     <v-alert v-if="error" type="error" variant="tonal" border="start" closable class="mb-4" :text="error" @click:close="error = ''" />
@@ -95,7 +95,7 @@ onMounted(load)
               style="max-width: 360px"
             />
             <div>
-              <div id="wide-spread-label" class="font-weight-medium mb-1">When prices spread too widely, by default</div>
+              <div id="wide-spread-label" class="font-weight-medium mb-1">How to value a card, by default</div>
               <v-radio-group v-model="action" aria-labelledby="wide-spread-label" :disabled="loading" hide-details>
                 <v-radio v-for="a in WIDE_SPREAD_ACTIONS" :key="a.value" :value="a.value" class="mb-2">
                   <template #label>
@@ -106,7 +106,7 @@ onMounted(load)
                   </template>
                 </v-radio>
               </v-radio-group>
-              <div class="text-caption text-secondary-c mt-1">Each card can override this on its own page. The card page says which rule set its value.</div>
+              <div class="text-caption text-secondary-c mt-1">Highest, Median and Lowest apply to every card. Flag only matters when prices spread too widely, usually because several versions are mixed together. Each card can override this on its own page.</div>
             </div>
             <v-text-field
               v-model="windowSize"
@@ -114,7 +114,7 @@ onMounted(load)
               inputmode="numeric"
               :disabled="loading"
               :error-messages="loading ? [] : windowError"
-              hint="Highest, Median and Lowest take the median of this many listings. From 1 to 50."
+              hint="Every card is valued from this many listings, picked by the rule above. From 1 to 50."
               persistent-hint
               style="max-width: 360px"
             />

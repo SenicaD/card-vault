@@ -21,23 +21,23 @@ _JUNK = re.compile(r"\b(lot|lots|bundle|set of|choose|pick|you pick|reprint|prox
 
 def apply_asking(card, median: float | None, spread: float | None, prices: list[float] | None = None,
                  app_settings=None) -> None:
-    """Set the card's asking estimate from a quote, unless its prices spread too widely to trust.
+    """Set the card's asking estimate from a quote.
 
-    Above MAX_PRICE_SPREAD the card is flagged and gets no asking value; otherwise the flag is cleared. With
-    app_settings, the card's own wide_spread_action (else the saved default) can value it instead: at the median of
-    the price_window most expensive, middle or cheapest asking listings, after outliers are left out (see
-    window_value). spread_rule records which rule did.
+    With app_settings, the card's own wide_spread_action (else the saved default) can value every card: at the median
+    of the price_window most expensive, middle or cheapest asking listings, after outliers are left out (see
+    window_value). spread_rule records which rule did. With the "flag" rule (or no listings to take a window from),
+    the card gets the median of all its listings, unless they spread beyond MAX_PRICE_SPREAD: then it is flagged and
+    gets no asking value.
     """
     card.spread_rule = None
-    if median is not None and spread is not None and spread > get_settings().max_price_spread:
-        rule = (card.wide_spread_action or app_settings.wide_spread_action) if app_settings is not None else "flag"
-        value = None
-        if rule in ("highest_group", "median", "lowest_group") and prices is not None:
-            value = window_value(prices, rule, app_settings.price_window)
+    rule = (card.wide_spread_action or app_settings.wide_spread_action) if app_settings is not None else "flag"
+    if median is not None and rule in ("highest_group", "median", "lowest_group") and prices:
+        value = window_value(prices, rule, app_settings.price_window)
         if value is not None:
             card.wide_spread, card.est_value, card.spread_rule = False, value, rule
-        else:
-            card.wide_spread, card.est_value = True, None
+            return
+    if median is not None and spread is not None and spread > get_settings().max_price_spread:
+        card.wide_spread, card.est_value = True, None
     else:
         card.wide_spread, card.est_value = False, median
 
