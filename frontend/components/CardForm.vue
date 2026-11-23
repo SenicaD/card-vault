@@ -39,8 +39,8 @@ const locationItems = computed(() => [
           </template>
         </v-select>
       </v-col>
-      <v-col cols="6"><v-checkbox v-model="model.is_redemption" label="Redemption card" density="compact" hide-details /></v-col>
-      <v-col cols="6"><v-checkbox v-model="model.is_auto" label="Autograph" density="compact" hide-details /></v-col>
+      <v-col cols="12" sm="6"><v-checkbox v-model="model.is_redemption" label="Redemption card" density="compact" hide-details /></v-col>
+      <v-col cols="12" sm="6"><v-checkbox v-model="model.is_auto" label="Autograph" density="compact" hide-details /></v-col>
     </v-row>
 
     <div class="section-label mt-4">Storage</div>
