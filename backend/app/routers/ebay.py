@@ -73,6 +73,7 @@ async def price_card(card_id: int, body: PriceRequest | None = None,
             card.name, card.set_name, card.year = ident.name, ident.set_name, ident.year
             card.card_number, card.variant, card.category = ident.card_number, ident.variant, ident.category
             card.id_confidence, query = ident.confidence, ident.search_query
+            card.is_redemption, card.is_auto = ident.is_redemption, ident.is_auto
             for q in quotes:
                 q.query = query
 

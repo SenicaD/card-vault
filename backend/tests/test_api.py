@@ -334,6 +334,49 @@ def test_old_database_gets_top_listings_column(tmp_path):
         db.engine = real
 
 
+def test_old_database_gets_redemption_and_auto_columns(tmp_path):
+    import sqlite3
+
+    from sqlalchemy import create_engine, text
+
+    import app.db as db
+
+    path = tmp_path / "old.db"
+    con = sqlite3.connect(path)
+    con.execute("CREATE TABLE card (id INTEGER PRIMARY KEY, name TEXT)")
+    con.execute("INSERT INTO card (id, name) VALUES (1, 'Old Card')")
+    con.commit(); con.close()
+
+    real = db.engine
+    db.engine = create_engine(f"sqlite:///{path}")
+    try:
+        db._add_missing_columns()
+        db._add_missing_columns()  # idempotent
+        with db.engine.connect() as conn:
+            assert {"is_redemption", "is_auto"} <= {r[1] for r in conn.execute(text("PRAGMA table_info(card)"))}
+            assert conn.execute(text("SELECT is_redemption, is_auto FROM card WHERE id = 1")).one() == (0, 0)
+    finally:
+        db.engine = real
+
+
+def test_cards_store_the_redemption_and_auto_flags():
+    with TestClient(app) as c:
+        card = c.post("/api/cards", json={"name": "Flag Test", "is_redemption": True, "is_auto": True}).json()
+        assert card["is_redemption"] is True and card["is_auto"] is True
+        got = c.get(f"/api/cards/{card['id']}").json()
+        assert got["is_redemption"] is True and got["is_auto"] is True
+        plain = c.post("/api/cards", json={"name": "Flag Test Plain"}).json()
+        assert plain["is_redemption"] is False and plain["is_auto"] is False
+
+        r = c.patch(f"/api/cards/{plain['id']}", json={"is_redemption": True}).json()
+        assert r["is_redemption"] is True and r["is_auto"] is False
+        assert c.get(f"/api/cards/{plain['id']}").json()["is_redemption"] is True
+        r = c.patch(f"/api/cards/{plain['id']}", json={"is_redemption": False, "is_auto": True}).json()
+        assert r["is_redemption"] is False and r["is_auto"] is True
+        got = c.get(f"/api/cards/{plain['id']}").json()
+        assert got["is_redemption"] is False and got["is_auto"] is True
+
+
 # ---------- grades ----------
 
 def test_parse_grade_from_titles():
@@ -1179,6 +1222,21 @@ def _priced_card(c, **kw):
     i = s["identification"]
     return c.post("/api/cards", json={"category": i["category"], "name": i["name"], "search_query": i["search_query"],
                                       "image_path": s["image_path"], **kw}).json(), s
+
+
+def test_price_lookup_reidentification_saves_the_redemption_and_auto_flags(monkeypatch):
+    from app.services.identify import ebay_image
+    from app.services.identify.base import CardIdentification
+    ident = CardIdentification(category="sports", name="Jacob Misiorowski", set_name="2026 Bowman Chrome", year="2026",
+                               card_number="CRA-JMI", search_query="2026 Bowman Chrome Jacob Misiorowski CRA-JMI",
+                               confidence=0.8, is_redemption=True, is_auto=True)
+    monkeypatch.setattr(ebay_image, "parse_matches", lambda items: ident)
+    with TestClient(app) as c:
+        card, _ = _priced_card(c, grade="Raw", id_confidence=0.1)
+        assert card["is_redemption"] is False and card["is_auto"] is False
+        assert c.post(f"/api/cards/{card['id']}/price", json={}).status_code == 200
+        got = c.get(f"/api/cards/{card['id']}").json()
+        assert got["name"] == "Jacob Misiorowski" and got["is_redemption"] is True and got["is_auto"] is True
 
 
 def test_price_trace_records_every_step():
@@ -2049,7 +2107,7 @@ def test_cards_without_a_code_are_priced_as_before():
     plain, plain_used = build_quotes(groups, ["Raw"], "q", "ebay-active")
     for number in (None, "136"):
         card = SimpleNamespace(name="Jacob Misiorowski", set_name="2026 Topps Chrome", variant=None, card_number=number,
-                               search_query="2026 Topps Chrome Jacob Misiorowski", id_confidence=0.9)
+                               search_query="2026 Topps Chrome Jacob Misiorowski", id_confidence=0.9, is_redemption=False)
         ident = identity_of_card(card)
         assert ident == CardIdentity(None, False)
         quotes, used = build_quotes(groups, ["Raw"], "q", "ebay-active", ident=ident)
@@ -2134,11 +2192,26 @@ def test_identity_of_card_reads_redemption_from_the_card():
 
     def card(**kw):
         return SimpleNamespace(**{"name": "Jacob Misiorowski", "set_name": "2026 Bowman Chrome", "variant": None,
-                                  "card_number": "CRA-JMI", "search_query": None, "id_confidence": None, **kw})
+                                  "card_number": "CRA-JMI", "search_query": None, "id_confidence": None,
+                                  "is_redemption": False, **kw})
     assert identity_of_card(card()) == CardIdentity("crajmi", False)
     assert identity_of_card(card(variant="Auto Redemption")) == CardIdentity("crajmi", True)
     assert identity_of_card(card(search_query="2026 Bowman Chrome Misiorowski CRA-JMI REDEMPTION")).redemption
     assert identity_of_card(card(id_confidence=0.3, variant="Auto Redemption")) is None
+
+
+def test_identity_of_card_reads_the_saved_redemption_flag():
+    from types import SimpleNamespace
+
+    from app.services.identity import identity_of_card
+
+    def card(**kw):
+        return SimpleNamespace(**{"name": "Jacob Misiorowski", "set_name": "2026 Bowman Chrome", "variant": None,
+                                  "card_number": "CRA-JMI", "search_query": "2026 Bowman Chrome Jacob Misiorowski CRA-JMI",
+                                  "id_confidence": 0.9, "is_redemption": False, **kw})
+    assert identity_of_card(card(is_redemption=True)).redemption is True  # no "redemp" in any text
+    assert identity_of_card(card(variant="Auto Redemption")).redemption is True  # text alone still counts
+    assert identity_of_card(card(is_redemption=True, id_confidence=0.3)) is None
 
 
 def test_sold_value_of_a_redemption_uses_only_its_own_redemption_sales(monkeypatch):

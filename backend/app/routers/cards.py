@@ -232,7 +232,7 @@ def apply_update(session: Session, card: Card, changes: dict) -> None:
         apply_asking(card, snap.median if snap else None, snap.spread if snap else None)
         card.priced_at = snap.created_at if snap else None
         recompute_sold(session, card)  # the sold-based value belongs to the grade and version too
-    elif {"name", "year", "card_number", "id_confidence", "set_name", "variant", "search_query"} & changes.keys():
+    elif {"name", "year", "card_number", "id_confidence", "set_name", "variant", "search_query", "is_redemption"} & changes.keys():
         session.flush()
         recompute_sold(session, card)  # who the card is (and whether it's a redemption) decides which sales count
     card.updated_at = utcnow()
@@ -287,6 +287,7 @@ async def crop_card_photo(card_id: int, box: CropBox, session: Session = Depends
             card.name, card.set_name, card.year = ident.name, ident.set_name, ident.year
             card.card_number, card.variant, card.search_query = ident.card_number, ident.variant, ident.search_query
             card.category, card.id_confidence = ident.category, ident.confidence
+            card.is_redemption, card.is_auto = ident.is_redemption, ident.is_auto
     card.updated_at = utcnow()
     session.add(card)
     session.commit()

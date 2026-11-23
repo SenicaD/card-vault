@@ -70,11 +70,13 @@ class CardIdentity(NamedTuple):
 
 
 def identity_of_card(card) -> CardIdentity | None:
-    """The card code and redemption status listings must match; None when the card is too uncertain (as who_of_card)."""
+    """The card code and redemption status listings must match; None when the card is too uncertain (as who_of_card).
+    A card is a redemption when its saved is_redemption flag is set or its text says so."""
     if card.id_confidence is not None and card.id_confidence < 0.5:
         return None
     texts = (card.name, card.set_name, card.variant, card.card_number, card.search_query)
-    return CardIdentity(card_code(card.card_number), any(REDEMPTION_RX.search(t) for t in texts if t))
+    redemption = card.is_redemption or any(REDEMPTION_RX.search(t) for t in texts if t)
+    return CardIdentity(card_code(card.card_number), redemption)
 
 
 def fits_identity(title: str, ident: CardIdentity | None) -> bool:
