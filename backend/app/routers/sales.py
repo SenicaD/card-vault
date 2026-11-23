@@ -68,7 +68,8 @@ class GradeCompare(BaseModel):
     asking_median: float | None  # what matching listings on eBay are asking right now
     asking_count: int
     sold_median: float | None  # sold: outlier-trimmed median of real sales (same rule as the card's sold value); estimated: median last asking price of listings that disappeared
-    sold_count: int
+    sold_count: int  # sold: the sales the trimmed median used; estimated: the listings that disappeared
+    sold_left_out: int = 0  # real sales in the window the trimmed median left out (outliers and junk titles)
     gap: float | None  # likely-sold minus asking, in dollars
     gap_pct: float | None
     days_median: float | None  # how long the disappeared listings were up before they went
@@ -126,7 +127,8 @@ def sold_compare(card_id: int, days: int = Query(90, ge=0, le=3650), grades: lis
     eBay's public API has no sold prices, so "sold" here is the last asking price of a listing that has
     vanished from eBay: usually a sale, but it can be a listing the seller ended or relisted. Your own
     recorded sales are shown next to it as the only confirmed figure. days=0 means all time.
-    When real sales are on record for a grade, its sold median is theirs, outliers trimmed like the card's sold value.
+    When real sales are on record for a grade, its sold median is theirs, outliers trimmed like the card's sold value,
+    and its sold count is the sales that median used.
     """
     card = get_card_or_404(session, card_id)
     cutoff = utcnow() - timedelta(days=days) if days else None
@@ -154,14 +156,16 @@ def sold_compare(card_id: int, days: int = Query(90, ge=0, le=3650), grades: lis
         real_g = [r for r in real if r.grade == g]
         mine = [x.price for x in sales if x.grade == g]
         a = _med(ask)
-        sm = (summarize([EbayItem(item_id=r.item_id, title=r.title, price=r.price) for r in real_g])["median"]
-              if real_g else _med([r.price for r in sold]))
+        if real_g:
+            st = summarize([EbayItem(item_id=r.item_id, title=r.title, price=r.price) for r in real_g])
+            sm, n_sold, left_out = st["median"], st["sample_size"], len(real_g) - st["sample_size"]
+        else:
+            sm, n_sold, left_out = _med([r.price for r in sold]), len(sold), 0
         ask_by_grade[g] = a
         spans = [(r.gone_at - r.first_seen).total_seconds() / 86400 for r in sold if r.gone_at and r.first_seen] if not real_g else []
         dm = _med(spans)
-        n_sold = len(real_g) if real_g else len(sold)
         out.append(GradeCompare(
-            grade=g, asking_median=a, asking_count=len(ask), sold_median=sm, sold_count=n_sold,
+            grade=g, asking_median=a, asking_count=len(ask), sold_median=sm, sold_count=n_sold, sold_left_out=left_out,
             gap=round(sm - a, 2) if a is not None and sm is not None else None,
             gap_pct=round((sm - a) / a * 100, 1) if a and sm is not None else None,
             days_median=round(dm, 1) if dm is not None else None,
