@@ -2880,3 +2880,23 @@ def test_a_cards_own_rule_must_be_a_known_one():
         card = _mk(c, name="Rule Unknown")
         assert c.patch(f"/api/cards/{card['id']}", json={"wide_spread_action": "sometimes"}).status_code == 422
         assert c.get(f"/api/cards/{card['id']}").json()["wide_spread_action"] is None
+
+
+def test_bulk_revalue_applies_new_price_settings_without_ebay(restore_settings):
+    from sqlmodel import Session
+    from app.db import engine
+    from app.models import ListingSeen
+    with TestClient(app) as c:
+        card = _mk(c, name="Revalue Bulk", grade="Raw", price=_quote(spread=1.96, grade="Raw"))
+        assert card["wide_spread"] is True and card["est_value"] is None  # flagged: no value yet
+        with Session(engine) as session:
+            for n, p in enumerate((3, 3.2, 3.5, 3.8, 400, 500, 700, 900)):
+                session.add(ListingSeen(card_id=card["id"], item_id=f"rv{card['id']}-{n}", grade="Raw",
+                                        title="Revalue Bulk", price=p))
+            session.commit()
+        assert c.put("/api/settings", json=HIGHEST_GROUP).status_code == 200
+        out = c.post("/api/cards/bulk/revalue").json()
+        assert out["changed"] >= 1
+        got = c.get(f"/api/cards/{card['id']}").json()
+        assert got["est_value"] is not None and got["spread_rule"] == "highest_group"
+        assert got["wide_spread"] is False

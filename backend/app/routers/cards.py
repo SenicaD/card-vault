@@ -185,6 +185,27 @@ async def bulk_reprice(body: BulkIds | None = None):
     return job.snapshot()
 
 
+@router.post("/bulk/revalue")
+def bulk_revalue(session: Session = Depends(get_session)):
+    """Re-value every unsold card from its saved quote and listings (no eBay calls, takes seconds). Use it after
+    changing the price settings; the rest of the work a full re-price does is only needed for fresh listings."""
+    app_settings = load_app_settings(session)
+    changed = same = skipped = 0
+    for card in session.exec(select(Card).where(col(Card.status) != CardStatus.sold)).all():
+        before = card.est_value
+        if not revalue(session, card, app_settings):
+            skipped += 1
+            continue
+        if card.est_value != before:
+            card.updated_at = utcnow()
+            changed += 1
+        else:
+            same += 1
+        session.add(card)
+    session.commit()
+    return {"changed": changed, "unchanged": same, "skipped": skipped}
+
+
 @router.get("/bulk/reprice")
 def bulk_reprice_status():
     job = refresh_service.current_job()
@@ -227,6 +248,19 @@ def _own_snap(session: Session, card: Card) -> PriceSnapshot | None:
         col(PriceSnapshot.median).is_not(None)).order_by(col(PriceSnapshot.created_at).desc()).limit(1)).first()
 
 
+def revalue(session: Session, card: Card, app_settings=None) -> bool:
+    """Re-value a card from its newest quote and the listings already saved, with no eBay call. False if it has no quote."""
+    snap = _own_snap(session, card)
+    if snap is None:
+        return False
+    own = normalize_grade(card.grade)
+    rows = session.exec(select(ListingSeen).where(ListingSeen.card_id == card.id, ListingSeen.status == "active",
+                                                  ListingSeen.grade == own)).all()
+    listings = asking_listings(rows, card.parallel, {r.item_id for r in rows if r.excluded}, identity_of_card(card))
+    apply_asking(card, snap.median, snap.spread, [r.price for r in listings], app_settings or load_app_settings(session))
+    return True
+
+
 def apply_update(session: Session, card: Card, changes: dict) -> None:
     """Apply field changes to a card (single edit or bulk)."""
     old_grade, old_parallel = normalize_grade(card.grade), card.parallel
@@ -242,12 +276,8 @@ def apply_update(session: Session, card: Card, changes: dict) -> None:
     elif {"name", "year", "card_number", "id_confidence", "set_name", "variant", "search_query", "is_redemption"} & changes.keys():
         session.flush()
         recompute_sold(session, card)  # who the card is (and whether it's a redemption) decides which sales count
-    if "wide_spread_action" in changes and (snap := _own_snap(session, card)):
-        # A new choice for wide-spread prices shows at once: re-value from the newest quote and the saved listings.
-        rows = session.exec(select(ListingSeen).where(ListingSeen.card_id == card.id, ListingSeen.status == "active",
-                                                      ListingSeen.grade == new_grade)).all()
-        listings = asking_listings(rows, card.parallel, {r.item_id for r in rows if r.excluded}, identity_of_card(card))
-        apply_asking(card, snap.median, snap.spread, [r.price for r in listings], load_app_settings(session))
+    if "wide_spread_action" in changes:
+        revalue(session, card)  # a new choice for wide-spread prices shows at once
     card.updated_at = utcnow()
     session.add(card)
 

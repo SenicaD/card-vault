@@ -119,7 +119,7 @@ onMounted(load)
               style="max-width: 360px"
             />
             <v-alert type="info" variant="tonal" density="compact" icon="mdi-information-outline">
-              Changes apply the next time a card is priced: Refresh value, ticking or unticking listings, or the daily and bulk re-price. Saving does not re-price your existing cards.
+              Changes apply the next time a card is priced: Refresh value, ticking or unticking listings, or the daily and bulk re-price. Saving does not re-price your existing cards. To apply them to every card at once without waiting on eBay, use Re-price → Re-value all on Inventory.
             </v-alert>
             <div>
               <v-btn type="submit" color="primary" variant="flat" prepend-icon="mdi-content-save-outline" :loading="saving" :disabled="loading || !!sizeError || !!windowError">

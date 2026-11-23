@@ -137,6 +137,16 @@ const toggle = (id: number) => { selected.value = selected.value.includes(id) ? 
 const gradeItems = GRADE_OPTIONS
 const repriceSelected = () => reprice.value?.start(selected.value)
 const repriceAll = () => reprice.value?.start(null)
+const revaluing = ref(false)
+const revalued = ref('')
+async function revalueAll() {
+  revaluing.value = true; revalued.value = ''
+  try {
+    const r = await api<{ changed: number; unchanged: number; skipped: number }>('/api/cards/bulk/revalue', { method: 'POST' })
+    revalued.value = `Re-valued from saved listings: ${r.changed} changed, ${r.unchanged} the same${r.skipped ? `, ${r.skipped} have no quote yet` : ''}.`
+    await load()
+  } catch (e: any) { error.value = e.message } finally { revaluing.value = false }
+}
 
 let t: ReturnType<typeof setTimeout>
 watch(q, () => { clearTimeout(t); t = setTimeout(load, 250) })
@@ -160,13 +170,22 @@ watch(view, (v) => { try { localStorage.setItem('cv-view', v) } catch {} })
     <PageHeader title="Inventory" subtitle="Every card in your collection, where it's stored, and what it's worth.">
       <template #actions>
         <v-btn variant="outlined" prepend-icon="mdi-refresh" :loading="loading" @click="load">Refresh</v-btn>
-        <v-btn variant="outlined" prepend-icon="mdi-cash-sync" @click="repriceAll">Re-price all</v-btn>
+        <v-menu>
+          <template #activator="{ props }">
+            <v-btn v-bind="props" variant="outlined" prepend-icon="mdi-cash-sync" append-icon="mdi-menu-down" :loading="revaluing">Re-price</v-btn>
+          </template>
+          <v-list density="comfortable">
+            <v-list-item prepend-icon="mdi-calculator-variant-outline" title="Re-value all, instantly" subtitle="From saved listings. Use after changing price settings." @click="revalueAll" />
+            <v-list-item prepend-icon="mdi-cash-sync" title="Re-price all from eBay" subtitle="Fresh searches. Slow with many cards." @click="repriceAll" />
+          </v-list>
+        </v-menu>
         <v-btn variant="outlined" prepend-icon="mdi-clipboard-check-outline" to="/review" class="d-none d-sm-flex">Review queue</v-btn>
         <v-btn color="primary" variant="flat" prepend-icon="mdi-camera-plus-outline" to="/scan" class="d-none d-md-flex">Scan card</v-btn>
       </template>
     </PageHeader>
 
     <v-alert v-if="error" type="error" variant="tonal" border="start" class="mb-4" :text="error" />
+    <v-alert v-if="revalued" type="success" variant="tonal" border="start" class="mb-4" closable :text="revalued" @click:close="revalued = ''" />
     <RepriceStatus ref="reprice" @finished="load" />
 
     <!-- KPIs -->
