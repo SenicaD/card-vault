@@ -1848,3 +1848,138 @@ def test_card_crop_and_feature_check_on_synthetic_pictures():
     assert lookalike.feature_matches(cropped, mine) >= lookalike.LOOKALIKE_MIN_MATCHES
     assert lookalike.feature_matches(cropped, other) < lookalike.LOOKALIKE_MIN_MATCHES
     assert lookalike.card(b"not a picture") is None
+
+
+def _quote(median=5.6, spread=1.96, **kw):
+    return {"query": "x", "sample_size": 8, "low": 3, "median": median, "mean": 200, "high": 900, "spread": spread, **kw}
+
+
+def test_wide_spread_quote_flags_the_card_and_withholds_the_asking_value():
+    with TestClient(app) as c:
+        card = _mk(c, name="Spread Wide", price=_quote(spread=1.96))
+        assert card["wide_spread"] is True and card["est_value"] is None
+        assert card["value"] is None and card["value_basis"] is None
+        # the snapshot still keeps the median and spread
+        snap = c.get(f"/api/cards/{card['id']}/prices").json()[0]
+        assert snap["median"] == 5.6 and snap["spread"] == 1.96
+
+
+def test_spread_at_or_below_the_threshold_or_unknown_is_not_flagged():
+    with TestClient(app) as c:
+        for spread in (1.0, 0.5, None):
+            card = _mk(c, name="Spread Ok", price=_quote(spread=spread))
+            assert card["wide_spread"] is False and card["est_value"] == 5.6
+            assert card["value"] == 5.6 and card["value_basis"] == "asking"
+
+
+def test_raising_max_price_spread_stops_the_flag(monkeypatch):
+    from app.config import get_settings
+    monkeypatch.setattr(get_settings(), "max_price_spread", 2.0)
+    with TestClient(app) as c:
+        card = _mk(c, name="Spread Raised", price=_quote(spread=1.96))
+        assert card["wide_spread"] is False and card["est_value"] == 5.6
+
+
+def test_unticking_listings_that_narrow_the_spread_clears_the_flag():
+    from sqlmodel import Session
+    from app.db import engine
+    from app.models import ListingSeen
+    with TestClient(app) as c:
+        card = _mk(c, name="Spread Untick", grade="Raw", price=_quote(spread=1.96, grade="Raw"))
+        assert card["wide_spread"] is True
+        prices = {"cheap0": 3, "cheap1": 3.2, "cheap2": 3.5, "cheap3": 3.8,
+                  "dear0": 400, "dear1": 500, "dear2": 700, "dear3": 900}
+        with Session(engine) as session:
+            for item_id, p in prices.items():
+                session.add(ListingSeen(card_id=card["id"], item_id=f"{card['id']}-{item_id}", grade="Raw",
+                                        title=f"Spread Untick {item_id}", price=p))
+            session.commit()
+        cheap = [f"{card['id']}-cheap{n}" for n in range(4)]
+        out = c.post(f"/api/cards/{card['id']}/matches/exclude", json={"item_ids": cheap}).json()
+        assert out["snapshot"]["spread"] <= 1.0
+        got = c.get(f"/api/cards/{card['id']}").json()
+        assert got["wide_spread"] is False and got["est_value"] == 600 and got["value_basis"] == "asking"
+        # ticking them back widens the spread again
+        out = c.post(f"/api/cards/{card['id']}/matches/exclude", json={"item_ids": cheap, "excluded": False}).json()
+        assert out["snapshot"]["spread"] > 1.0 and out["snapshot"]["median"] is not None
+        got = c.get(f"/api/cards/{card['id']}").json()
+        assert got["wide_spread"] is True and got["est_value"] is None
+
+
+def test_choosing_a_version_applies_the_spread_flag():
+    from sqlmodel import Session
+    from app.db import engine
+    from app.models import PriceSnapshot
+    with TestClient(app) as c:
+        card = _mk(c, name="Spread Version", grade="Raw", price=_quote(spread=1.96, grade="Raw"))
+        assert card["wide_spread"] is True
+        with Session(engine) as session:
+            session.add(PriceSnapshot(card_id=card["id"], query="q", source="ebay-image", sample_size=6, low=80, median=100,
+                                      mean=100, high=120, grade="Raw", parallel="Green /99", spread=0.3))
+            session.add(PriceSnapshot(card_id=card["id"], query="q", source="ebay-image", sample_size=6, low=5, median=50,
+                                      mean=200, high=900, grade="Raw", parallel="Red /49", spread=1.5))
+            session.commit()
+        got = c.patch(f"/api/cards/{card['id']}", json={"parallel": "Green /99"}).json()
+        assert got["wide_spread"] is False and got["est_value"] == 100 and got["value"] == 100
+        got = c.patch(f"/api/cards/{card['id']}", json={"parallel": "Red /49"}).json()
+        assert got["wide_spread"] is True and got["est_value"] is None and got["value"] is None
+        # a version with no price yet clears both the estimate and the flag
+        got = c.patch(f"/api/cards/{card['id']}", json={"parallel": "Gold /10"}).json()
+        assert got["wide_spread"] is False and got["est_value"] is None
+
+
+def test_reprice_applies_the_spread_flag(monkeypatch):
+    import asyncio
+
+    from app.config import get_settings
+    from app.models import PriceQuote
+    from app.services import refresh
+    from app.services.pricing import Priced
+
+    quote = {"median": 50.0, "spread": 1.5}
+
+    async def fake(query, grades, image=None, **kw):
+        q = PriceQuote(query=query, grade="Raw", sample_size=8, low=5, median=quote["median"], mean=60, high=900,
+                       spread=quote["spread"])
+        return Priced([q], {"Raw": 8}, [], {}, [], "ebay-active")
+    monkeypatch.setattr(refresh, "quote_grades", fake)
+    with TestClient(app) as c:
+        card = _mk(c, name="Spread Reprice", grade="Raw")
+        reprice = lambda: asyncio.run(refresh.reprice_card(card["id"], "q", "Raw", ["Raw"], None, None))  # noqa: E731
+        reprice()
+        got = c.get(f"/api/cards/{card['id']}").json()
+        assert got["wide_spread"] is True and got["est_value"] is None and got["priced_at"]
+        monkeypatch.setattr(get_settings(), "max_price_spread", 2.0)
+        reprice()
+        got = c.get(f"/api/cards/{card['id']}").json()
+        assert got["wide_spread"] is False and got["est_value"] == 50
+        # flagged again, then a search that finds nothing clears the flag along with the estimate
+        monkeypatch.setattr(get_settings(), "max_price_spread", 1.0)
+        reprice()
+        assert c.get(f"/api/cards/{card['id']}").json()["wide_spread"] is True
+        quote.update(median=None, spread=None)
+        reprice()
+        got = c.get(f"/api/cards/{card['id']}").json()
+        assert got["wide_spread"] is False and got["est_value"] is None
+
+
+def test_stats_leave_flagged_cards_out_of_value_and_count_them():
+    with TestClient(app) as c:
+        before = c.get("/api/cards/stats").json()
+        _mk(c, name="Spread Stats Flagged", price=_quote(spread=1.96))
+        mid = c.get("/api/cards/stats").json()
+        assert mid["flagged_cards"] == before["flagged_cards"] + 1
+        assert mid["total_value"] == pytest.approx(before["total_value"])
+        assert mid["asking_value"] == pytest.approx(before["asking_value"])
+        _mk(c, name="Spread Stats Ok", price=_quote(spread=0.5))
+        after = c.get("/api/cards/stats").json()
+        assert after["flagged_cards"] == mid["flagged_cards"]
+        assert after["asking_value"] == pytest.approx(mid["asking_value"] + 5.6)
+        assert after["total_value"] == pytest.approx(mid["total_value"] + 5.6)
+
+
+def test_flagged_card_keeps_its_manual_value():
+    with TestClient(app) as c:
+        card = _mk(c, name="Spread Manual", manual_value=42.0, price=_quote(spread=1.96))
+        assert card["wide_spread"] is True and card["est_value"] is None
+        assert card["value"] == 42.0 and card["value_basis"] == "manual"

@@ -19,6 +19,17 @@ from .lookalike import compare as compare_pictures
 _JUNK = re.compile(r"\b(lot|lots|bundle|set of|choose|pick|you pick|reprint|proxy|custom|digital)\b", re.I)
 
 
+def apply_asking(card, median: float | None, spread: float | None) -> None:
+    """Set the card's asking estimate from a quote, unless its prices spread too widely to trust.
+
+    Above MAX_PRICE_SPREAD the card is flagged and gets no asking value; otherwise the flag is cleared.
+    """
+    if median is not None and spread is not None and spread > get_settings().max_price_spread:
+        card.wide_spread, card.est_value = True, None
+    else:
+        card.wide_spread, card.est_value = False, median
+
+
 def top_listings(items: list[EbayItem], n: int = 4) -> list[dict]:
     """The first n real single-card listings in eBay's own best-match order (not cheapest-first)."""
     seen, out = set(), []

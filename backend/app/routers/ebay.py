@@ -14,7 +14,7 @@ from ..services.ebay import EbayItem, ListingRequest, get_ebay
 from ..services.grading import grade_sort_key, normalize_grade
 from ..services.identity import who_of_card
 from ..services.parallels import BASE, parse_parallel
-from ..services.pricing import build_quotes, card_image, quote_grades
+from ..services.pricing import apply_asking, build_quotes, card_image, quote_grades
 from ..services.similarity import score_urls
 from ..services.trace import Trace, save_trace
 from ..services.tracker import track_listings
@@ -84,10 +84,10 @@ async def price_card(card_id: int, body: PriceRequest | None = None,
     # The estimate only ever follows the card's own grade, so comparing other grades can't change it.
     own_snap = next((s for s in snaps if s.grade == own), None)
     if own_snap and own_snap.median is not None:
-        card.est_value = own_snap.median
+        apply_asking(card, own_snap.median, own_snap.spread)
         card.priced_at = utcnow()
     elif own_snap:  # the search ran but nothing matched this card: don't keep an old, wrong number
-        card.est_value, card.priced_at = None, utcnow()
+        card.est_value, card.wide_spread, card.priced_at = None, False, utcnow()
     card.updated_at = utcnow()
     session.add(card)
     session.commit()
@@ -166,7 +166,8 @@ def exclude_matches(card_id: int, body: ExcludeRequest, session: Session = Depen
     session.add_all(snaps)
     own_snap = next((s for s in snaps if s.grade == own), None)
     if own_snap and own_snap.median is not None:
-        card.est_value, card.priced_at = own_snap.median, utcnow()
+        apply_asking(card, own_snap.median, own_snap.spread)
+        card.priced_at = utcnow()
     card.updated_at = utcnow()
     session.add(card)
     session.commit()
