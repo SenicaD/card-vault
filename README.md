@@ -73,6 +73,8 @@ Tests: `cd backend && pytest`. API docs: `http://localhost:8000/docs`.
    prices spread too widely. That choice re-values the card straight away from its saved listings.
 5. **Sell**: "List on eBay" creates an inventory item, an offer, and publishes it. The card moves to Listed.
 
+The Storage list and the card page's Sold / gone, Matching listings and Price lookups tables can be sorted by clicking a column header, searched, and paged.
+
 The queue lives in memory: it survives moving between pages, but not a reload (the browser warns first).
 
 ## Going live
