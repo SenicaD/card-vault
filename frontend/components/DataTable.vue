@@ -63,7 +63,7 @@ watch(search, () => { page.value = 1 })
         density="compact"
         class="dt-search"
       />
-      <span class="text-caption text-secondary-c num">{{ count }}</span>
+      <span class="dt-count text-secondary-c num">{{ count }}</span>
     </div>
     <v-data-table
       v-bind="$attrs"
@@ -92,5 +92,7 @@ watch(search, () => { page.value = 1 })
 <style scoped>
 .dt-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; padding: 10px 16px; }
 .dt-search { max-width: 280px; min-width: 180px; }
-.dt-static :deep(tbody tr) { cursor: default; }
+.dt-count { font-size: 12px; }
+/* Rows that open nothing, and the empty-state row, keep the default cursor. */
+.dt-static :deep(tbody tr), :deep(tbody tr.v-data-table-rows-no-data) { cursor: default; }
 </style>
