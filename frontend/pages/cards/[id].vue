@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { useDisplay } from 'vuetify'
-import { CATEGORY_LABELS, WIDE_SPREAD_ACTIONS, type AppSettings, type Card, type CardFields, type Listing, type Location, type MatchRow, type PriceCluster, type SimilarityResult, type PricePoints, type SoldCompare, type PriceResult, type PriceSnapshot, type Sale, type Trend, type TrendRange } from '~/types'
+import { CATEGORY_LABELS, WIDE_SPREAD_ACTIONS, type AppSettings, type Card, type CardFields, type Listing, type Location, type MatchRow, type PriceCluster, type SimilarityResult, type PricePoints, type SoldCompare, type PriceResult, type PriceSnapshot, type Sale, type SoldRow, type Trend, type TrendRange } from '~/types'
+import type { TableHeader } from '~/composables/tables'
 
 const { api } = useApi()
 const { xs } = useDisplay()
@@ -98,12 +99,15 @@ const RANGES: { value: TrendRange; label: string }[] = [
 const sales = ref<Sale[]>([])
 const soldDays = ref(90)
 const sold = ref<SoldCompare | null>(null)
-const soldHeaders = [
-  { title: 'Sold / gone', key: 'gone_at' }, { title: 'Grade', key: 'grade' }, { title: 'Version', key: 'parallel' },
-  { title: 'Listing', key: 'title', sortable: false }, { title: 'Days up', key: 'days_listed', align: 'end' as const },
-  { title: 'Price', key: 'price', align: 'end' as const }, { title: 'vs asking now', key: 'vs_asking_pct', align: 'end' as const },
-]
 const pctText = (v: number | null | undefined) => (v == null ? '' : `${v > 0 ? '+' : ''}${v}%`)
+const soldHeaders: TableHeader<SoldRow>[] = [
+  { title: 'Sold / gone', key: 'gone_at', text: (r) => (r.gone_at ? isoDate(r.gone_at).slice(0, 10) : '') },
+  { title: 'Grade', key: 'grade' }, { title: 'Version', key: 'parallel' }, { title: 'Listing', key: 'title' },
+  { title: 'Days up', key: 'days_listed', align: 'end' },
+  { title: 'Price', key: 'price', align: 'end', text: (r) => money(r.price) },
+  { title: 'vs asking now', key: 'vs_asking_pct', align: 'end', text: (r) => pctText(r.vs_asking_pct) },
+]
+const SOLD_SORT = [{ key: 'gone_at', order: 'desc' as const }]
 const points = ref<PricePoints | null>(null)
 const pointsGrade = ref<string | null>(null)
 const loadPoints = async () => {
@@ -298,14 +302,15 @@ const setParallel = (p: string | null) => run('parallel', async () => {
   await lookUp() // price the version you picked
 })
 
-const shownComps = computed(() => {
-  const q = (compSearch.value || '').toLowerCase().trim()
+// The table's items: the listings of the version shown. Its search narrows them to shownComps.
+type CompRow = MatchRow & { look: number | null; included: boolean }
+const versionComps = computed<CompRow[]>(() => {
   const want = showAllVersions.value ? null : card.value?.parallel
   return matches.value
     .filter((m) => !want || m.parallel === want)
-    .filter((m) => !q || `${m.title} ${m.grade} ${m.parallel} ${m.condition ?? ''}`.toLowerCase().includes(q))
     .map((m) => ({ ...m, look: scores.value[m.item_id] ?? null, included: !m.excluded }))
 })
+const shownComps = computed(() => searchRows(versionComps.value, compHeaders.value, compSearch.value))
 const hasScores = computed(() => Object.keys(scores.value).length > 0)
 
 // The table's own sort and page, so reloading the listings after a tick doesn't reset them.
@@ -373,14 +378,15 @@ function vsMedian(c: { price: number; grade?: string | null }): number | null {
   const m = history.value.find((s) => s.grade === c.grade && s.median && mine(s))?.median
   return m ? Math.round(((c.price - m) / m) * 100) : null
 }
-const compHeaders = computed(() => [
+const compHeaders = computed<TableHeader<CompRow>[]>(() => [
   { title: 'Use', key: 'included', sortable: false, width: 48 },
   ...(xs.value ? [] : [{ title: '', key: 'image_url', sortable: false, width: 64 }]),
-  { title: 'Listing', key: 'title' },
+  // On phones the cell also shows the grade and version
+  { title: 'Listing', key: 'title', text: (m) => [m.title, ...(xs.value ? [m.grade, m.parallel] : []), m.condition].filter(Boolean).join(' ') },
   ...(xs.value ? [] : [{ title: 'Grade', key: 'grade' }, { title: 'Version', key: 'parallel' }]),
-  ...(hasScores.value ? [{ title: 'Look', key: 'look', align: 'end' as const }] : []),
-  { title: 'Price', key: 'price', align: 'end' as const },
-  ...(xs.value ? [] : [{ title: 'vs median', key: 'vs', align: 'end' as const, sortable: false }]),
+  ...(hasScores.value ? [{ title: 'Look', key: 'look', align: 'end' as const, text: (m: CompRow) => (m.look == null ? '' : `${m.look}%`) }] : []),
+  { title: 'Price', key: 'price', align: 'end', text: (m) => money(m.price) },
+  ...(xs.value ? [] : [{ title: 'vs median', key: 'vs', align: 'end' as const, nowrap: true, value: (m: CompRow) => vsMedian(m), text: (m: CompRow) => pctText(vsMedian(m)) }]),
 ])
 // When the last refresh found the same numbers as the ones before it, say since when.
 const unchangedSince = computed(() => {
@@ -396,14 +402,14 @@ const unchangedSince = computed(() => {
 })
 const lastChecked = computed(() => latest.value?.created_at ?? null)
 const when = (s: string | null | undefined) => isoDate(s).replace('T', ' ').replace(/:\d\dZ$/, 'Z')
-const historyHeaders = [
-  { title: 'Date (UTC)', key: 'created_at' },
-  { title: 'Grade', key: 'grade' },
+const historyHeaders: TableHeader<PriceSnapshot>[] = [
+  { title: 'Date (UTC)', key: 'created_at', text: (s) => isoDate(s.created_at) },
+  { title: 'Grade', key: 'grade', text: (s) => s.grade || 'All' },
   { title: 'Source', key: 'source' },
-  { title: 'Samples', key: 'sample_size', align: 'end' as const },
-  { title: 'Low', key: 'low', align: 'end' as const },
-  { title: 'Median', key: 'median', align: 'end' as const },
-  { title: 'High', key: 'high', align: 'end' as const },
+  { title: 'Samples', key: 'sample_size', align: 'end' },
+  { title: 'Low', key: 'low', align: 'end', text: (s) => money(s.low) },
+  { title: 'Median', key: 'median', align: 'end', text: (s) => money(s.median) },
+  { title: 'High', key: 'high', align: 'end', text: (s) => money(s.high) },
 ]
 
 onMounted(() => {
@@ -721,7 +727,7 @@ onMounted(() => {
                     </tr>
                   </tbody>
                 </v-table>
-                <div v-if="sold.rows.length" class="sold-scroll"><v-data-table :headers="soldHeaders" :items="sold.rows" density="compact" :items-per-page="10" :sort-by="[{ key: 'gone_at', order: 'desc' }]" class="no-pointer mt-2">
+                <div v-if="sold.rows.length" class="sold-scroll"><DataTable :headers="soldHeaders" :items="sold.rows" :sort-by="SOLD_SORT" search-placeholder="Search sold listings">
                   <template #item.gone_at="{ item }"><span class="num text-no-wrap">{{ item.gone_at ? isoDate(item.gone_at).slice(0, 10) : '' }}</span></template>
                   <template #item.parallel="{ item }"><v-chip size="x-small" variant="tonal">{{ item.parallel }}</v-chip></template>
                   <template #item.title="{ item }"><span class="truncate d-block gone-title">{{ item.title }}</span></template>
@@ -731,25 +737,26 @@ onMounted(() => {
                     <v-chip v-if="item.best_offer" size="x-small" variant="tonal" color="warning" class="ml-1" title="Best Offer sale: this is the asking price, so the sale was probably lower">best offer</v-chip>
                   </template>
                   <template #item.vs_asking_pct="{ item }"><span class="num" :class="(item.vs_asking_pct ?? 0) < 0 ? 'text-error' : 'text-success'">{{ pctText(item.vs_asking_pct) || '—' }}</span></template>
-                </v-data-table></div>
+                </DataTable></div>
                 <div class="pb-3" />
               </template>
 
               <template v-if="matches.length">
                 <v-divider />
                 <div class="px-5 pt-4 pb-2 d-flex flex-wrap align-center justify-space-between ga-2">
-                  <span class="text-body-2 font-weight-medium">Matching listings ({{ shownComps.length }}<template v-if="shownComps.length !== matches.length"> of {{ matches.length }}</template>)</span>
-                  <div class="d-flex flex-wrap align-center ga-2">
-                    <v-btn size="small" variant="outlined" prepend-icon="mdi-palette-swatch-outline" :loading="busy === 'rank'" :disabled="!card.image_url" @click="rankByLook">Rank by look-alike</v-btn>
-                    <v-text-field v-model="compSearch" placeholder="Filter listings" prepend-inner-icon="mdi-magnify" clearable hide-details density="compact" style="max-width: 220px" />
-                  </div>
+                  <span class="text-body-2 font-weight-medium">Matching listings</span>
+                  <v-btn size="small" variant="outlined" prepend-icon="mdi-palette-swatch-outline" :loading="busy === 'rank'" :disabled="!card.image_url" @click="rankByLook">Rank by look-alike</v-btn>
                 </div>
                 <p class="text-caption text-muted-c px-5 mb-2">
                   Untick a listing that isn't your card and the prices update straight away, and stay that way after each refresh.
-                  The box at the top of the Use column ticks or unticks every listing shown, including after filtering.
+                  The box at the top of the Use column ticks or unticks every listing shown, including after searching.
                   <template v-if="card.parallel"><v-switch v-model="showAllVersions" density="compact" hide-details color="primary" :label="`Show other versions too (not just ${card.parallel})`" class="mt-1" /></template>
                 </p>
-                <v-data-table :headers="compHeaders" :items="shownComps" density="comfortable" v-model:sort-by="compSort" v-model:page="compPage" v-model:items-per-page="compPerPage" class="no-pointer comp-table">
+                <DataTable
+                  v-model:search="compSearch" v-model:sort-by="compSort" v-model:page="compPage" v-model:items-per-page="compPerPage"
+                  :headers="compHeaders" :items="versionComps" :total="matches.length"
+                  search-placeholder="Search listings" empty-text="No listings for this version." class="comp-table"
+                >
                   <!-- The empty listener keeps the dash until the listings reload -->
                   <template #header.included>
                     <v-checkbox-btn :model-value="shownTicked > 0" class="use-all" :indeterminate="shownTicked > 0 && shownTicked < shownComps.length" density="compact" aria-label="Use all shown listings in the prices" :disabled="busy === 'exclude' || !shownComps.length" @update:model-value="toggleAllShown" @update:indeterminate="() => {}" />
@@ -776,7 +783,7 @@ onMounted(() => {
                     <span v-if="vsMedian(item) !== null" class="num text-no-wrap text-caption" :class="vsMedian(item)! > 0 ? 'text-muted-c' : 'text-success'">{{ vsMedian(item)! > 0 ? '+' : '' }}{{ vsMedian(item) }}%</span>
                     <span v-else>—</span>
                   </template>
-                </v-data-table>
+                </DataTable>
               </template>
             </v-window-item>
 
@@ -835,14 +842,13 @@ onMounted(() => {
                 <v-divider class="mt-2" />
                 <div class="px-5 pt-4 pb-2 text-body-2 font-weight-medium">Price lookups</div>
               </template>
-              <v-data-table :headers="historyHeaders" :items="history" density="comfortable" items-per-page="10" class="no-pointer">
+              <DataTable :headers="historyHeaders" :items="history" search-placeholder="Search price lookups" empty-text="No price lookups yet.">
                 <template #item.created_at="{ item }"><span class="num">{{ isoDate(item.created_at) }}</span></template>
                 <template #item.grade="{ item }">{{ item.grade || 'All' }}</template>
                 <template #item.low="{ item }"><span class="num"><PriceLink :value="item.low" :listing="item.price_refs?.low" label="Lowest" /></span></template>
                 <template #item.median="{ item }"><span class="num font-weight-semibold"><PriceLink :value="item.median" :listing="item.price_refs?.median" label="Closest to the median" /></span></template>
                 <template #item.high="{ item }"><span class="num"><PriceLink :value="item.high" :listing="item.price_refs?.high" label="Highest" /></span></template>
-                <template #no-data><div class="py-6 text-secondary-c">No price lookups yet.</div></template>
-              </v-data-table>
+              </DataTable>
             </v-window-item>
           </v-window>
         </v-card>
@@ -908,7 +914,6 @@ onMounted(() => {
 .comp-title { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; max-width: 460px; white-space: normal; }
 .dim { opacity: 0.4; text-decoration: line-through; }
 .comp-link:hover { text-decoration: underline; }
-.no-pointer :deep(tbody tr) { cursor: default; }
 /* The header cell is grey; the tick-all box matches the row boxes. */
 .use-all { color: rgba(var(--v-theme-on-surface), var(--v-high-emphasis-opacity)); }
 .grade-table { background: transparent !important; }
