@@ -173,7 +173,7 @@ watch(view, (v) => { try { localStorage.setItem('cv-view', v) } catch {} })
     <v-row dense class="mb-2">
       <v-col cols="6" lg="3">
         <StatCard label="Collection value" :value="stats ? money(stats.total_value) : '—'" icon="mdi-currency-usd" color="primary"
-          :sub="stats ? (stats.sold_cards ? `${stats.sold_cards} cards at sold prices` + (stats.asking_cards ? `, ${stats.asking_cards} at asking (too few sales)` : '') + `. Asking alone: ${money(stats.asking_value)}` : 'Asking prices so far: no sold data yet') : ''" />
+          :sub="stats ? (stats.sold_cards ? `${stats.sold_cards} cards at sold prices` + (stats.asking_cards ? `, ${stats.asking_cards} at asking (too few sales)` : '') + `. Asking alone: ${money(stats.asking_value)}` : 'Asking prices so far: no sold data yet') + (stats.flagged_cards ? `. ${stats.flagged_cards} ${stats.flagged_cards === 1 ? 'card needs' : 'cards need'} a price review` : '') : ''" />
       </v-col>
       <v-col cols="6" lg="3">
         <StatCard label="Total cards" :value="stats?.total_cards ?? '—'" icon="mdi-cards-outline" color="info" :sub="`${locations.length} storage locations`" />
@@ -312,6 +312,7 @@ watch(view, (v) => { try { localStorage.setItem('cv-view', v) } catch {} })
         <template #item.value="{ item }">
           <span class="num font-weight-semibold text-no-wrap">{{ money(item.value) }}</span>
           <v-chip v-if="item.value_basis" size="x-small" :color="item.value_basis === 'sold' ? 'success' : item.value_basis === 'manual' ? 'primary' : undefined" variant="tonal" class="ml-1" :title="item.value_basis === 'manual' ? 'A value you set yourself' : item.value_basis === 'sold' ? `Median of ${item.sold_count} recent sales` : 'Too few sales, so this is the asking-price estimate'">{{ item.value_basis === 'manual' ? 'manual' : item.value_basis === 'sold' ? `sold ${item.sold_count}` : 'asking' }}</v-chip>
+          <v-chip v-if="item.wide_spread" size="x-small" color="warning" variant="tonal" prepend-icon="mdi-chart-bell-curve" class="ml-1" title="Prices vary widely; pick a version">wide spread</v-chip>
           <v-btn v-if="debug.on" icon="mdi-bug-outline" size="x-small" variant="text" color="warning" :to="`/cards/${item.id}?debug=1`" aria-label="How this price was calculated" title="How this price was calculated" @click.stop />
         </template>
       </v-data-table>
@@ -326,7 +327,7 @@ watch(view, (v) => { try { localStorage.setItem('cv-view', v) } catch {} })
               <strong class="truncate">{{ c.name }}</strong>
               <span class="num font-weight-semibold text-no-wrap">{{ money(c.value) }}</span>
             </div>
-            <div v-if="c.value_basis" class="text-caption text-muted-c num">{{ c.value_basis === 'manual' ? 'your value' : c.value_basis === 'sold' ? `sold, ${c.sold_count} sales` : 'asking price' }}<template v-if="c.value_basis === 'sold' && c.est_value != null"> · asking {{ money(c.est_value) }}</template></div>
+            <div v-if="c.value_basis || c.wide_spread" class="text-caption text-muted-c num"><template v-if="c.value_basis">{{ c.value_basis === 'manual' ? 'your value' : c.value_basis === 'sold' ? `sold, ${c.sold_count} sales` : 'asking price' }}<template v-if="c.value_basis === 'sold' && c.est_value != null"> · asking {{ money(c.est_value) }}</template></template><v-chip v-if="c.wide_spread" size="x-small" color="warning" variant="tonal" prepend-icon="mdi-chart-bell-curve" :class="{ 'ml-1': c.value_basis }" title="Prices vary widely; pick a version">wide spread</v-chip></div>
             <div v-if="debug.on" class="text-caption text-muted-c truncate">#{{ c.id }} · {{ c.priced_at ? isoDate(c.priced_at).slice(0, 10) : 'never priced' }} · {{ c.id_confidence != null ? Math.round(c.id_confidence * 100) + '% match' : 'no match data' }}</div>
             <div class="text-caption text-secondary-c truncate">{{ subline(c) || '—' }}</div>
             <div class="d-flex justify-space-between align-center ga-2 mt-2">

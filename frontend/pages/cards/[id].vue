@@ -138,7 +138,7 @@ const sellDate = ref('')
 const sellNote = ref('')
 const todayISO = () => new Date().toISOString().slice(0, 10)
 function openSell() {
-  sellPrice.value = card.value?.value ?? card.value?.est_value ?? latest.value?.median ?? listPrice.value ?? null
+  sellPrice.value = card.value?.value ?? card.value?.est_value ?? (card.value?.wide_spread ? null : latest.value?.median) ?? listPrice.value ?? null
   sellDate.value = todayISO()
   sellNote.value = ''
   sellOpen.value = true
@@ -253,7 +253,7 @@ const lookUp = () => run('price', async () => {
   loadMatches()
   scores.value = {}
   suggestion.value = null
-  if (!listPrice.value) listPrice.value = res.snapshot.median
+  if (!listPrice.value && !card.value.wide_spread) listPrice.value = res.snapshot.median
   loadTrend()
 })
 
@@ -444,7 +444,7 @@ onMounted(() => {
         <v-row dense class="mb-2">
           <v-col cols="6" sm="3" class="kpi-wrap">
             <StatCard :label="card.value_basis === 'manual' ? 'Your value' : card.value_basis === 'sold' ? 'Sold value' : 'Value (asking)'" :value="money(card.value)" icon="mdi-currency-usd" color="primary"
-              :sub="card.value_basis === 'manual' ? `Set by you · ${card.sold_value != null ? 'sold ' + money(card.sold_value) : 'no sold value'} · asking ${money(card.est_value)}` : card.value_basis === 'sold' ? `Median of ${card.sold_count} sales, last 90 days · asking ${money(card.est_value)}` : card.value_basis === 'asking' ? `Asking price${card.sold_count ? `: only ${card.sold_count} sales, too few` : ': no sold data yet'}${card.priced_at ? ` · priced ${isoDate(card.priced_at).slice(0, 10)}` : ''}` : 'Not priced'" />
+              :sub="card.value_basis === 'manual' ? `Set by you · ${card.sold_value != null ? 'sold ' + money(card.sold_value) : 'no sold value'} · asking ${money(card.est_value)}` : card.value_basis === 'sold' ? `Median of ${card.sold_count} sales, last 90 days · asking ${money(card.est_value)}` : card.value_basis === 'asking' ? `Asking price${card.sold_count ? `: only ${card.sold_count} sales, too few` : ': no sold data yet'}${card.priced_at ? ` · priced ${isoDate(card.priced_at).slice(0, 10)}` : ''}` : card.wide_spread ? 'Prices vary too widely' : 'Not priced'" />
             <v-btn v-if="debug.on" icon="mdi-bug-outline" size="x-small" variant="tonal" color="warning" class="kpi-bug" aria-label="Show how this price was calculated" title="Show how this price was calculated" @click="showTrace" />
           </v-col>
           <v-col cols="6" sm="3"><StatCard :label="card.value_basis === 'sold' ? 'Lowest sale' : 'Low'" :value="money(card.value_basis === 'sold' ? card.sold_low : latest?.low)" icon="mdi-arrow-down" color="info" /></v-col>
@@ -527,7 +527,10 @@ onMounted(() => {
                   <template v-if="latest.trimmed"> {{ latest.trimmed }} outlier {{ latest.trimmed === 1 ? 'price was' : 'prices were' }} left out.</template>
                   Asking prices run higher than sold prices.
                 </v-alert>
-                <v-alert v-if="latest && !card.parallel && (latest.spread ?? 0) >= 0.8" type="warning" variant="tonal" density="compact" class="mt-3" icon="mdi-chart-bell-curve">
+                <v-alert v-if="card.wide_spread" type="warning" variant="tonal" density="compact" class="mt-3" icon="mdi-chart-bell-curve">
+                  No asking value is shown because these listings vary too much<template v-if="latest?.spread != null"> (the middle half spans {{ Math.round(latest.spread * 100) }}% of the median)</template>. Picking your version above, or unticking listings that aren't this card in the listings table, clears this and brings the asking value back.
+                </v-alert>
+                <v-alert v-else-if="latest && !card.parallel && (latest.spread ?? 0) >= 0.8" type="warning" variant="tonal" density="compact" class="mt-3" icon="mdi-chart-bell-curve">
                   These prices vary a lot (the middle half spans {{ Math.round((latest.spread ?? 0) * 100) }}% of the median), which usually means several versions of this card are mixed together. Pick your version above, or use the listings table to leave out ones that aren't yours.
                 </v-alert>
                 <p v-if="!latest" class="text-body-2 text-secondary-c mt-4 mb-0">No value yet. Look it up to see what similar cards are listed for.</p>
