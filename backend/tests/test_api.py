@@ -1388,6 +1388,25 @@ def test_every_sale_is_kept_and_prices_use_only_the_window(monkeypatch):
         assert info["on_record"] == 4 and info["since"]  # the junk lot isn't counted
 
 
+def test_sold_compare_median_trims_outliers_like_sold_refresh(monkeypatch):
+    from statistics import median
+
+    from app.config import get_settings
+    from app.services import sold_refresh
+    monkeypatch.setattr(get_settings(), "sold_monthly_budget", 50)
+    prices = [10, 11, 12, 13, 14, 15, 16, 17, 500]  # the $500 sale is far outside the others
+    page = [_sale(i, "Trim Card", p, i + 1) for i, p in enumerate(prices)]
+    monkeypatch.setattr(sold_refresh, "get_sold", lambda: _FakeSold([page]))
+    with TestClient(app) as c:
+        card = c.post("/api/cards", json={"name": "Trim Card", "category": "sports", "grade": "Raw"}).json()
+        out = c.post(f"/api/cards/{card['id']}/sold/refresh").json()
+        g = next(x for x in c.get(f"/api/cards/{card['id']}/sold-compare?days=90").json()["grades"] if x["grade"] == "Raw")
+        assert g["sold_source"] == "sold"
+        assert g["sold_median"] == out["median"] == out["sold_value"] == c.get(f"/api/cards/{card['id']}").json()["sold_value"]
+        assert g["sold_median"] == 13.5 and g["sold_median"] != median(prices) == 14  # the outlier is trimmed, as in the sold value
+        assert g["sold_count"] == 9  # every real sale is counted, trimmed or not
+
+
 def test_paging_back_only_when_there_may_be_a_gap(monkeypatch):
     from app.config import get_settings
     from app.services import sold_refresh
