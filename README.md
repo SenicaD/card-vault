@@ -98,7 +98,8 @@ checks for the same printed design: from 55 to 80 a listing is kept with 30+ mat
 with 100+ (a strong match rescues a picture CLIP misjudges). Debug mode shows each listing's confidence and
 matching points in "How this price was calculated". Without this install, or if the model can't be downloaded,
 the filter is skipped: no listing is left out and prices are worked out as before, with a note in the trace.
-The thresholds are in `app/services/lookalike.py`.
+Redemption cards skip the picture comparison too, because they all share a generic back: they are matched on
+card number and redemption status instead, with a note in the trace. The thresholds are in `app/services/lookalike.py`.
 
 ### eBay
 Set `EBAY_MODE=live` and fill in keys from developer.ebay.com. Start with `EBAY_ENV=sandbox`.
