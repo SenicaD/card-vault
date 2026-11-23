@@ -4,7 +4,6 @@ A card's value is what it sold for (median of its recent sales) when it has enou
 asking-price estimate otherwise. The history uses the same rule for every date: the sales in the 90 days
 up to that date, else the asking price at that time.
 """
-import statistics
 from bisect import bisect_left, bisect_right
 from collections import defaultdict
 from datetime import date, timedelta
@@ -15,8 +14,10 @@ from sqlmodel import Session, col, select
 from ..config import get_settings
 from ..db import get_session
 from ..models import ASKING_SOURCES, Card, CardStatus, Location, PriceSnapshot, SoldSale, utcnow
+from ..services.ebay import EbayItem
 from ..services.grading import normalize_grade
 from ..services.parallels import parse_parallel
+from ..services.pricing import summarize
 from .common import card_value
 
 router = APIRouter(prefix="/api/portfolio", tags=["portfolio"])
@@ -62,17 +63,14 @@ def _asking_at(points: list[tuple[date, float]], day: date) -> float | None:
 
 
 def _sold_at(sales: tuple[list[date], list[float]] | None, day: date, window: int, minimum: int) -> float | None:
-    """The sold value as it stood on `day`: median of the sales in the window before it (outliers trimmed
-    from 8 sales up, as everywhere else), or None when there were too few."""
+    """The sold value as it stood on `day`: median of the sales in the window before it, by pricing.summarize
+    (the same rule as the card's sold value: outliers trimmed from 8 sales up), or None when too few remain."""
     if not sales:
         return None
     dates, prices = sales
     chunk = prices[bisect_right(dates, day - timedelta(days=window)):bisect_right(dates, day)]
-    if len(chunk) >= 8:
-        q1, _, q3 = statistics.quantiles(chunk, n=4)
-        lo, hi = q1 - 1.5 * (q3 - q1), q3 + 1.5 * (q3 - q1)
-        chunk = [p for p in chunk if lo <= p <= hi]
-    return round(statistics.median(chunk), 2) if len(chunk) >= minimum else None
+    stats = summarize([EbayItem(item_id=str(i), title="", price=p) for i, p in enumerate(chunk)])
+    return stats["median"] if stats["sample_size"] >= minimum else None
 
 
 @router.get("")
