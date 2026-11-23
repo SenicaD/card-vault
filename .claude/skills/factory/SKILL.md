@@ -21,7 +21,7 @@ tell the user; never work around it.
 ## The pipeline
 
 ```
-intake (fable)     → ACCEPT (scope possibly changed) | NEEDS-INFO | REJECT, posted as an issue comment
+intake (opus)       → ACCEPT (scope possibly changed) | NEEDS-INFO | REJECT, posted as an issue comment
 route (script)     → reviewers + models from risk/surfaces via config.json
 worktree           → factory/<job-id> from origin/<base>
 spec-writer (opus) → spec.md
@@ -89,6 +89,24 @@ builder gets `5100 + 10n`, `reviewer-ux` `5101 + 10n` and `reviewer-ui`
 Name the builder `builder-<id>`. Resume it with `SendMessage` to that name
 when this session spawned it; otherwise spawn a new `builder` with that name.
 Start every message to it with `<header>` too.
+
+## Stalls
+
+Nothing may wait forever. `config.json` sets `checks_timeout_s` (900: the
+gate kills `checks.sh` and fails with `timed out`) and `agent_timeout_s`
+(1800). The gate also frees the job's three dev-server ports before it runs.
+
+An agent you spawned that has run longer than `agent_timeout_s` without
+finishing is stalled. `factory/bin/job queue` and `job summary` also flag a
+running job `STALLED` when nothing in its job folder or worktree has changed
+for that long. Check on running agents each time a job finishes and whenever
+you report. For a stalled agent:
+
+1. Stop it with `TaskStop`.
+2. Resume it once (the builder via **Resuming**) with: `You were stopped for
+   running too long. Check git log and build.md, then continue and finish.`
+3. If the same step stalls a second time, `factory/bin/job advance <id> needs-human`
+   and tell the user which agent and step.
 
 ## Advancing a job
 

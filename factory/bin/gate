@@ -14,6 +14,8 @@ branch modifies or deletes a file matching config.json `protected_paths`
 
 import fnmatch
 import json
+import os
+import signal
 import subprocess
 import sys
 import time
@@ -52,10 +54,33 @@ def protected_changes(worktree):
     return hits
 
 
+def free_ports(job_id):
+    """Kill whatever still listens on the job's dev-server ports (a dead agent's leftovers)."""
+    n = int(job_id.split("-")[0])
+    base, step = CONFIG["ports"]["base"], CONFIG["ports"]["step"]
+    for port in range(base + step * n, base + step * n + 3):
+        res = subprocess.run(["lsof", "-tiTCP:%d" % port, "-sTCP:LISTEN"], capture_output=True, text=True)
+        for pid in res.stdout.split():
+            try:
+                os.kill(int(pid), signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+
 def run_checks(worktree):
     start = time.monotonic()
-    res = subprocess.run(["bash", str(CHECKS)], cwd=worktree, capture_output=True, text=True)
-    return res.returncode, res.stdout + res.stderr, int(time.monotonic() - start)
+    limit = CONFIG["checks_timeout_s"]
+    proc = subprocess.Popen(["bash", str(CHECKS)], cwd=worktree, text=True, start_new_session=True,
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    try:
+        out, _ = proc.communicate(timeout=limit)
+        code = proc.returncode
+    except subprocess.TimeoutExpired:
+        os.killpg(proc.pid, signal.SIGKILL)
+        out, _ = proc.communicate()
+        out += f"\nfactory/checks.sh timed out after {limit}s and was killed.\n"
+        code = 124
+    return code, out, int(time.monotonic() - start)
 
 
 def gate(job_id, merge):
@@ -66,13 +91,14 @@ def gate(job_id, merge):
     round_dir = FACTORY / "jobs" / job_id / f"round-{job['round']}"
     commit = git(worktree, "rev-parse", "HEAD").strip()
     protected = protected_changes(worktree)
+    free_ports(job_id)
     code, log, seconds = run_checks(worktree)
     verdict = "PASS" if code == 0 and not protected else "FAIL"
     name = "merge-checks" if merge else "checks"
     (round_dir / f"{name}.log").write_text(log)
     tail = "\n".join(log.rstrip().splitlines()[-TAIL:])
     summary = [
-        f"checks.sh {'passed' if code == 0 else f'failed with exit {code}'} in {seconds}s",
+        f"checks.sh {'passed' if code == 0 else 'timed out' if code == 124 else f'failed with exit {code}'} in {seconds}s",
         f"Protected paths: {'changed: ' + ', '.join(protected) if protected else 'none changed'}",
         f"Commit {commit[:7]}" + (", synced with the latest main before merging" if merge else ""),
     ]

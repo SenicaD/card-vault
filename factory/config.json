@@ -1,6 +1,8 @@
 {
   "concurrency": 3,
   "max_rounds": 3,
+  "checks_timeout_s": 900,
+  "agent_timeout_s": 1800,
   "base_branch": "main",
   "merge_method": "merge",
   "labels": {
