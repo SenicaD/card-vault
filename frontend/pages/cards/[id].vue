@@ -362,11 +362,11 @@ const ruleItems = computed(() => [
   { value: 'default', title: `Use the default${defaultRule.value ? ` (${ruleTitle(defaultRule.value)})` : ''}` },
   ...WIDE_SPREAD_ACTIONS.map((a) => ({ value: a.value, title: a.title })),
 ])
-// The window the rule takes, with the current Settings N (the median of all when there were N or fewer)
+// The window the rule takes, with the current Settings N (the average of all when there were N or fewer)
 const ruleText = computed(() => {
   const rule = card.value?.spread_rule, n = priceWindow.value, k = latest.value?.sample_size
   if (!rule || n == null) return ''
-  if (k != null && k <= n) return k === 1 ? 'the price of its only listing' : `the median of all ${k} listings`
+  if (k != null && k <= n) return k === 1 ? 'the price of its only listing' : `the average of all ${k} listings`
   return windowText(rule, n)
 })
 // How many of the listings in the price count (own grade and version, not unticked) the window actually values the card from

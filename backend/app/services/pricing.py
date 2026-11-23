@@ -23,7 +23,7 @@ def apply_asking(card, median: float | None, spread: float | None, prices: list[
                  app_settings=None) -> None:
     """Set the card's asking estimate from a quote.
 
-    With app_settings, the card's own wide_spread_action (else the saved default) can value every card: at the median
+    With app_settings, the card's own wide_spread_action (else the saved default) can value every card: at the average (mean)
     of the price_window most expensive, middle or cheapest asking listings, after outliers are left out (see
     window_value). spread_rule records which rule did. With the "flag" rule (or no listings to take a window from),
     the card gets the median of all its listings, unless they spread beyond MAX_PRICE_SPREAD: then it is flagged and
@@ -55,9 +55,9 @@ def window_of(items: list, rule: str, n: int, price=lambda i: i) -> list:
 
 
 def window_value(prices: list[float], rule: str, n: int) -> float | None:
-    """The median of the window (see window_of) of the prices; None with no prices left."""
+    """The mean (average) of the window (see window_of) of the prices; None with no prices left."""
     p = window_of(prices, rule, n)
-    return round(statistics.median(p), 2) if p else None
+    return round(statistics.mean(p), 2) if p else None
 
 
 def asking_listings(items: list, parallel: str | None, exclude: set[str], ident: CardIdentity | None) -> list:

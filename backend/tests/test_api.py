@@ -2739,7 +2739,7 @@ def test_excluding_a_listing_moves_the_window(restore_settings):
         out = c.post(f"/api/cards/{card['id']}/matches/exclude", json={"item_ids": [f"{card['id']}-l7"], "excluded": True})
         assert out.status_code == 200 and out.json()["snapshot"]["spread"] > 1.0
         got = c.get(f"/api/cards/{card['id']}").json()
-        assert got["est_value"] == 500 and got["wide_spread"] is False and got["spread_rule"] == "highest_group"
+        assert got["est_value"] == 533.33 and got["wide_spread"] is False and got["spread_rule"] == "highest_group"  # mean of 400, 500, 700
 
 
 def test_default_settings_still_flag_a_wide_spread_card():
@@ -2836,7 +2836,7 @@ def test_highest_group_on_refresh_value_uses_only_the_asking_listings(monkeypatc
         assert got["est_value"] == 700 and got["wide_spread"] is False and got["spread_rule"] == "highest_group"
 
 
-@pytest.mark.parametrize("rule, value", [("lowest_group", 3.2), ("median", 3.8)])
+@pytest.mark.parametrize("rule, value", [("lowest_group", 3.23), ("median", 135.77)])  # means of 3, 3.2, 3.5 and of 3.5, 3.8, 400
 def test_lowest_group_and_median_rules_value_a_wide_spread_card(restore_settings, rule, value):
     with TestClient(app) as c:
         settings = {**DEFAULT_SETTINGS, "wide_spread_action": rule, "price_window": 3}
@@ -2848,13 +2848,12 @@ def test_lowest_group_and_median_rules_value_a_wide_spread_card(restore_settings
 
 
 @pytest.mark.parametrize("rule", ["highest_group", "median", "lowest_group"])
-def test_every_window_rule_takes_the_median_of_all_with_n_or_fewer_listings(restore_settings, rule):
+def test_every_window_rule_takes_the_mean_of_all_with_n_or_fewer_listings(restore_settings, rule):
     with TestClient(app) as c:
         assert c.put("/api/settings", json={**DEFAULT_SETTINGS, "wide_spread_action": rule}).status_code == 200
         card = _spread_card(c, f"Window All {rule}")
         got = _reprice_from_saved(c, card)
-        assert got["est_value"] == 201.9 and got["wide_spread"] is False and got["spread_rule"] == rule
-        assert got["est_value"] == c.get(f"/api/cards/{card['id']}/prices").json()[0]["median"]
+        assert got["est_value"] == 314.19 and got["wide_spread"] is False and got["spread_rule"] == rule  # mean of all 8
 
 
 def test_a_cards_own_rule_overrides_the_default_and_applies_at_once(restore_settings):
@@ -2866,7 +2865,7 @@ def test_a_cards_own_rule_overrides_the_default_and_applies_at_once(restore_sett
         got = c.patch(url, json={"wide_spread_action": "highest_group"}).json()
         assert got["wide_spread_action"] == "highest_group" and got["est_value"] == 700 and got["spread_rule"] == "highest_group"
         got = c.patch(url, json={"wide_spread_action": "lowest_group"}).json()
-        assert got["est_value"] == 3.2 and got["spread_rule"] == "lowest_group" and got["wide_spread"] is False
+        assert got["est_value"] == 3.23 and got["spread_rule"] == "lowest_group" and got["wide_spread"] is False
         # the card's own choice wins over the saved default, also at the next pricing
         assert c.put("/api/settings", json=HIGHEST_GROUP).status_code == 200
         got = c.patch(url, json={"wide_spread_action": "flag"}).json()
