@@ -24,6 +24,7 @@ log = logging.getLogger("cardvault.refresh")
 
 CHECK_EVERY_SECONDS = 3600  # how often to look for cards that are due
 PAUSE_BETWEEN_CARDS = 1.0  # be polite to the eBay API
+BULK_WORKERS = 4  # cards a hand-started bulk re-price works on at once
 MAX_TRACKED_GRADES = 6
 LOOKUP_ON_ADD = True  # look a new card up on eBay as soon as it's added (tests switch this off)
 
@@ -238,8 +239,11 @@ def start_job(ids: list[int] | None, pause: float | None = None) -> RepriceJob |
 
 
 async def _run_job(job: RepriceJob, plans: list[tuple], pause: float) -> None:
-    try:
-        for plan, name, before in plans:
+    queue = list(reversed(plans))
+
+    async def worker() -> None:
+        while queue:
+            plan, name, before = queue.pop()
             try:
                 await reprice_card(*plan, trigger="bulk")
                 with Session(engine) as session:
@@ -252,6 +256,9 @@ async def _run_job(job: RepriceJob, plans: list[tuple], pause: float) -> None:
                 log.warning("bulk re-price failed for card %s (%r): %s", plan[0], plan[1], e)
             job.done += 1
             await asyncio.sleep(pause)
+
+    try:
+        await asyncio.gather(*(worker() for _ in range(BULK_WORKERS)))
     finally:
         job.state, job.finished_at = "done", utcnow()
         record_run("bulk", job.started_at, job.total, job.done - job.failed, job.failed, job.errors)
