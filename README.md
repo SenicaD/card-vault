@@ -32,6 +32,30 @@ plain http. Live in-browser camera preview (getUserMedia) would need https.
 
 Tests: `cd backend && pytest`. API docs: `http://localhost:8000/docs`.
 
+## Deploy to the UGREEN NAS
+
+Run from the repository in WSL or on a Linux machine with Git, Bash and SSH access to
+`senicad@ugreen-nas-1`. The NAS's SSH host key must already be trusted and the account
+must be able to run Docker Compose.
+
+```bash
+./scripts/deploy-ugreen.sh --check  # read-only check of the NAS project and live app
+./scripts/deploy-ugreen.sh          # deploy the current commit
+./scripts/deploy-ugreen.sh <git-revision>
+```
+
+The script packages committed source, so commit any local changes you want to deploy.
+It briefly pauses the backend to back up SQLite and the photos, verifies the archive,
+and resumes the old app while the new images build. If the data changes during the build,
+the script takes a fresh backup at cutover. Backups and checksums are stored on the NAS
+under `/volume1/docker/projects/cardvault-backups/`.
+
+Only the two CardVault services are restarted. The script checks the live app at
+`http://ugreen-nas-1:3020`, including the configured identification and eBay modes,
+settings, inventory, SQLite integrity and photo checksums. If the update fails those
+checks, the script restores the previous images and source and verifies the app again.
+The verified archives are available if the database or photos need a separate restore.
+
 ## The flow
 
 1. **Storage**: create the binders, boxes and shelves your cards live in.
