@@ -1,0 +1,6 @@
+# Optional: judge which eBay listings show your card with CLIP and OpenCV instead of colour (see README).
+# CPU-only torch is a much smaller download:
+#   pip install --extra-index-url https://download.pytorch.org/whl/cpu -r requirements-clip.txt
+torch==2.15.0
+open_clip_torch==4.2.2
+opencv-python-headless==5.1.0.95

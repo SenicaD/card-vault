@@ -18,6 +18,7 @@ DECISIONS = {
     "unknown_grade": "The title doesn't say a grade",
     "grade_not_requested": "A grade you didn't ask about",
     "other_card": "A different player, year or card number",
+    "not_alike": "Doesn't look like your photo",
     "excluded": "You unticked it",
     "other_version": "A different version of the card",
     "outlier": "Price far from the rest",
@@ -40,6 +41,7 @@ class Trace:
         self.image_path: str | None = None
         self.source_image: str | None = None
         self._listings: dict[str, dict[str, Any]] = {}
+        self.looks: dict[str, dict[str, Any]] = {}  # item id -> look-alike confidence "s" and feature matches "m"
         self._t0 = time.monotonic()
 
     @contextmanager
@@ -55,8 +57,10 @@ class Trace:
         self.notes.append(text)
 
     def decide(self, item, grade: str | None, decision: str, version: str | None = None) -> None:
+        look = self.looks.get(item.item_id, {})
         self._listings[item.item_id] = {"id": item.item_id, "t": item.title[:110], "p": item.price, "g": grade,
-                                        "v": version, "d": decision, "r": None, "u": item.url}
+                                        "v": version, "d": decision, "r": None, "u": item.url,
+                                        "s": look.get("s"), "m": look.get("m")}
 
     def role(self, item_id: str, role: str) -> None:
         if item_id in self._listings and self._listings[item_id]["d"] == "used":

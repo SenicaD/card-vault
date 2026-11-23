@@ -78,7 +78,7 @@ async def reprice_card(card_id: int, query: str, own: str, tracked: list[str], i
                 log.exception("could not save the trace for card %s", card_id)
                 session.rollback()
             try:  # after the commit, so a failure here can never lose the prices
-                await track_listings(session, card_id, groups)
+                await track_listings(session, card_id, groups, forget=priced.not_alike)
             except Exception:
                 log.exception("listing tracking failed for card %s", card_id)
                 session.rollback()
