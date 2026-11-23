@@ -2088,6 +2088,45 @@ def test_listings_for_another_identity_are_traced(monkeypatch):
     assert trace.summary["other_identity"] == 0 and trace.funnel[0]["other_identity"] == 0
 
 
+def test_redemption_cards_skip_photo_look_alike_matching(monkeypatch):
+    import asyncio
+
+    from app.services import pricing
+    from app.services.identity import CardIdentity
+    from app.services.trace import Trace
+    found = _pics(*[(f"x{n}", p, t) for n, (t, p) in enumerate(_CARD46_REDEMPTIONS + _CARD46_OTHERS + _CARD46_BTP)])
+    redemptions = {f"x{n}" for n in range(len(_CARD46_REDEMPTIONS))}
+    _alike_ebay(monkeypatch, found)
+    calls = []
+    _alike_scores(monkeypatch, {i.item_id: 10 if i.item_id in {"x0", "x1"} else 90 for i in found}, calls)
+    trace = Trace()
+    p = asyncio.run(pricing.quote_grades("q", ["Raw"], image=b"photo", trace=trace, ident=CardIdentity("crajmi", True)))
+    assert calls == []  # the pictures were never compared
+    assert p.source == "ebay-image" and not p.not_alike
+    assert not [r for r in trace.listings if r["d"] == "not_alike"]
+    assert trace.summary["not_alike"] == 0 and trace.summary["lookalike"] is None
+    assert trace.funnel and all(f["not_alike"] == 0 for f in trace.funnel)
+    assert sum("Photo matching was skipped because this is a redemption card" in n for n in trace.notes) == 1
+    assert not [n for n in trace.notes if "look like the" in n or "photo comparison failed" in n]
+    assert {r["id"] for r in trace.listings if r["d"] == "other_identity"} == {i.item_id for i in found} - redemptions
+    assert p.quotes[0].sample_size == len(_CARD46_REDEMPTIONS)  # the low-scoring redemptions are priced too
+
+
+def test_other_cards_keep_photo_look_alike_matching(monkeypatch):
+    import asyncio
+
+    from app.services import pricing
+    from app.services.identity import CardIdentity
+    from app.services.trace import Trace
+    _alike_ebay(monkeypatch, _pics(*_ABCDE))
+    _alike_scores(monkeypatch, _ALIKE)
+    trace = Trace()
+    p = asyncio.run(pricing.quote_grades("q", ["Raw"], image=b"photo", trace=trace, ident=CardIdentity(None, False)))
+    assert p.not_alike == {"D", "E"} and trace.summary["lookalike"] == "clip"
+    assert {r["id"] for r in trace.listings if r["d"] == "not_alike"} == {"D", "E"}
+    assert not [n for n in trace.notes if "Photo matching was skipped" in n]
+
+
 def test_identity_of_card_reads_redemption_from_the_card():
     from types import SimpleNamespace
 
