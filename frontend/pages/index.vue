@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { useDisplay } from 'vuetify'
+import type { TableHeader } from '~/composables/tables'
 import { CATEGORY_LABELS, STATUS_LABELS, type Card, type Category, type Location, type Stats } from '~/types'
 
 const { api } = useApi()
@@ -51,15 +52,19 @@ const sortItems = [
   { value: 'oldest_price', title: 'Oldest price first' },
 ]
 
-const headers = [
-  { title: 'Card', key: 'name', sortable: false },
-  { title: 'Type', key: 'category', sortable: false },
-  { title: 'Location', key: 'location', sortable: false },
-  { title: 'Grade', key: 'grade', sortable: false },
-  { title: 'Qty', key: 'quantity', sortable: false, align: 'end' as const },
-  { title: 'Status', key: 'status', sortable: false },
-  { title: 'Value', key: 'value', sortable: false, align: 'end' as const },
-  { title: 'Asking', key: 'est_value', sortable: false, align: 'end' as const },
+// Clicking a column heading sorts the loaded cards (empty values last); the Sort menu sets the order they arrive in.
+const tableSort = ref<{ key: string; order?: boolean | 'asc' | 'desc' }[]>([])
+const desc = (key: string) => () => tableSort.value.find((s) => s.key === key)?.order === 'desc'
+const col = (h: TableHeader<Card>): TableHeader<Card> => ({ ...h, sortRaw: columnCompare(h, desc(h.key)) })
+const headers: TableHeader<Card>[] = [
+  col({ title: 'Card', key: 'name' }),
+  col({ title: 'Type', key: 'category', value: (c) => CATEGORY_LABELS[c.category] }),
+  col({ title: 'Location', key: 'location', value: (c) => locName(c.location_id) }),
+  col({ title: 'Grade', key: 'grade' }),
+  col({ title: 'Qty', key: 'quantity', align: 'end' }),
+  col({ title: 'Status', key: 'status', value: (c) => STATUS_LABELS[c.status] }),
+  col({ title: 'Value', key: 'value', align: 'end' }),
+  col({ title: 'Asking', key: 'est_value', align: 'end' }),
 ]
 
 // Category mix bar: one segment per category, coloured from a fixed categorical palette.
@@ -151,6 +156,7 @@ async function revalueAll() {
 let t: ReturnType<typeof setTimeout>
 watch(q, () => { clearTimeout(t); t = setTimeout(load, 250) })
 watch([category, status, locationId, sort, grade, flags], load)
+watch(sort, () => { tableSort.value = [] }) // a new Sort menu choice replaces a heading sort
 watch([minValue, maxValue], () => { clearTimeout(t); t = setTimeout(load, 400) })
 // Header search navigates here with ?q=
 watch(() => route.query.q, (v) => { q.value = (v as string) || '' })
@@ -293,6 +299,7 @@ watch(view, (v) => { try { localStorage.setItem('cv-view', v) } catch {} })
       <v-data-table
         v-else-if="showTable"
         :headers="headers"
+        v-model:sort-by="tableSort"
         v-model="selected"
         :items="cards"
         item-value="id"

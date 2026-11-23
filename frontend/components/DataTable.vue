@@ -21,23 +21,10 @@ const itemsPerPage = defineModel<number>('itemsPerPage', { default: 10 })
 const attrs = useAttrs()
 const slots = useSlots()
 
-// Empty values go last both ways. Vuetify swaps a and b for descending, so this checks the order itself.
-function compare(h: TableHeader) {
-  return (a: unknown, b: unknown) => {
-    const x = columnValue(h, a)
-    const y = columnValue(h, b)
-    const xe = x == null || x === ''
-    const ye = y == null || y === ''
-    if (xe || ye) {
-      if (xe && ye) return 0
-      return xe !== (sortBy.value.find((s) => s.key === h.key)?.order === 'desc') ? 1 : -1
-    }
-    return typeof x === 'number' && typeof y === 'number' ? x - y : String(x).toLowerCase().localeCompare(String(y).toLowerCase())
-  }
-}
+const isDesc = (key: string) => sortBy.value.find((s) => s.key === key)?.order === 'desc'
 
 const tableHeaders = computed(() =>
-  props.headers.map(({ text, ...h }) => (h.sortable === false || h.sortRaw ? h : { ...h, sortRaw: compare(h) })),
+  props.headers.map(({ text, ...h }) => (h.sortable === false || h.sortRaw ? h : { ...h, sortRaw: columnCompare(h, () => isDesc(h.key)) })),
 )
 const rows = computed(() => searchRows(props.items, props.headers, search.value))
 const total = computed(() => props.total ?? props.items.length)
