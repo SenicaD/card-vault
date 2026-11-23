@@ -15,7 +15,8 @@ from ..db import engine
 from ..models import ASKING_SOURCES, Card, JobRun, ListingSeen, CardStatus, PriceSnapshot, utcnow
 from .grading import grade_sort_key, normalize_grade
 from .identity import identity_of_card, who_of_card
-from .pricing import apply_asking, card_image, quote_grades
+from .app_settings import load_app_settings
+from .pricing import apply_asking, asking_listings, card_image, quote_grades
 from .trace import Trace, save_trace
 from .tracker import track_listings
 
@@ -64,13 +65,15 @@ async def reprice_card(card_id: int, query: str, own: str, tracked: list[str], i
         card = session.get(Card, card_id)
         if card and card.status != CardStatus.sold:
             card.grade_counts, card.grade_counts_at = counts, utcnow()
+            app_settings = load_app_settings(session)
+            prices = [i.price for i in asking_listings(groups.get(own, []), parallel, skip, ident)]
             for q in quotes:
                 session.add(PriceSnapshot(card_id=card_id, **q.model_dump()))
                 if q.grade == own:  # the estimate follows only the card's own grade
-                    apply_asking(card, q.median, q.spread)
+                    apply_asking(card, q.median, q.spread, prices, app_settings)
                     card.priced_at = utcnow()
             if own_empty and not any(q.grade == own for q in quotes):
-                card.est_value, card.wide_spread, card.priced_at = None, False, utcnow()  # no matching listings: don't keep an old, wrong number
+                card.est_value, card.wide_spread, card.from_price_group, card.priced_at = None, False, False, utcnow()  # no matching listings: don't keep an old, wrong number
             session.add(card)
             session.commit()
             ok = bool(quotes)

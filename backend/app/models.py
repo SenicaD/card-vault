@@ -109,6 +109,8 @@ class Card(CardBase, table=True):
     reviewed: bool = False
     # True when the asking prices spread too widely (above MAX_PRICE_SPREAD) to give an asking value.
     wide_spread: bool = False
+    # True while the asking value is the highest price group's median, used because the prices spread too widely.
+    from_price_group: bool = False
     # What matching copies actually sold for (median of the last 90 days' sales of the card's own grade and
     # version), kept beside the asking-price estimate. None until enough sales are on record.
     sold_value: float | None = None
@@ -190,6 +192,7 @@ class CardRead(CardBase):
     parallel: str | None = None
     reviewed: bool = False
     wide_spread: bool = False
+    from_price_group: bool = False
     sold_value: float | None = None
     sold_count: int = 0
     sold_low: float | None = None
@@ -200,6 +203,16 @@ class CardRead(CardBase):
     value_basis: str | None = None  # "manual" | "sold" | "asking" | None (no price yet)
     created_at: datetime
     updated_at: datetime
+
+
+# ---------- App settings you change on the Settings page ----------
+
+class AppSettings(SQLModel, table=True):
+    """A single row; until it is saved the defaults apply."""
+
+    id: int | None = Field(default=None, primary_key=True)
+    min_group_size: int = 2  # a price group needs at least this many listings
+    wide_spread_action: str = "flag"  # "flag" (no asking value) | "highest_group" (value from the highest price group)
 
 
 # ---------- Price snapshots ----------
