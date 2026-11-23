@@ -11,6 +11,8 @@ cd ../frontend && npm ci
 
 Demo mode mocks card identification and eBay, so no keys are needed. Never commit `.env`, `*.db` or `backend/data/`. The root `.venv` has no pytest; use `backend/.venv`.
 
+UI reviewers need the `agent-browser` CLI to take real screenshots: `npm install -g agent-browser`. Without it they can only read the code.
+
 ## Dev servers
 
 ```bash
