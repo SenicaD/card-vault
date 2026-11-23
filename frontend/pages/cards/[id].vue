@@ -178,8 +178,8 @@ const subline = computed(() => {
 })
 
 function fieldsOf(c: Card): CardFields {
-  const { category, name, set_name, year, card_number, variant, grade, condition, quantity, location_id, slot, notes, search_query, cost, manual_value } = c
-  return { category, name, set_name, year, card_number, variant, grade, condition, quantity, location_id, slot, notes, search_query, cost, manual_value }
+  const { category, name, set_name, year, card_number, variant, grade, condition, quantity, location_id, slot, notes, search_query, cost, manual_value, is_redemption, is_auto } = c
+  return { category, name, set_name, year, card_number, variant, grade, condition, quantity, location_id, slot, notes, search_query, cost, manual_value, is_redemption, is_auto }
 }
 
 function defaultTitle(c: Card) {
