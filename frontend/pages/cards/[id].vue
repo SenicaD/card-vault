@@ -356,11 +356,12 @@ const ruleItems = computed(() => [
   { value: 'default', title: `Use the default${defaultRule.value ? ` (${ruleTitle(defaultRule.value)})` : ''}` },
   ...WIDE_SPREAD_ACTIONS.map((a) => ({ value: a.value, title: a.title })),
 ])
-// The window the rule took its median of, with the current Settings N (the median of all when there were N or fewer)
+// The window the rule takes, with the current Settings N (the median of all when there were N or fewer)
 const ruleText = computed(() => {
   const rule = card.value?.spread_rule, n = priceWindow.value, k = latest.value?.sample_size
   if (!rule || n == null) return ''
-  return k != null && k <= n ? `the median of all ${k} listings` : `the median of ${windowText(rule, n)}`
+  if (k != null && k <= n) return k === 1 ? 'the price of its only listing' : `the median of all ${k} listings`
+  return windowText(rule, n)
 })
 const setRule = (v: string) => run('rule', async () => {
   card.value = await api<Card>(`/api/cards/${id}`, { method: 'PATCH', body: { wide_spread_action: v === 'default' ? null : v } })
@@ -591,6 +592,7 @@ onMounted(() => {
                 </v-alert>
                 <v-alert v-else-if="card.spread_rule" type="info" variant="tonal" density="compact" class="mt-3" icon="mdi-chart-bell-curve">
                   These listings' prices vary too widely<template v-if="latest?.spread != null"> (the middle half spans {{ Math.round(latest.spread * 100) }}% of the median)</template>, so the asking value of {{ money(card.est_value) }}<template v-if="ruleText"> is {{ ruleText }}</template>, {{ card.wide_spread_action ? 'as chosen for this card below' : 'the default on the Settings page' }}.
+                  <template v-if="ruleText"> This uses the current "Listings to price from" setting; if you changed it after this card was priced, the value updates the next time it's priced.</template>
                   <div v-for="(g, i) in clusters" :key="i" class="mt-1">
                     ~{{ money(g.median) }} · {{ money(g.low) }}–{{ money(g.high) }} · {{ g.count }} {{ g.count === 1 ? 'listing' : 'listings' }}<template v-if="g.versions.length"> · {{ g.versions[0].name }}</template>
                   </div>
