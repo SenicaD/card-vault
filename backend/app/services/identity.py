@@ -9,6 +9,8 @@ import re
 import unicodedata
 from typing import NamedTuple
 
+from .parallels import REDEMPTION_RX, card_code, classify_listing, code_key
+
 _SUFFIX = {"jr", "sr", "ii", "iii", "iv", "v"}
 _YEAR = re.compile(r"\b(19[5-9]\d|20[0-4]\d)(?:\s?[-/]\s?(\d{2}))?\b")
 _NUM = re.compile(r"#\s?([A-Za-z]{0,4}-?\d+[A-Za-z]?)(?!\s?/)")
@@ -60,3 +62,26 @@ def same_card(title: str, who: Who | None) -> bool:
         if nums and who.number.lstrip("0") not in nums:
             return False
     return True
+
+
+class CardIdentity(NamedTuple):
+    code: str | None  # code_key of the card number, when the number is a card code ("CRA-JMI")
+    redemption: bool
+
+
+def identity_of_card(card) -> CardIdentity | None:
+    """The card code and redemption status listings must match; None when the card is too uncertain (as who_of_card)."""
+    if card.id_confidence is not None and card.id_confidence < 0.5:
+        return None
+    texts = (card.name, card.set_name, card.variant, card.card_number, card.search_query)
+    return CardIdentity(card_code(card.card_number), any(REDEMPTION_RX.search(t) for t in texts if t))
+
+
+def fits_identity(title: str, ident: CardIdentity | None) -> bool:
+    """False when the title shows only other card codes, or is a redemption and the card isn't (or the other way round)."""
+    if ident is None:
+        return True
+    c = classify_listing(title)
+    if ident.code and c.codes and ident.code not in {code_key(k) for k in c.codes}:
+        return False
+    return c.redemption == ident.redemption
