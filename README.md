@@ -52,6 +52,8 @@ Tests: `cd backend && pytest`. API docs: `http://localhost:8000/docs`.
 4. **Value**: on a card's page, "Refresh value" re-runs that eBay search (filters lots and reprints, trims
    outliers and, for a card with a photo and the optional CLIP install, leaves out listings whose picture
    clearly doesn't look like it) and stores a new low / median / high snapshot. The median becomes the card's estimate.
+   A card whose number is a set code (e.g. CRA-JMI) is only priced from listings that show that code or no code, and a
+   redemption card only from redemption listings (other cards never from redemption listings).
 5. **Sell**: "List on eBay" creates an inventory item, an offer, and publishes it. The card moves to Listed.
 
 The queue lives in memory: it survives moving between pages, but not a reload (the browser warns first).
