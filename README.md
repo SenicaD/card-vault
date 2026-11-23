@@ -63,11 +63,14 @@ Tests: `cd backend && pytest`. API docs: `http://localhost:8000/docs`.
    A flagged card's page lists the price groups found among its listings (typical price, range, count and most
    common version), so you can tell which version is which.
    The **Settings** page (in the sidebar) has two settings for this. "Minimum listings per price group" (2 to 20,
-   default 2) leaves smaller groups out as strays. "When prices spread too widely" either flags the card (the default)
-   or uses the highest price group: a card that would otherwise be flagged is valued at its most expensive group's
-   typical price instead, and its page says so and lists the groups. If no groups are found it is still flagged.
+   default 2) leaves smaller groups out as strays. "When prices spread too widely" is the default rule for a card
+   that would otherwise be flagged: flag it (the default), or value it at the higher price group's typical price, the
+   median of all its listings, or the lower price group's typical price. With the group rules, a card with no groups
+   found is still flagged. The card page says which rule set the value and lists the groups.
    Changes apply the next time a card is priced (Refresh value, ticking or unticking listings, the daily or bulk
    re-price, or the lookup after adding a card); saving does not re-price existing cards.
+   A card can override the default with "When this card's prices spread too widely" on its page, shown while its
+   prices spread too widely. That choice re-values the card straight away from its saved listings.
 5. **Sell**: "List on eBay" creates an inventory item, an offer, and publishes it. The card moves to Listed.
 
 The queue lives in memory: it survives moving between pages, but not a reload (the browser warns first).
