@@ -1212,6 +1212,7 @@ def test_sold_compare_asking_vs_gone():
         g = r["grades"][0]
         assert g["grade"] == "PSA 10" and g["asking_median"] == 110 and g["asking_count"] == 2
         assert g["sold_median"] == 85 and g["sold_count"] == 2  # the 300-day-old one is outside the window
+        assert g["sold_source"] == "estimated" and g["sold_left_out"] == 0
         assert g["gap"] == -25 and g["gap_pct"] == -22.7 and g["days_median"] == 8
         assert len(r["rows"]) == 2 and r["rows"][0]["days_listed"] == 8 and r["source"] == "estimated"
         assert len(c.get(f"/api/cards/{card['id']}/sold-compare", params={"days": 0}).json()["rows"]) == 3
@@ -1462,7 +1463,8 @@ def test_sold_compare_median_trims_outliers_like_sold_refresh(monkeypatch):
         assert g["sold_source"] == "sold"
         assert g["sold_median"] == out["median"] == out["sold_value"] == c.get(f"/api/cards/{card['id']}").json()["sold_value"]
         assert g["sold_median"] == 13.5 and g["sold_median"] != median(prices) == 14  # the outlier is trimmed, as in the sold value
-        assert g["sold_count"] == 9  # every real sale is counted, trimmed or not
+        assert g["sold_count"] == 8 and g["sold_left_out"] == 1  # the count is the sales the median used
+        assert g["sold_count"] == c.get(f"/api/cards/{card['id']}").json()["sold_count"]
 
 
 def test_paging_back_only_when_there_may_be_a_gap(monkeypatch):
