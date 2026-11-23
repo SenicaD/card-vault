@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { useDisplay } from 'vuetify'
+import type { TableHeader } from '~/composables/tables'
 import type { Location } from '~/types'
 
 const { api } = useApi()
@@ -20,12 +21,12 @@ const KINDS = [
 ]
 const kindIcon = (k: string) => KINDS.find((x) => x.value === k)?.icon || 'mdi-archive-outline'
 
-const headers = [
+const headers: TableHeader<Location>[] = [
   { title: 'Name', key: 'name' },
   { title: 'Kind', key: 'kind' },
-  { title: 'Cards', key: 'card_count', align: 'end' as const },
-  { title: 'Created', key: 'created_at' },
-  { title: '', key: 'actions', sortable: false, align: 'end' as const, width: 120 },
+  { title: 'Cards', key: 'card_count', align: 'end' },
+  { title: 'Created', key: 'created_at', text: (l) => isoDate(l.created_at).slice(0, 10) },
+  { title: '', key: 'actions', sortable: false, align: 'end', width: 120 },
 ]
 
 const totalCards = computed(() => locations.value.reduce((a, l) => a + l.card_count, 0))
@@ -125,12 +126,13 @@ onMounted(load)
               </v-list-item>
             </template>
           </v-list>
-          <v-data-table
+          <DataTable
             v-else
             :headers="headers"
             :items="locations"
             :loading="loading"
-            items-per-page="25"
+            search-placeholder="Search locations"
+            empty-text="No locations yet. Add your first one, then pick it when you scan."
             @click:row="(_: unknown, r: { item: Location }) => open(r.item)"
           >
             <template #item.name="{ item }">
@@ -146,10 +148,7 @@ onMounted(load)
               <v-btn icon="mdi-open-in-new" variant="text" size="small" :aria-label="`Open ${item.name}`" @click.stop="open(item)" />
               <v-btn icon="mdi-delete-outline" variant="text" size="small" color="error" :aria-label="`Delete ${item.name}`" @click.stop="pendingDelete = item" />
             </template>
-            <template #no-data>
-              <div class="py-8 text-secondary-c">No locations yet. Add your first one, then pick it when you scan.</div>
-            </template>
-          </v-data-table>
+          </DataTable>
         </v-card>
       </v-col>
     </v-row>

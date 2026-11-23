@@ -28,6 +28,7 @@ cd frontend && npx nuxt build      # typecheck/build; there are no frontend unit
 ```
 
 Follow the existing code style and keep diffs small. Add backend pytest tests for new behaviour.
+Client-side data tables use `components/DataTable.vue`: three-click sort with empty values last, search, 10/25/50/100 paging and empty states. Inventory and the Scan queue are not converted yet.
 
 ## Software factory
 
