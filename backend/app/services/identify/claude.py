@@ -16,12 +16,14 @@ Respond with ONLY a JSON object, no prose and no code fences, with these keys:
   "name": string,             // player name for sports, card name for TCG
   "set_name": string | null,  // e.g. "Topps Chrome", "Base Set", "Revised"
   "year": string | null,
-  "card_number": string | null,  // as printed, e.g. "4/102", "LOB-001", "136"
+  "card_number": string | null,  // exactly as printed, letter-only codes too, e.g. "4/102", "LOB-001", "136", "CRA-JMI"
   "variant": string | null,   // parallel, foil, refractor, 1st Edition, alt art, rookie...
   "grade": string | null,     // slab grade, or "Raw" if ungraded
   "condition": string | null, // for raw cards only: NM, LP, MP, HP, DMG (best visual estimate)
   "confidence": number,       // 0-1, your confidence in name+set+number
-  "search_query": string      // concise eBay search query that would find this exact card
+  "search_query": string,     // concise eBay search query that would find this exact card
+  "is_redemption": true | false, // a redemption/exchange card, e.g. "You are due to receive..."
+  "is_auto": true | false     // the card is autographed or is an autograph card
 }
 Use null for anything you cannot read. Do not guess card numbers you cannot see."""
 

@@ -30,6 +30,7 @@ export interface Card extends CardFields {
   grade_counts_at?: string | null
   parallel?: string | null
   reviewed?: boolean
+  wide_spread?: boolean // asking prices spread too widely to give an asking value
   sold_value?: number | null // what it sold for (median of recent sales), beside the asking-based estimate
   sold_count?: number
   sold_low?: number | null
@@ -214,6 +215,7 @@ export interface Stats {
   total_value: number
   asking_value: number
   asking_cards: number
+  flagged_cards?: number // unsold cards whose asking prices spread too widely to value
   sold_value: number
   sold_cards: number
   asking_value_of_sold_cards: number

@@ -21,6 +21,8 @@ _SAMPLES: list[dict] = [
          year="2023", card_number="246", variant="Borderless", grade="Raw", condition="NM"),
     dict(category=CardCategory.yugioh, name="Blue-Eyes White Dragon", set_name="Legend of Blue Eyes",
          year="2002", card_number="LOB-001", variant="1st Edition", grade="Raw", condition="LP"),
+    dict(category=CardCategory.sports, name="Jacob Misiorowski", set_name="Bowman Chrome", year="2026",
+         card_number="CRA-JMI", variant="Refractor, Auto, RC", grade="Raw", is_redemption=True, is_auto=True),
 ]
 
 

@@ -54,6 +54,9 @@ Tests: `cd backend && pytest`. API docs: `http://localhost:8000/docs`.
    clearly doesn't look like it) and stores a new low / median / high snapshot. The median becomes the card's estimate.
    A card whose number is a set code (e.g. CRA-JMI) is only priced from listings that show that code or no code, and a
    redemption card only from redemption listings (other cards never from redemption listings).
+   When the middle half of the prices spans more than `MAX_PRICE_SPREAD` (default 100%) of the median, the card is
+   flagged "wide spread" and gets no asking value until picking its version, unticking listings or a later re-price
+   narrows it, and flagged cards are left out of value totals.
 5. **Sell**: "List on eBay" creates an inventory item, an offer, and publishes it. The card moves to Listed.
 
 The queue lives in memory: it survives moving between pages, but not a reload (the browser warns first).
@@ -65,8 +68,9 @@ The queue lives in memory: it survives moving between pages, but not a reload (t
 IDENTIFIER=claude
 ANTHROPIC_API_KEY=sk-ant-...
 ```
-The prompt asks for category, name, set, year, number, variant, slab grade, condition, a confidence
-score, and an eBay-ready search query. See `app/services/identify/claude.py`.
+The prompt asks for category, name, set, year, number (as printed, letter-only codes like `CRA-JMI`
+too), variant, slab grade, condition, a confidence score, an eBay-ready search query, and whether the
+card is a redemption and/or an autograph (`is_redemption`, `is_auto`). See `app/services/identify/claude.py`.
 
 ### Card identification by eBay image search (no AI key)
 ```
@@ -74,7 +78,9 @@ IDENTIFIER=ebay
 EBAY_MODE=live
 ```
 Sends the photo to eBay's Browse `search_by_image`, then reads name, year, set, number, variant and
-grade from what the best-matching listing titles agree on. Confidence is how many of the top matches
+grade from what the best-matching listing titles agree on. Letter-only codes like `CRA-JMI` are read
+when a title has no numeric one, and the redemption and autograph flags are set when at least half the
+titles say "redemption" or "auto"/"autograph"/"RPA". Confidence is how many of the top matches
 are clearly the same listing. The matches double as the price comps, so each scan is one eBay call.
 Visually identical cards (base vs. colour parallels, raw vs. slabbed) can mix, so check the fields and
 re-price with a tighter search when it matters. See `app/services/identify/ebay_image.py`.

@@ -25,6 +25,8 @@ class Settings(BaseSettings):
 
     # Re-price unsold cards this often so the trend chart fills in (live eBay only). 0 turns it off.
     price_refresh_hours: float = 24
+    # Widest middle-half spread of asking prices, as a share of the median, that still gets an asking value.
+    max_price_spread: float = 1.0
 
     # Sold prices from SoldComps (sold-comps.com). Leave the key empty to switch the feature off.
     soldcomps_api_key: str = ""

@@ -11,6 +11,7 @@ from ..services.imagecrop import CropBox, CropError, crop_saved_image
 from ..services.grading import normalize_grade
 from ..services.identify import CardIdentification, build_search_query, get_identifier
 from ..services import refresh as refresh_service
+from ..services.pricing import apply_asking
 from ..services.sold_refresh import recompute_sold
 from ..services.trace import identification_trace, save_trace
 from .common import get_card_or_404, to_read
@@ -107,6 +108,8 @@ def stats(session: Session = Depends(get_session)):
     out["total_value"], out["asking_value"] = round(total, 2), round(asking, 2)  # headline value; the asking-only total beside it
     out["sold_value"], out["sold_cards"], out["asking_value_of_sold_cards"] = round(sv, 2), n, round(ask_of_sold, 2)
     out["asking_cards"] = fallback  # cards still valued at their asking estimate for lack of sales
+    # cards whose asking prices spread too widely to give an asking value
+    out["flagged_cards"] = session.exec(select(func.count()).where(Card.wide_spread == True, live)).one()  # noqa: E712
     s = get_settings()
     out["modes"] = {"identifier": s.identifier, "ebay": s.ebay_mode}
     return out
@@ -120,7 +123,7 @@ def create_card(body: CardCreate, background: BackgroundTasks, session: Session 
             name=card.name, set_name=card.set_name, year=card.year, card_number=card.card_number,
             variant=card.variant, grade=card.grade, search_query=""))
     if body.price:
-        card.est_value = body.price.median
+        apply_asking(card, body.price.median, body.price.spread)
         card.priced_at = utcnow()
     session.add(card)
     session.commit()
@@ -226,7 +229,8 @@ def apply_update(session: Session, card: Card, changes: dict) -> None:
         snap = session.exec(select(PriceSnapshot).where(
             PriceSnapshot.card_id == card.id, col(PriceSnapshot.source).in_(ASKING_SOURCES), PriceSnapshot.grade == new_grade, PriceSnapshot.parallel == card.parallel,
             col(PriceSnapshot.median).is_not(None)).order_by(col(PriceSnapshot.created_at).desc()).limit(1)).first()
-        card.est_value, card.priced_at = (snap.median, snap.created_at) if snap else (None, None)
+        apply_asking(card, snap.median if snap else None, snap.spread if snap else None)
+        card.priced_at = snap.created_at if snap else None
         recompute_sold(session, card)  # the sold-based value belongs to the grade and version too
     elif {"name", "year", "card_number", "id_confidence", "set_name", "variant", "search_query"} & changes.keys():
         session.flush()

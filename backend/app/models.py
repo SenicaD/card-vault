@@ -104,6 +104,8 @@ class Card(CardBase, table=True):
     parallel: str | None = None
     # True once you've looked the card over in the review queue, so it stops being offered there.
     reviewed: bool = False
+    # True when the asking prices spread too widely (above MAX_PRICE_SPREAD) to give an asking value.
+    wide_spread: bool = False
     # What matching copies actually sold for (median of the last 90 days' sales of the card's own grade and
     # version), kept beside the asking-price estimate. None until enough sales are on record.
     sold_value: float | None = None
@@ -182,6 +184,7 @@ class CardRead(CardBase):
     grade_counts_at: datetime | None = None
     parallel: str | None = None
     reviewed: bool = False
+    wide_spread: bool = False
     sold_value: float | None = None
     sold_count: int = 0
     sold_low: float | None = None
