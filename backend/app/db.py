@@ -35,6 +35,7 @@ def _add_missing_columns() -> None:
                  "is_redemption": "BOOLEAN DEFAULT 0", "is_auto": "BOOLEAN DEFAULT 0", "wide_spread_action": "VARCHAR", "spread_rule": "VARCHAR"},
         "listingseen": {"excluded": "BOOLEAN DEFAULT 0"},
         "soldsale": {"condition": "VARCHAR", "shipping": "FLOAT", "junk": "BOOLEAN DEFAULT 0"},
+        "appsettings": {"price_window": "INTEGER DEFAULT 10"},
     }
     with engine.begin() as conn:
         for table, cols in additions.items():

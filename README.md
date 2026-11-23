@@ -62,11 +62,14 @@ Tests: `cd backend && pytest`. API docs: `http://localhost:8000/docs`.
    narrows it, and flagged cards are left out of value totals.
    A flagged card's page lists the price groups found among its listings (typical price, range, count and most
    common version), so you can tell which version is which.
-   The **Settings** page (in the sidebar) has two settings for this. "Minimum listings per price group" (2 to 20,
-   default 2) leaves smaller groups out as strays. "When prices spread too widely" is the default rule for a card
-   that would otherwise be flagged: flag it (the default), or value it at the higher price group's typical price, the
-   median of all its listings, or the lower price group's typical price. With the group rules, a card with no groups
-   found is still flagged. The card page says which rule set the value and lists the groups.
+   The **Settings** page (in the sidebar) has three settings for this. "Minimum listings per price group" (2 to 20,
+   default 2) leaves smaller groups out as strays; it only shapes the groups shown on the card page. "When prices
+   spread too widely" is the default rule for a card that would otherwise be flagged: flag it (the default), or value
+   it with Highest, Median or Lowest, the median of the N most expensive listings, the N in the middle of the price
+   order, or the N cheapest. N is "Listings to price from" (1 to 50, default 10). The window is taken from the card's
+   asking listings after the same outlier trim as the asking median; with N or fewer listings left, every rule takes
+   the median of all of them, and a card with no listings left is still flagged. The card page says which rule set
+   the value and lists the groups.
    Changes apply the next time a card is priced (Refresh value, ticking or unticking listings, the daily or bulk
    re-price, or the lookup after adding a card); saving does not re-price existing cards.
    A card can override the default with "When this card's prices spread too widely" on its page, shown while its

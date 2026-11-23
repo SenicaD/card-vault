@@ -70,8 +70,9 @@ class LocationRead(LocationBase):
 
 # ---------- Cards ----------
 
-# What a card whose asking prices spread too widely gets: flagged with no asking value, or valued at the highest or
-# lowest price group's median, or at the median of all its listings
+# What a card whose asking prices spread too widely gets: flagged with no asking value, or valued at the median of the
+# N most expensive ("highest_group"), N middle ("median") or N cheapest ("lowest_group") listings, N being the
+# Settings page's price_window
 WideSpreadAction = Literal["flag", "highest_group", "median", "lowest_group"]
 
 class CardBase(SQLModel):
@@ -115,8 +116,8 @@ class Card(CardBase, table=True):
     wide_spread: bool = False
     # This card's own choice of what it gets when its prices spread too widely; None follows the Settings page.
     wide_spread_action: str | None = None
-    # The rule that set the asking value because the prices spread too widely ("highest_group" | "median" |
-    # "lowest_group"); None when the value is the plain median or there is none.
+    # The window rule that set the asking value because the prices spread too widely ("highest_group" | "median" |
+    # "lowest_group", see WideSpreadAction); None when the value is the plain median or there is none.
     spread_rule: str | None = None
     # What matching copies actually sold for (median of the last 90 days' sales of the card's own grade and
     # version), kept beside the asking-price estimate. None until enough sales are on record.
@@ -222,6 +223,7 @@ class AppSettings(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     cluster_min_size: int = 2  # a price group needs at least this many listings
     wide_spread_action: str = "flag"  # the default for every card without its own choice; see WideSpreadAction
+    price_window: int = 10  # how many listings the Highest, Median and Lowest rules take the median of
 
 
 # ---------- Price snapshots ----------
