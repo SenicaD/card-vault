@@ -23,16 +23,20 @@ def apply_asking(card, median: float | None, spread: float | None, prices: list[
                  app_settings=None) -> None:
     """Set the card's asking estimate from a quote, unless its prices spread too widely to trust.
 
-    Above MAX_PRICE_SPREAD the card is flagged and gets no asking value; otherwise the flag is cleared. When the
-    saved settings say to use the highest price group and the asking listings' prices form groups, the card gets
-    that group's median instead of the flag.
+    Above MAX_PRICE_SPREAD the card is flagged and gets no asking value; otherwise the flag is cleared. With
+    app_settings, the card's own wide_spread_action (else the saved default) can value it instead: at the median of
+    all its listings, or at the highest or lowest price group's median when the asking listings' prices form groups.
+    spread_rule records which rule did.
     """
-    card.from_price_group = False
+    card.spread_rule = None
     if median is not None and spread is not None and spread > get_settings().max_price_spread:
-        use_group = prices is not None and app_settings is not None and app_settings.wide_spread_action == "highest_group"
-        groups = price_clusters(prices, app_settings.cluster_min_size) if use_group else []
-        if groups:
-            card.wide_spread, card.est_value, card.from_price_group = False, groups[-1].median, True
+        rule = (card.wide_spread_action or app_settings.wide_spread_action) if app_settings is not None else "flag"
+        value = median if rule == "median" else None
+        if rule in ("highest_group", "lowest_group") and prices is not None:
+            groups = price_clusters(prices, app_settings.cluster_min_size)
+            value = (groups[-1] if rule == "highest_group" else groups[0]).median if groups else None
+        if value is not None:
+            card.wide_spread, card.est_value, card.spread_rule = False, value, rule
         else:
             card.wide_spread, card.est_value = True, None
     else:

@@ -91,7 +91,7 @@ async def price_card(card_id: int, body: PriceRequest | None = None,
         apply_asking(card, own_snap.median, own_snap.spread, [i.price for i in listings], load_app_settings(session))
         card.priced_at = utcnow()
     elif own_snap:  # the search ran but nothing matched this card: don't keep an old, wrong number
-        card.est_value, card.wide_spread, card.from_price_group, card.priced_at = None, False, False, utcnow()
+        card.est_value, card.wide_spread, card.spread_rule, card.priced_at = None, False, None, utcnow()
     card.updated_at = utcnow()
     session.add(card)
     session.commit()

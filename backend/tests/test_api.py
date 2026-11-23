@@ -2660,7 +2660,7 @@ def test_highest_group_values_a_wide_spread_card_when_listings_are_ticked(restor
         card = _spread_card(c, "Group Untick")
         before = c.get("/api/cards/stats").json()
         got = _reprice_from_saved(c, card)
-        assert got["est_value"] == 600 and got["wide_spread"] is False and got["from_price_group"] is True
+        assert got["est_value"] == 600 and got["wide_spread"] is False and got["spread_rule"] == "highest_group"
         assert got["value"] == 600 and got["value_basis"] == "asking"
         after = c.get("/api/cards/stats").json()
         assert after["asking_value"] == pytest.approx(before["asking_value"] + 600)
@@ -2672,14 +2672,14 @@ def test_highest_group_falls_back_to_the_flag_when_no_groups_are_found(restore_s
     with TestClient(app) as c:
         assert c.put("/api/settings", json={**HIGHEST_GROUP, "cluster_min_size": 5}).status_code == 200
         got = _reprice_from_saved(c, _spread_card(c, "Group Fallback"))
-        assert got["wide_spread"] is True and got["est_value"] is None and got["from_price_group"] is False
+        assert got["wide_spread"] is True and got["est_value"] is None and got["spread_rule"] is None
 
 
 def test_default_settings_still_flag_a_wide_spread_card():
     with TestClient(app) as c:
         assert c.get("/api/settings").json() == DEFAULT_SETTINGS
         got = _reprice_from_saved(c, _spread_card(c, "Group Default"))
-        assert got["wide_spread"] is True and got["est_value"] is None and got["from_price_group"] is False
+        assert got["wide_spread"] is True and got["est_value"] is None and got["spread_rule"] is None
 
 
 def _fake_quote_grades(quote, prefix, extra=()):
@@ -2710,7 +2710,7 @@ def test_highest_group_on_reprice(monkeypatch, restore_settings):
         before = c.get("/api/cards/stats").json()
         asyncio.run(refresh.reprice_card(card["id"], "q", "Raw", ["Raw"], None, None))
         got = c.get(f"/api/cards/{card['id']}").json()
-        assert got["est_value"] == 600 and got["wide_spread"] is False and got["from_price_group"] is True
+        assert got["est_value"] == 600 and got["wide_spread"] is False and got["spread_rule"] == "highest_group"
         assert got["value"] == 600 and got["value_basis"] == "asking"
         after = c.get("/api/cards/stats").json()
         assert after["total_value"] == pytest.approx(before["total_value"] + 600)
@@ -2729,18 +2729,18 @@ def test_a_group_value_is_replaced_by_the_next_pricing(monkeypatch, restore_sett
         card = _mk(c, name="Group Next", grade="Raw")
         reprice = lambda: asyncio.run(refresh.reprice_card(card["id"], "q", "Raw", ["Raw"], None, None))  # noqa: E731
         reprice()
-        assert c.get(f"/api/cards/{card['id']}").json()["from_price_group"] is True
+        assert c.get(f"/api/cards/{card['id']}").json()["spread_rule"] == "highest_group"
         quote.update(median=123.0, spread=0.5)  # within MAX_PRICE_SPREAD: the plain median
         reprice()
         got = c.get(f"/api/cards/{card['id']}").json()
-        assert got["est_value"] == 123 and got["wide_spread"] is False and got["from_price_group"] is False
+        assert got["est_value"] == 123 and got["wide_spread"] is False and got["spread_rule"] is None
         quote.update(median=201.9, spread=1.9)
         reprice()
-        assert c.get(f"/api/cards/{card['id']}").json()["from_price_group"] is True
+        assert c.get(f"/api/cards/{card['id']}").json()["spread_rule"] == "highest_group"
         assert c.put("/api/settings", json=DEFAULT_SETTINGS).status_code == 200
         reprice()
         got = c.get(f"/api/cards/{card['id']}").json()
-        assert got["wide_spread"] is True and got["est_value"] is None and got["from_price_group"] is False
+        assert got["wide_spread"] is True and got["est_value"] is None and got["spread_rule"] is None
 
 
 def test_highest_group_on_refresh_value_uses_only_the_asking_listings(monkeypatch, restore_settings):
@@ -2766,4 +2766,42 @@ def test_highest_group_on_refresh_value_uses_only_the_asking_listings(monkeypatc
             session.commit()
         assert c.post(f"/api/cards/{card['id']}/price").status_code == 200
         got = c.get(f"/api/cards/{card['id']}").json()
-        assert got["est_value"] == 600 and got["wide_spread"] is False and got["from_price_group"] is True
+        assert got["est_value"] == 600 and got["wide_spread"] is False and got["spread_rule"] == "highest_group"
+
+
+@pytest.mark.parametrize("rule, value", [("lowest_group", 3.35), ("median", "snapshot")])
+def test_lowest_group_and_median_rules_value_a_wide_spread_card(restore_settings, rule, value):
+    with TestClient(app) as c:
+        assert c.put("/api/settings", json={**DEFAULT_SETTINGS, "wide_spread_action": rule}).json()["wide_spread_action"] == rule
+        card = _spread_card(c, f"Rule {rule}")
+        got = _reprice_from_saved(c, card)
+        if value == "snapshot":  # the median of all the listings, as the quote has it
+            value = c.get(f"/api/cards/{card['id']}/prices").json()[0]["median"]
+        assert got["est_value"] == value and got["wide_spread"] is False and got["spread_rule"] == rule
+        assert got["value_basis"] == "asking"
+
+
+def test_a_cards_own_rule_overrides_the_default_and_applies_at_once(restore_settings):
+    with TestClient(app) as c:
+        card = _spread_card(c, "Rule Override")
+        assert _reprice_from_saved(c, card)["wide_spread"] is True  # the default flags it
+        url = f"/api/cards/{card['id']}"
+        got = c.patch(url, json={"wide_spread_action": "highest_group"}).json()
+        assert got["wide_spread_action"] == "highest_group" and got["est_value"] == 600 and got["spread_rule"] == "highest_group"
+        got = c.patch(url, json={"wide_spread_action": "lowest_group"}).json()
+        assert got["est_value"] == 3.35 and got["spread_rule"] == "lowest_group" and got["wide_spread"] is False
+        # the card's own choice wins over the saved default, also at the next pricing
+        assert c.put("/api/settings", json={**DEFAULT_SETTINGS, "wide_spread_action": "highest_group"}).status_code == 200
+        got = c.patch(url, json={"wide_spread_action": "flag"}).json()
+        assert got["wide_spread"] is True and got["est_value"] is None and got["spread_rule"] is None
+        assert _reprice_from_saved(c, card)["wide_spread"] is True
+        # null goes back to the saved default
+        got = c.patch(url, json={"wide_spread_action": None}).json()
+        assert got["wide_spread_action"] is None and got["est_value"] == 600 and got["spread_rule"] == "highest_group"
+
+
+def test_a_cards_own_rule_must_be_a_known_one():
+    with TestClient(app) as c:
+        card = _mk(c, name="Rule Unknown")
+        assert c.patch(f"/api/cards/{card['id']}", json={"wide_spread_action": "sometimes"}).status_code == 422
+        assert c.get(f"/api/cards/{card['id']}").json()["wide_spread_action"] is None

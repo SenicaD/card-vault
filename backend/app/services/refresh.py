@@ -73,7 +73,7 @@ async def reprice_card(card_id: int, query: str, own: str, tracked: list[str], i
                     apply_asking(card, q.median, q.spread, prices, app_settings)
                     card.priced_at = utcnow()
             if own_empty and not any(q.grade == own for q in quotes):
-                card.est_value, card.wide_spread, card.from_price_group, card.priced_at = None, False, False, utcnow()  # no matching listings: don't keep an old, wrong number
+                card.est_value, card.wide_spread, card.spread_rule, card.priced_at = None, False, None, utcnow()  # no matching listings: don't keep an old, wrong number
             session.add(card)
             session.commit()
             ok = bool(quotes)
