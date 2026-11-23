@@ -133,11 +133,15 @@ export interface SimilarityResult {
 }
 
 export type WideSpreadAction = 'flag' | 'highest_group' | 'median' | 'lowest_group'
-// The listings Highest, Median and Lowest take the median of, n being the Settings page's "Listings to price from"
-export const windowText = (rule: Exclude<WideSpreadAction, 'flag'>, n: number) =>
-  ({ highest_group: `the ${n} most expensive listings`, median: `the ${n} listings in the middle of the price order`, lowest_group: `the ${n} cheapest listings` })[rule]
-const windowHint = (rule: Exclude<WideSpreadAction, 'flag'>) => (n: number) =>
-  `The median of ${windowText(rule, n)}, after outliers are left out. With ${n} or fewer listings, the median of all of them.`
+// What Highest, Median and Lowest take, n being the Settings page's "Listings to price from": the median of n
+// listings, or a single listing's price when n is 1
+export const windowText = (rule: Exclude<WideSpreadAction, 'flag'>, n: number) => n === 1
+  ? `the price of ${({ highest_group: 'the most expensive listing', median: 'the listing in the middle of the price order', lowest_group: 'the cheapest listing' })[rule]}`
+  : `the median of ${({ highest_group: `the ${n} most expensive listings`, median: `the ${n} listings in the middle of the price order`, lowest_group: `the ${n} cheapest listings` })[rule]}`
+const windowHint = (rule: Exclude<WideSpreadAction, 'flag'>) => (n: number) => {
+  const text = windowText(rule, n)
+  return `${text[0].toUpperCase()}${text.slice(1)}, after outliers are left out.${n > 1 ? ` With ${n} or fewer listings, the median of all of them.` : ''}`
+}
 export const WIDE_SPREAD_ACTIONS: { value: WideSpreadAction; title: string; hint: (n: number) => string }[] = [
   { value: 'flag', title: 'Flag the card and leave it unvalued', hint: () => 'The card shows a "wide spread" warning and gets no asking value until you pick its version or untick listings.' },
   { value: 'highest_group', title: 'Highest', hint: windowHint('highest_group') },
