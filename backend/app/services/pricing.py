@@ -10,7 +10,7 @@ from ..models import PriceQuote
 from .debuglog import current_purpose
 from .ebay import EbayItem, get_ebay
 from .grading import grade_sort_key, parse_grade
-from .identity import Who, same_card
+from .identity import CardIdentity, Who, fits_identity, same_card
 from .parallels import parse_parallel
 from .lookalike import LOOKALIKE_BORDERLINE, LOOKALIKE_MIN_CONFIDENCE, LOOKALIKE_MIN_MATCHES, LOOKALIKE_STRONG_MATCHES
 from .lookalike import compare as compare_pictures
@@ -155,7 +155,8 @@ LOOKALIKE_MAX_IMAGES = 40  # listing pictures fetched per lookup
 
 
 async def _not_alike(image: bytes, items: list[EbayItem], groups: dict[str, list[EbayItem]], grades: list[str],
-                     parallel: str | None, exclude: set[str], trace=None) -> tuple[list[tuple[EbayItem, str]], str | None]:
+                     parallel: str | None, exclude: set[str], trace=None,
+                     ident: CardIdentity | None = None) -> tuple[list[tuple[EbayItem, str]], str | None]:
     """The listings of the requested grades whose picture clearly doesn't look like the card's photo, with their
     grade, and how the pictures were compared ("clip", or None when nothing was: no pictures, or no CLIP).
 
@@ -182,7 +183,8 @@ async def _not_alike(image: bytes, items: list[EbayItem], groups: dict[str, list
         for i in walk:
             if i.image_url in scores:
                 trace.looks[i.item_id] = {"s": scores[i.image_url], "m": look.matches.get(i.image_url)}
-    priceable = lambda i: i.item_id not in exclude and (not parallel or parse_parallel(i.title) == parallel)  # noqa: E731
+    priceable = lambda i: (i.item_id not in exclude and (not parallel or parse_parallel(i.title) == parallel)  # noqa: E731
+                           and fits_identity(i.title, ident))
     out = []
     for g in grades:
         group = groups.get(g, [])
@@ -220,18 +222,20 @@ class Priced(NamedTuple):
 
 def build_quotes(groups: dict[str, list[EbayItem]], grades: list[str], query: str, source: str,
                  parallel: str | None = None, exclude: set[str] = frozenset(),
-                 trace=None) -> tuple[list[PriceQuote], list[EbayItem]]:
+                 trace=None, ident: CardIdentity | None = None) -> tuple[list[PriceQuote], list[EbayItem]]:
     """Price each grade from already-fetched listings, leaving out the versions and listings you ruled out.
 
     parallel limits a card to one colour/print-run version ("Green /99"); exclude holds item ids you
-    marked as "not my card". Returns the quotes and the listings they were built from. With a trace,
-    what happened to every listing is recorded.
+    marked as "not my card"; ident leaves out listings for another card code or redemption status.
+    Returns the quotes and the listings they were built from. With a trace, what happened to every
+    listing is recorded.
     """
     quotes, used = [], []
+    other_identity = 0
     for g in grades:
         full = groups.get(g, [])
-        group = [i for i in full if i.item_id not in exclude
-                 and (not parallel or parse_parallel(i.title) == parallel)]
+        fits = {i.item_id for i in full if i.item_id not in exclude and fits_identity(i.title, ident)}
+        group = [i for i in full if i.item_id in fits and (not parallel or parse_parallel(i.title) == parallel)]
         stats, dropped, fences = summarize_ex(group)
         quotes.append(PriceQuote(query=query, source=source, grade=g, parallel=parallel,
                                  top_listings=top_listings(group), **stats))
@@ -243,6 +247,8 @@ def build_quotes(groups: dict[str, list[EbayItem]], grades: list[str], query: st
                 v = parse_parallel(i.title)
                 if i.item_id in exclude:
                     d = "excluded"
+                elif i.item_id not in fits:
+                    d = "other_identity"
                 elif i.item_id not in kept_ids:
                     d = "other_version"
                 elif i.item_id in out_ids:
@@ -255,17 +261,24 @@ def build_quotes(groups: dict[str, list[EbayItem]], grades: list[str], query: st
             refs = stats.get("price_refs") or {}
             for role, ref in refs.items():
                 trace.role(ref["item_id"], role)
+            dropped_identity = sum(i.item_id not in exclude and i.item_id not in fits for i in full)
+            other_identity += dropped_identity
             trace.funnel.append({
                 "grade": g, "found": len(full), "excluded": sum(i.item_id in exclude for i in full),
-                "other_version": sum(i.item_id not in exclude and i.item_id not in kept_ids for i in full),
+                "other_identity": dropped_identity,
+                "other_version": sum(i.item_id in fits and i.item_id not in kept_ids for i in full),
                 "outliers": len(dropped), "used": stats["sample_size"], "low": stats["low"], "median": stats["median"],
                 "high": stats["high"], "spread": stats["spread"], "fences": fences})
+    if other_identity:
+        code = f"shows a different card code than {ident.code.upper()} or " if ident.code else ""
+        rule = "isn't for a redemption card" if ident.redemption else "is for a redemption card, which this card isn't"
+        trace.note(f"{other_identity} listings were left out because their title {code}{rule}.")
     return quotes, used
 
 
 async def quote_grades(query: str, grades: list[str], image: bytes | None = None,
                        parallel: str | None = None, exclude: set[str] = frozenset(), trace=None,
-                       who: Who | None = None) -> Priced:
+                       who: Who | None = None, ident: CardIdentity | None = None) -> Priced:
     """One eBay search, priced separately for each requested grade.
 
     Asking for more grades costs no extra API calls, because the grade is read from the same results.
@@ -273,10 +286,10 @@ async def quote_grades(query: str, grades: list[str], image: bytes | None = None
     Pass a Trace to record how the numbers were reached.
     """
     with (trace.active() if trace is not None else nullcontext()):
-        return await _quote_grades(query, grades, image, parallel, exclude, trace, who)
+        return await _quote_grades(query, grades, image, parallel, exclude, trace, who, ident)
 
 
-async def _quote_grades(query, grades, image, parallel, exclude, trace, who=None) -> Priced:
+async def _quote_grades(query, grades, image, parallel, exclude, trace, who=None, ident=None) -> Priced:
     source = "ebay-active"
     items = []
     if image:  # the card's own photo finds the right card far better than words do
@@ -314,7 +327,7 @@ async def _quote_grades(query, grades, image, parallel, exclude, trace, who=None
     unlike: list[tuple[EbayItem, str]] = []  # pictures that clearly don't look like the card's photo
     method = None
     if image:
-        unlike, method = await _not_alike(image, items, groups, grades, parallel, exclude, trace)
+        unlike, method = await _not_alike(image, items, groups, grades, parallel, exclude, trace, ident)
     gone = {i.item_id for i, _ in unlike}
     if gone:
         for g in grades:
@@ -325,7 +338,7 @@ async def _quote_grades(query, grades, image, parallel, exclude, trace, who=None
             trace.note(f"{len(unlike)} listings were left out because their picture doesn't look like the card's photo "
                        f"(CLIP confidence below {LOOKALIKE_MIN_CONFIDENCE} without {LOOKALIKE_STRONG_MATCHES}+ matching "
                        f"feature points, or below {LOOKALIKE_BORDERLINE} with fewer than {LOOKALIKE_MIN_MATCHES}).")
-    quotes, used = build_quotes(groups, grades, query, source, parallel, exclude, trace)
+    quotes, used = build_quotes(groups, grades, query, source, parallel, exclude, trace, ident)
     counts = {g: len(v) for g, v in sorted(groups.items(), key=lambda kv: grade_sort_key(kv[0]) if kv[0] != "Unknown" else (9, "", 0))}
     if trace is not None:
         trace.mode, trace.query = source, query
@@ -348,6 +361,7 @@ async def _quote_grades(query, grades, image, parallel, exclude, trace, who=None
         trace.summary = {"returned": len(items) + len(rejected) + len(unlike),
                          "after_top_up": len(everything) + len(rejected) + len(unlike),
                          "other_card": len(rejected), "not_alike": len(unlike), "lookalike": method, "mode": source,
+                         "other_identity": sum(f["other_identity"] for f in trace.funnel),
                          "junk": sum(1 for i in everything if _JUNK.search(i.title)),
                          "unknown_grade": len(groups.get("Unknown", [])),
                          "grades_found": counts}

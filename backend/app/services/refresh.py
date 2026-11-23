@@ -14,7 +14,7 @@ from ..config import get_settings
 from ..db import engine
 from ..models import ASKING_SOURCES, Card, JobRun, ListingSeen, CardStatus, PriceSnapshot, utcnow
 from .grading import grade_sort_key, normalize_grade
-from .identity import who_of_card
+from .identity import identity_of_card, who_of_card
 from .pricing import apply_asking, card_image, quote_grades
 from .trace import Trace, save_trace
 from .tracker import track_listings
@@ -28,16 +28,17 @@ LOOKUP_ON_ADD = True  # look a new card up on eBay as soon as it's added (tests 
 
 
 def _plan(session: Session, c: Card) -> tuple:
-    """What to search for this card: (id, query, own grade, grades to price, photo, version)."""
+    """What to search for this card: (id, query, own grade, grades to price, photo, version, who, identity)."""
     rows = session.exec(select(PriceSnapshot.grade).where(
         PriceSnapshot.card_id == c.id, col(PriceSnapshot.source).in_(ASKING_SOURCES),
         col(PriceSnapshot.grade).is_not(None))).all()
     own = normalize_grade(c.grade)
     others = sorted(set(rows) - {own}, key=grade_sort_key)
-    return (c.id, c.search_query or c.name, own, ([own] + others)[:MAX_TRACKED_GRADES], card_image(c), c.parallel, who_of_card(c))
+    return (c.id, c.search_query or c.name, own, ([own] + others)[:MAX_TRACKED_GRADES], card_image(c), c.parallel, who_of_card(c),
+            identity_of_card(c))
 
 
-async def reprice_card(card_id: int, query: str, own: str, tracked: list[str], image, parallel, who=None,
+async def reprice_card(card_id: int, query: str, own: str, tracked: list[str], image, parallel, who=None, ident=None,
                        trigger: str = "daily") -> bool:
     """Price one card on eBay and record it. True if any grade got a price. Raises if the search fails."""
     with Session(engine) as session:
@@ -45,7 +46,8 @@ async def reprice_card(card_id: int, query: str, own: str, tracked: list[str], i
             ListingSeen.card_id == card_id, ListingSeen.excluded == True)).all())  # noqa: E712
     trace = Trace("lookup", trigger, query, tracked, parallel)
     try:
-        priced = await quote_grades(query, tracked, image, parallel=parallel, exclude=skip, trace=trace, who=who)
+        priced = await quote_grades(query, tracked, image, parallel=parallel, exclude=skip, trace=trace, who=who,
+                                    ident=ident)
     except Exception as e:
         trace.error = repr(e)[:400]
         try:

@@ -12,7 +12,7 @@ from ..models import Card, CardStatus, PriceSnapshot, SoldCall, SoldSale, utcnow
 from .debuglog import log_event
 from .ebay import EbayItem
 from .grading import normalize_grade, parse_grade
-from .identity import same_card, who_of_card
+from .identity import fits_identity, identity_of_card, same_card, who_of_card
 from .parallels import parse_parallel
 from .pricing import _JUNK, build_quotes, summarize
 from .refresh import PAUSE_BETWEEN_CARDS
@@ -65,7 +65,7 @@ def recompute_sold(session: Session, card: Card) -> None:
     s = get_settings()
     cutoff = utcnow() - timedelta(days=s.sold_window_days)
     own = normalize_grade(card.grade)
-    who = who_of_card(card)
+    who, ident = who_of_card(card), identity_of_card(card)
     for r in session.exec(select(SoldSale).where(SoldSale.card_id == card.id)).all():
         junk = bool(_JUNK.search(r.title)) or not same_card(r.title, who)  # a lot, or a look-alike (other player/year/number)
         if r.junk != junk:
@@ -74,7 +74,8 @@ def recompute_sold(session: Session, card: Card) -> None:
     session.flush()
     rows = [r for r in session.exec(select(SoldSale).where(SoldSale.card_id == card.id, SoldSale.junk == False,  # noqa: E712
                                                            SoldSale.grade == own)).all()
-            if r.ended_at and r.ended_at >= cutoff and (not card.parallel or parse_parallel(r.title) == card.parallel)]
+            if r.ended_at and r.ended_at >= cutoff and (not card.parallel or parse_parallel(r.title) == card.parallel)
+            and fits_identity(r.title, ident)]
     stats = summarize([EbayItem(item_id=r.item_id, title=r.title, price=r.price) for r in rows])
     card.sold_count = stats["sample_size"]
     enough = stats["sample_size"] >= s.sold_min_sales
@@ -177,7 +178,7 @@ async def refresh_sold(session: Session, card: Card, kind: str = "manual") -> di
     session.flush()  # so the sales just added are visible to the value below
     recompute_sold(session, card)
     grades = [own] + [g for g, lst in groups.items() if g != own and len(lst) >= MIN_SAMPLE_TO_RECORD]
-    quotes, _ = build_quotes(groups, grades, keyword, "ebay-sold", card.parallel, frozenset(), trace)
+    quotes, _ = build_quotes(groups, grades, keyword, "ebay-sold", card.parallel, frozenset(), trace, identity_of_card(card))
     for q in quotes:
         if q.median is not None and (q.grade == own or q.sample_size >= MIN_SAMPLE_TO_RECORD):
             session.add(PriceSnapshot(card_id=card.id, **q.model_dump()))
@@ -185,6 +186,7 @@ async def refresh_sold(session: Session, card: Card, kind: str = "manual") -> di
     trace.summary = {"returned": len(items), "after_top_up": sum(len(v) for v in groups.values()), "mode": "sold",
                      "junk": sum(1 for r in have.values() if r.junk), "unknown_grade": 0, "best_offer": best_offers,
                      "window_days": s.sold_window_days, "new_on_record": new_rows,
+                     "other_identity": sum(f["other_identity"] for f in trace.funnel),
                      "grades_found": {g: len(v) for g, v in groups.items()}}
     trace.note(f"{new_rows} of the {len(items)} sales returned were new to the record; {len(items) - new_rows} were already stored.")
     if best_offers:

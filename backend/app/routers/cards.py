@@ -232,9 +232,9 @@ def apply_update(session: Session, card: Card, changes: dict) -> None:
         apply_asking(card, snap.median if snap else None, snap.spread if snap else None)
         card.priced_at = snap.created_at if snap else None
         recompute_sold(session, card)  # the sold-based value belongs to the grade and version too
-    elif {"name", "year", "card_number", "id_confidence"} & changes.keys():
+    elif {"name", "year", "card_number", "id_confidence", "set_name", "variant", "search_query"} & changes.keys():
         session.flush()
-        recompute_sold(session, card)  # who the card is decides which sales are look-alikes
+        recompute_sold(session, card)  # who the card is (and whether it's a redemption) decides which sales count
     card.updated_at = utcnow()
     session.add(card)
 

@@ -52,6 +52,8 @@ Tests: `cd backend && pytest`. API docs: `http://localhost:8000/docs`.
 4. **Value**: on a card's page, "Refresh value" re-runs that eBay search (filters lots and reprints, trims
    outliers and, for a card with a photo and the optional CLIP install, leaves out listings whose picture
    clearly doesn't look like it) and stores a new low / median / high snapshot. The median becomes the card's estimate.
+   A card whose number is a set code (e.g. CRA-JMI) is only priced from listings that show that code or no code, and a
+   redemption card only from redemption listings (other cards never from redemption listings).
    When the middle half of the prices spans more than `MAX_PRICE_SPREAD` (default 100%) of the median, the card is
    flagged "wide spread" and gets no asking value until picking its version, unticking listings or a later re-price
    narrows it, and flagged cards are left out of value totals.
