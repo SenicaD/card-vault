@@ -93,10 +93,11 @@ const total = computed(() => trace.value?.summary?.after_top_up ?? trace.value?.
             <div v-if="trace.funnel?.length">
               <div class="text-body-2 mb-1">From <strong class="num">{{ total }}</strong> listings eBay returned, to the price:</div>
               <v-table density="compact" class="funnel mb-3">
-                <thead><tr><th>Grade</th><th class="text-right">Found</th><th class="text-right">You unticked</th><th class="text-right">Other versions</th><th class="text-right">Doesn't look like your photo</th><th class="text-right">Outliers</th><th class="text-right">Used</th><th class="text-right">Low</th><th class="text-right">Median</th><th class="text-right">High</th></tr></thead>
+                <thead><tr><th>Grade</th><th class="text-right">Found</th><th class="text-right">You unticked</th><th class="text-right">Other number or redemption</th><th class="text-right">Other versions</th><th class="text-right">Doesn't look like your photo</th><th class="text-right">Outliers</th><th class="text-right">Used</th><th class="text-right">Low</th><th class="text-right">Median</th><th class="text-right">High</th></tr></thead>
                 <tbody>
                   <tr v-for="f in trace.funnel" :key="f.grade" :class="{ on: f.grade === grade }" @click="grade = f.grade">
                     <td>{{ f.grade }}</td><td class="text-right num">{{ f.found }}</td><td class="text-right num">{{ f.excluded || '' }}</td>
+                    <td class="text-right num">{{ f.other_identity || '' }}</td>
                     <td class="text-right num">{{ f.other_version || '' }}</td><td class="text-right num">{{ f.not_alike || '' }}</td><td class="text-right num">{{ f.outliers || '' }}</td>
                     <td class="text-right num font-weight-bold">{{ f.used }}</td><td class="text-right num">{{ money(f.low) }}</td>
                     <td class="text-right num font-weight-bold">{{ money(f.median) }}</td><td class="text-right num">{{ money(f.high) }}</td>
@@ -128,7 +129,10 @@ const total = computed(() => trace.value?.summary?.after_top_up ?? trace.value?.
                     Looks alike <span class="num">{{ item.s }}</span><template v-if="item.m != null"> · {{ item.m }} pts</template>
                   </div>
                 </template>
-                <template #item.v="{ item }"><span class="text-caption">{{ item.v }}</span></template>
+                <template #item.v="{ item }">
+                  <span class="text-caption">{{ item.v }}</span>
+                  <div v-if="item.k" class="text-caption text-muted-c">{{ item.k }}</div>
+                </template>
                 <template #item.t="{ item }"><a :href="item.u || undefined" target="_blank" rel="noopener" class="tlink">{{ item.t }}</a></template>
                 <template #item.p="{ item }"><span class="num">{{ money(item.p) }}</span></template>
               </v-data-table>
