@@ -316,16 +316,20 @@ const compPerPage = ref(10)
 watch(hasScores, (has) => { if (!has) compSort.value = compSort.value.filter((s) => s.key !== 'look') })
 
 // Leave listings out of (or put them back into) the prices, without a new eBay search.
-// The backend takes at most 200 ids per call; the card and listings reload once, after the last batch.
+// The backend takes at most 200 ids per call; the card and listings reload once, after the last batch
+// (or after a failed one, since the batches before it are already saved).
 const setExcluded = (itemIds: string[], excluded: boolean) => run('exclude', async () => {
-  for (let i = 0; i < itemIds.length; i += 200) {
-    const res = await api<PriceResult>(`/api/cards/${id}/matches/exclude`, {
-      method: 'POST', body: { item_ids: itemIds.slice(i, i + 200), excluded, grades: selectedGrades.value },
-    })
-    history.value = [...res.snapshots, ...history.value]
+  try {
+    for (let i = 0; i < itemIds.length; i += 200) {
+      const res = await api<PriceResult>(`/api/cards/${id}/matches/exclude`, {
+        method: 'POST', body: { item_ids: itemIds.slice(i, i + 200), excluded, grades: selectedGrades.value },
+      })
+      history.value = [...res.snapshots, ...history.value]
+    }
+  } finally {
+    card.value = await api<Card>(`/api/cards/${id}`)
+    await loadMatches()
   }
-  card.value = await api<Card>(`/api/cards/${id}`)
-  await loadMatches()
 })
 const toggleInclude = (m: MatchRow) => setExcluded([m.item_id], !m.excluded)
 // The box at the top of the Use column: unticks every shown listing when any is ticked, else ticks them all.
@@ -714,7 +718,7 @@ onMounted(() => {
                 <v-data-table :headers="compHeaders" :items="shownComps" density="comfortable" v-model:sort-by="compSort" v-model:page="compPage" v-model:items-per-page="compPerPage" class="no-pointer comp-table">
                   <!-- The empty listener keeps the dash until the listings reload -->
                   <template #header.included>
-                    <v-checkbox-btn :model-value="shownTicked > 0" :indeterminate="shownTicked > 0 && shownTicked < shownComps.length" density="compact" aria-label="Use all shown listings in the prices" :disabled="busy === 'exclude' || !shownComps.length" @update:model-value="toggleAllShown" @update:indeterminate="() => {}" />
+                    <v-checkbox-btn :model-value="shownTicked > 0" class="use-all" :indeterminate="shownTicked > 0 && shownTicked < shownComps.length" density="compact" aria-label="Use all shown listings in the prices" :disabled="busy === 'exclude' || !shownComps.length" @update:model-value="toggleAllShown" @update:indeterminate="() => {}" />
                   </template>
                   <template #item.included="{ item }">
                     <v-checkbox-btn :model-value="item.included" density="compact" :aria-label="`Use this listing in the prices: ${item.title}`" :disabled="busy === 'exclude'" @update:model-value="toggleInclude(item)" />
@@ -871,6 +875,8 @@ onMounted(() => {
 .dim { opacity: 0.4; text-decoration: line-through; }
 .comp-link:hover { text-decoration: underline; }
 .no-pointer :deep(tbody tr) { cursor: default; }
+/* The header cell is grey; the tick-all box matches the row boxes. */
+.use-all { color: rgba(var(--v-theme-on-surface), var(--v-high-emphasis-opacity)); }
 .grade-table { background: transparent !important; }
 .d-grid { display: grid; gap: 14px; }
 .gone-title { max-width: 320px; }
