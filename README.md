@@ -55,6 +55,8 @@ Tests: `cd backend && pytest`. API docs: `http://localhost:8000/docs`.
    A card whose number is a set code (e.g. CRA-JMI) is only priced from listings that show that code or no other
    hyphenated code (words like SP2 or PS5 don't count as another card's code), and a redemption card only from
    redemption listings (other cards never from redemption listings).
+   A card counts as a redemption when its "Redemption card" box is ticked (set from the identification when scanned,
+   editable on the card page) or when its name, set, variant, number or search words say "redemption".
    When the middle half of the prices spans more than `MAX_PRICE_SPREAD` (default 100%) of the median, the card is
    flagged "wide spread" and gets no asking value until picking its version, unticking listings or a later re-price
    narrows it, and flagged cards are left out of value totals.
@@ -99,8 +101,9 @@ checks for the same printed design: from 55 to 80 a listing is kept with 30+ mat
 with 100+ (a strong match rescues a picture CLIP misjudges). Debug mode shows each listing's confidence and
 matching points in "How this price was calculated". Without this install, or if the model can't be downloaded,
 the filter is skipped: no listing is left out and prices are worked out as before, with a note in the trace.
-Redemption cards skip the picture comparison too, because they all share a generic back: they are matched on
-card number and redemption status instead, with a note in the trace. The thresholds are in `app/services/lookalike.py`.
+Redemption cards (as in step 4: the "Redemption card" box ticked, or "redemption" in the card's text) skip the
+picture comparison too, because they all share a generic back: they are matched on card number and redemption
+status instead, with a note in the trace. The thresholds are in `app/services/lookalike.py`.
 
 ### eBay
 Set `EBAY_MODE=live` and fill in keys from developer.ebay.com. Start with `EBAY_ENV=sandbox`.

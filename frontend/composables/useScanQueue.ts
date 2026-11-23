@@ -129,6 +129,7 @@ export function useScanQueue() {
       search_query: res.quote?.query || i.search_query,
       cost: keep ? keep.cost : ss.cost === '' || ss.cost == null ? null : Number(ss.cost),
       batch: keep ? keep.batch : ss.name.trim() || null,
+      is_redemption: i.is_redemption ?? false, is_auto: i.is_auto ?? false,
     }
     findDups(cur)
   }

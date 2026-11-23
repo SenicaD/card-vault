@@ -87,6 +87,9 @@ class CardBase(SQLModel):
     cost: float | None = None  # what you paid for ONE copy; None = not recorded
     manual_value: float | None = None  # a value you set yourself for ONE copy; it overrides sold and asking values
     batch: str | None = None  # name of the scan session it was added in, e.g. "Box 3 lot"
+    # What the identifier saw on the card: a redemption (an exchange card for a later autograph) and an autograph.
+    is_redemption: bool = False
+    is_auto: bool = False
 
 
 class Card(CardBase, table=True):
@@ -171,6 +174,8 @@ class CardUpdate(SQLModel):
     manual_value: float | None = None
     batch: str | None = None
     reviewed: bool | None = None
+    is_redemption: bool | None = None
+    is_auto: bool | None = None
 
 
 class CardRead(CardBase):
