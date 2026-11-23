@@ -285,6 +285,7 @@ export interface GradeCompare {
   asking_count: number
   sold_median: number | null
   sold_count: number
+  sold_left_out: number
   gap: number | null
   gap_pct: number | null
   days_median: number | null
