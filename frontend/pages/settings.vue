@@ -4,6 +4,8 @@ import { WIDE_SPREAD_ACTIONS, type AppSettings } from '~/types'
 const { api } = useApi()
 const size = ref('')
 const action = ref<AppSettings['wide_spread_action']>('flag')
+const windowSize = ref('')
+const savedWindow = ref<number | null>(null)
 const error = ref('')
 const notice = ref('')
 const loading = ref(true)
@@ -17,6 +19,15 @@ const sizeError = computed(() => {
   const n = Number(v)
   return n < 2 || n > 20 ? 'Must be from 2 to 20' : ''
 })
+const windowError = computed(() => {
+  const v = windowSize.value.trim()
+  if (!v) return 'Enter a number from 1 to 50'
+  if (!/^\d+$/.test(v)) return 'Use a whole number from 1 to 50'
+  const n = Number(v)
+  return n < 1 || n > 50 ? 'Must be from 1 to 50' : ''
+})
+// The N the rule hints show: what's in the field, or the saved value while the field is invalid
+const shownWindow = computed(() => (windowError.value ? savedWindow.value : Number(windowSize.value.trim())))
 
 async function load() {
   loading.value = true
@@ -24,6 +35,8 @@ async function load() {
     const s = await api<AppSettings>('/api/settings')
     size.value = String(s.cluster_min_size)
     action.value = s.wide_spread_action
+    windowSize.value = String(s.price_window)
+    savedWindow.value = s.price_window
   } catch (e: any) {
     error.value = `Couldn't load the settings: ${e.message}`
   } finally {
@@ -32,15 +45,18 @@ async function load() {
 }
 
 async function save() {
-  if (sizeError.value) return
+  if (sizeError.value || windowError.value) return
   saving.value = true
   error.value = ''
   try {
     const s = await api<AppSettings>('/api/settings', {
-      method: 'PUT', body: { cluster_min_size: Number(size.value.trim()), wide_spread_action: action.value },
+      method: 'PUT',
+      body: { cluster_min_size: Number(size.value.trim()), wide_spread_action: action.value, price_window: Number(windowSize.value.trim()) },
     })
     size.value = String(s.cluster_min_size)
     action.value = s.wide_spread_action
+    windowSize.value = String(s.price_window)
+    savedWindow.value = s.price_window
     notice.value = 'Settings saved'
   } catch (e: any) {
     error.value = `Couldn't save the settings: ${e.message}`
@@ -85,18 +101,28 @@ onMounted(load)
                   <template #label>
                     <div>
                       <div>{{ a.title }}</div>
-                      <div class="text-caption text-secondary-c">{{ a.hint }}</div>
+                      <div v-if="shownWindow != null" class="text-caption text-secondary-c">{{ a.hint(shownWindow) }}</div>
                     </div>
                   </template>
                 </v-radio>
               </v-radio-group>
               <div class="text-caption text-secondary-c mt-1">Each card can override this on its own page. The card page says which rule set its value.</div>
             </div>
+            <v-text-field
+              v-model="windowSize"
+              label="Listings to price from"
+              inputmode="numeric"
+              :disabled="loading"
+              :error-messages="loading ? [] : windowError"
+              hint="Highest, Median and Lowest take the median of this many listings. From 1 to 50."
+              persistent-hint
+              style="max-width: 360px"
+            />
             <v-alert type="info" variant="tonal" density="compact" icon="mdi-information-outline">
               Changes apply the next time a card is priced: Refresh value, ticking or unticking listings, or the daily and bulk re-price. Saving does not re-price your existing cards.
             </v-alert>
             <div>
-              <v-btn type="submit" color="primary" variant="flat" prepend-icon="mdi-content-save-outline" :loading="saving" :disabled="loading || !!sizeError">
+              <v-btn type="submit" color="primary" variant="flat" prepend-icon="mdi-content-save-outline" :loading="saving" :disabled="loading || !!sizeError || !!windowError">
                 Save
               </v-btn>
             </div>

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useDisplay } from 'vuetify'
-import { CATEGORY_LABELS, WIDE_SPREAD_ACTIONS, type AppSettings, type Card, type CardFields, type Listing, type Location, type MatchRow, type PriceCluster, type SimilarityResult, type PricePoints, type SoldCompare, type PriceResult, type PriceSnapshot, type Sale, type Trend, type TrendRange } from '~/types'
+import { CATEGORY_LABELS, WIDE_SPREAD_ACTIONS, windowText, type AppSettings, type Card, type CardFields, type Listing, type Location, type MatchRow, type PriceCluster, type SimilarityResult, type PricePoints, type SoldCompare, type PriceResult, type PriceSnapshot, type Sale, type Trend, type TrendRange } from '~/types'
 
 const { api } = useApi()
 const { xs } = useDisplay()
@@ -350,12 +350,19 @@ watch(card, async (c) => {
 
 // What this card gets when its prices spread too widely: its own choice, or the Settings page default
 const defaultRule = ref<AppSettings['wide_spread_action'] | null>(null)
+const priceWindow = ref<number | null>(null)
 const ruleTitle = (v: string | null | undefined) => WIDE_SPREAD_ACTIONS.find((a) => a.value === v)?.title
 const ruleItems = computed(() => [
   { value: 'default', title: `Use the default${defaultRule.value ? ` (${ruleTitle(defaultRule.value)})` : ''}` },
   ...WIDE_SPREAD_ACTIONS.map((a) => ({ value: a.value, title: a.title })),
 ])
-const RULE_TEXT = { highest_group: 'the typical price of the highest price group', median: 'the median of all the listings', lowest_group: 'the typical price of the lowest price group' }
+// The window the rule takes, with the current Settings N (the median of all when there were N or fewer)
+const ruleText = computed(() => {
+  const rule = card.value?.spread_rule, n = priceWindow.value, k = latest.value?.sample_size
+  if (!rule || n == null) return ''
+  if (k != null && k <= n) return k === 1 ? 'the price of its only listing' : `the median of all ${k} listings`
+  return windowText(rule, n)
+})
 const setRule = (v: string) => run('rule', async () => {
   card.value = await api<Card>(`/api/cards/${id}`, { method: 'PATCH', body: { wide_spread_action: v === 'default' ? null : v } })
 })
@@ -412,7 +419,10 @@ onMounted(() => {
     if (saved && RANGES.some((r) => r.value === saved)) range.value = saved
   } catch {}
   load() // selects the card's own grade, which loads the trend
-  api<AppSettings>('/api/settings').then((s) => (defaultRule.value = s.wide_spread_action)).catch(() => {})
+  api<AppSettings>('/api/settings').then((s) => {
+    defaultRule.value = s.wide_spread_action
+    priceWindow.value = s.price_window
+  }).catch(() => {})
 })
 </script>
 
@@ -581,7 +591,8 @@ onMounted(() => {
                   </template>
                 </v-alert>
                 <v-alert v-else-if="card.spread_rule" type="info" variant="tonal" density="compact" class="mt-3" icon="mdi-chart-bell-curve">
-                  These listings' prices vary too widely<template v-if="latest?.spread != null"> (the middle half spans {{ Math.round(latest.spread * 100) }}% of the median)</template>, so the asking value of {{ money(card.est_value) }} is {{ RULE_TEXT[card.spread_rule] }}, {{ card.wide_spread_action ? 'as chosen for this card below' : 'the default on the Settings page' }}.
+                  These listings' prices vary too widely<template v-if="latest?.spread != null"> (the middle half spans {{ Math.round(latest.spread * 100) }}% of the median)</template>, so the asking value of {{ money(card.est_value) }}<template v-if="ruleText"> is {{ ruleText }}</template>, {{ card.wide_spread_action ? 'as chosen for this card below' : 'the default on the Settings page' }}.
+                  <template v-if="ruleText"> This uses the current "Listings to price from" setting; if you changed it after this card was priced, the value updates the next time it's priced.</template>
                   <div v-for="(g, i) in clusters" :key="i" class="mt-1">
                     ~{{ money(g.median) }} · {{ money(g.low) }}–{{ money(g.high) }} · {{ g.count }} {{ g.count === 1 ? 'listing' : 'listings' }}<template v-if="g.versions.length"> · {{ g.versions[0].name }}</template>
                   </div>

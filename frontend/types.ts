@@ -133,16 +133,26 @@ export interface SimilarityResult {
 }
 
 export type WideSpreadAction = 'flag' | 'highest_group' | 'median' | 'lowest_group'
-export const WIDE_SPREAD_ACTIONS: { value: WideSpreadAction; title: string; hint: string }[] = [
-  { value: 'flag', title: 'Flag the card and leave it unvalued', hint: 'The card shows a "wide spread" warning and gets no asking value until you pick its version or untick listings.' },
-  { value: 'highest_group', title: 'Higher price group', hint: 'The typical price of the most expensive price group. If no price groups are found, the card is flagged.' },
-  { value: 'median', title: 'Median price', hint: 'The median of all the listings, however widely they spread.' },
-  { value: 'lowest_group', title: 'Lower price group', hint: 'The typical price of the cheapest price group. If no price groups are found, the card is flagged.' },
+// What Highest, Median and Lowest take, n being the Settings page's "Listings to price from": the median of n
+// listings, or a single listing's price when n is 1
+export const windowText = (rule: Exclude<WideSpreadAction, 'flag'>, n: number) => n === 1
+  ? `the price of ${({ highest_group: 'the most expensive listing', median: 'the listing in the middle of the price order', lowest_group: 'the cheapest listing' })[rule]}`
+  : `the median of ${({ highest_group: `the ${n} most expensive listings`, median: `the ${n} listings in the middle of the price order`, lowest_group: `the ${n} cheapest listings` })[rule]}`
+const windowHint = (rule: Exclude<WideSpreadAction, 'flag'>) => (n: number) => {
+  const text = windowText(rule, n)
+  return `${text[0].toUpperCase()}${text.slice(1)}, after outliers are left out.${n > 1 ? ` With ${n} or fewer listings, the median of all of them.` : ''}`
+}
+export const WIDE_SPREAD_ACTIONS: { value: WideSpreadAction; title: string; hint: (n: number) => string }[] = [
+  { value: 'flag', title: 'Flag the card and leave it unvalued', hint: () => 'The card shows a "wide spread" warning and gets no asking value until you pick its version or untick listings.' },
+  { value: 'highest_group', title: 'Highest', hint: windowHint('highest_group') },
+  { value: 'median', title: 'Median', hint: windowHint('median') },
+  { value: 'lowest_group', title: 'Lowest', hint: windowHint('lowest_group') },
 ]
 
 export interface AppSettings {
   cluster_min_size: number
   wide_spread_action: WideSpreadAction
+  price_window: number // how many listings Highest, Median and Lowest take the median of
 }
 
 export interface PriceCluster {

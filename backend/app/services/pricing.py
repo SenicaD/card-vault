@@ -25,22 +25,36 @@ def apply_asking(card, median: float | None, spread: float | None, prices: list[
 
     Above MAX_PRICE_SPREAD the card is flagged and gets no asking value; otherwise the flag is cleared. With
     app_settings, the card's own wide_spread_action (else the saved default) can value it instead: at the median of
-    all its listings, or at the highest or lowest price group's median when the asking listings' prices form groups.
-    spread_rule records which rule did.
+    the price_window most expensive, middle or cheapest asking listings, after outliers are left out (see
+    window_value). spread_rule records which rule did.
     """
     card.spread_rule = None
     if median is not None and spread is not None and spread > get_settings().max_price_spread:
         rule = (card.wide_spread_action or app_settings.wide_spread_action) if app_settings is not None else "flag"
-        value = median if rule == "median" else None
-        if rule in ("highest_group", "lowest_group") and prices is not None:
-            groups = price_clusters(prices, app_settings.cluster_min_size)
-            value = (groups[-1] if rule == "highest_group" else groups[0]).median if groups else None
+        value = None
+        if rule in ("highest_group", "median", "lowest_group") and prices is not None:
+            value = window_value(prices, rule, app_settings.price_window)
         if value is not None:
             card.wide_spread, card.est_value, card.spread_rule = False, value, rule
         else:
             card.wide_spread, card.est_value = True, None
     else:
         card.wide_spread, card.est_value = False, median
+
+
+def window_value(prices: list[float], rule: str, n: int) -> float | None:
+    """The median of a window of n prices, after outliers are left out: the n most expensive ("highest_group"), the
+    n cheapest ("lowest_group") or the n in the middle of the price order ("median"; it leans one price toward the
+    cheaper side when it can't be centred exactly). With n or fewer prices left, the median of all of them; with
+    none, None."""
+    fences = outlier_fences(prices)
+    p = sorted(x for x in prices if fences is None or fences[2] <= x <= fences[3])
+    if not p:
+        return None
+    if len(p) > n:
+        s = (len(p) - n) // 2
+        p = p[-n:] if rule == "highest_group" else p[:n] if rule == "lowest_group" else p[s:s + n]
+    return round(statistics.median(p), 2)
 
 
 def asking_listings(items: list, parallel: str | None, exclude: set[str], ident: CardIdentity | None) -> list:
@@ -63,6 +77,15 @@ def top_listings(items: list[EbayItem], n: int = 4) -> list[dict]:
     return out
 
 
+def outlier_fences(prices: list[float]) -> tuple[float, float, float, float] | None:
+    """Q1, Q3 and the box-plot fences lo and hi of the prices: a price outside lo..hi, more than 1.5 interquartile
+    ranges outside the middle half, is an outlier. None with fewer than 8 prices, when nothing is left out."""
+    if len(prices) < 8:
+        return None
+    q1, _, q3 = statistics.quantiles(prices, n=4)
+    return q1, q3, q1 - 1.5 * (q3 - q1), q3 + 1.5 * (q3 - q1)
+
+
 def summarize(items: list[EbayItem]) -> dict:
     return summarize_ex(items)[0]
 
@@ -80,9 +103,8 @@ def summarize_ex(items: list[EbayItem]) -> tuple[dict, list[EbayItem], dict | No
     """
     usable = sorted((i for i in items if not _JUNK.search(i.title)), key=lambda i: i.price)
     trimmed, dropped, fences = 0, [], None
-    if len(usable) >= 8:
-        q1, _, q3 = statistics.quantiles([i.price for i in usable], n=4)
-        lo, hi = q1 - 1.5 * (q3 - q1), q3 + 1.5 * (q3 - q1)
+    if (box := outlier_fences([i.price for i in usable])) is not None:
+        q1, q3, lo, hi = box
         fences = {"q1": round(q1, 2), "q3": round(q3, 2), "lo": round(lo, 2), "hi": round(hi, 2)}
         kept = [i for i in usable if lo <= i.price <= hi]
         dropped = [i for i in usable if not lo <= i.price <= hi]
