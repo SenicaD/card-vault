@@ -2963,3 +2963,8 @@ def test_refresh_value_prices_a_new_card_from_its_own_version_and_the_new_lookup
         marked = [r["price"] for r in c.get(f"/api/cards/{card['id']}/matches").json() if r["in_window"]]
         assert marked and all(50 <= p <= 60 for p in marked)
         assert got["est_value"] == round(__import__("statistics").median(marked), 2)
+        # the trace's "used" listings are the whole search; only the window's (3 here) are flagged as setting the value
+        tr = c.get(f"/api/cards/{card['id']}/debug/traces").json()[0]
+        listings = c.get(f"/api/cards/{card['id']}/debug/traces/{tr['id']}").json()["listings"]
+        used = [l for l in listings if l["d"] == "used"]
+        assert len(used) == 8 and sorted(l["p"] for l in used if l.get("w")) == sorted(marked)

@@ -11,12 +11,12 @@ import logging
 
 from sqlmodel import Session, col, select
 
-from ..models import ASKING_SOURCES, Card, ListingSeen, PriceSnapshot, utcnow
+from ..models import ASKING_SOURCES, Card, ListingSeen, PriceSnapshot, PriceTrace, utcnow
 from .app_settings import load_app_settings
 from .ebay import EbayItem, get_ebay
 from .grading import normalize_grade
 from .identity import identity_of_card
-from .pricing import apply_asking, asking_listings
+from .pricing import apply_asking, asking_listings, window_of
 
 log = logging.getLogger("cardvault.tracker")
 
@@ -89,6 +89,30 @@ def own_snap(session: Session, card: Card) -> PriceSnapshot | None:
     return session.exec(select(PriceSnapshot).where(
         PriceSnapshot.card_id == card.id, col(PriceSnapshot.source).in_(ASKING_SOURCES), PriceSnapshot.grade == normalize_grade(card.grade), PriceSnapshot.parallel == card.parallel,
         col(PriceSnapshot.median).is_not(None)).order_by(col(PriceSnapshot.created_at).desc()).limit(1)).first()
+
+
+def window_ids(session: Session, card: Card, app_settings=None) -> set[str]:
+    """The saved listings the card's value is taken from (its price window); empty when no window rule set it."""
+    if not card.spread_rule:
+        return set()
+    rows = session.exec(select(ListingSeen).where(ListingSeen.card_id == card.id, ListingSeen.status == "active",
+                                                  ListingSeen.grade == normalize_grade(card.grade))).all()
+    listings = asking_listings(rows, card.parallel, {r.item_id for r in rows if r.excluded}, identity_of_card(card))
+    n = (app_settings or load_app_settings(session)).price_window
+    return {r.item_id for r in window_of(listings, card.spread_rule, n, price=lambda r: r.price)}
+
+
+def mark_window(session: Session, card: Card, app_settings=None) -> None:
+    """Flag, in the card's newest lookup trace, the listings that set its value ("w"). The trace's "used" only means a
+    listing went into the search's own median, which is far more than the window."""
+    trace = session.exec(select(PriceTrace).where(PriceTrace.card_id == card.id, PriceTrace.kind == "lookup")
+                         .order_by(col(PriceTrace.id).desc()).limit(1)).first()
+    if trace is None or not trace.listings:
+        return
+    ids = window_ids(session, card, app_settings)
+    trace.listings = [{**l, "w": l["id"] in ids} if l.get("d") == "used" else l for l in trace.listings]
+    session.add(trace)
+    session.commit()
 
 
 def revalue(session: Session, card: Card, app_settings=None) -> bool:

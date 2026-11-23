@@ -17,7 +17,7 @@ export const DECISION_LABEL: Record<string, string> = {
   not_alike: "Doesn't look like your photo",
   other_version: 'Different version',
   outlier: 'Price outlier',
-  used: 'Counted',
+  used: 'In the search median',
 }
 export const DECISION_COLOR: Record<string, string> = {
   junk: 'grey', unknown_grade: 'grey', grade_not_requested: 'grey', excluded: 'warning', other_card: 'warning', other_identity: 'warning', not_alike: 'warning', other_version: 'warning', outlier: 'error', used: 'success',

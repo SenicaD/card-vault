@@ -39,13 +39,13 @@ const items = computed(() => list.value.map((t) => ({
 })))
 const fun = computed<TraceFunnel | null>(() => trace.value?.funnel?.find((f) => f.grade === grade.value) ?? null)
 const gradeListings = computed(() => (trace.value?.listings ?? []).filter((l) => l.g === grade.value))
-const rows = computed(() => gradeListings.value.filter((l) => only.value === 'all' || l.d === only.value))
+const rows = computed(() => gradeListings.value.filter((l) => only.value === 'all' || (only.value === 'window' ? l.w : l.d === only.value)))
 const headers = [
   { title: 'Treated as', key: 'd', width: 170 }, { title: 'Version', key: 'v' }, { title: 'Listing', key: 't', sortable: false },
   { title: 'Price', key: 'p', align: 'end' as const },
 ]
 const lookTitle = (l: TraceListing) => `Confidence that the picture shows your card, 0-100${l.m != null ? `; ${l.m} matching feature points` : ''}`
-const decisionItems = computed(() => [{ value: 'all', title: 'All listings' },
+const decisionItems = computed(() => [{ value: 'all', title: 'All listings' }, { value: 'window', title: 'Sets the card value' },
   ...Object.entries(DECISION_LABEL).map(([value, title]) => ({ value, title }))])
 const idx = computed(() => list.value.findIndex((t) => t.id === pick.value))
 const previous = computed(() => list.value.slice(idx.value + 1).find((t) => t.has_listings && t.kind === list.value[idx.value]?.kind))
@@ -124,6 +124,7 @@ const total = computed(() => trace.value?.summary?.after_top_up ?? trace.value?.
               <v-data-table :headers="headers" :items="rows" density="compact" :items-per-page="10" :sort-by="[{ key: 'p', order: 'asc' }]" class="no-pointer">
                 <template #item.d="{ item }">
                   <v-chip size="x-small" :color="DECISION_COLOR[item.d]" variant="tonal">{{ DECISION_LABEL[item.d] }}</v-chip>
+                  <v-chip v-if="item.w" size="x-small" color="primary" variant="flat" class="ml-1" title="One of the listings in your price window, which sets the card's value">sets value</v-chip>
                   <v-chip v-if="item.r" size="x-small" color="primary" variant="flat" class="ml-1">{{ item.r === 'median' ? 'median' : item.r === 'low' ? 'lowest' : 'highest' }}</v-chip>
                   <div v-if="item.s != null" class="text-caption text-muted-c text-no-wrap" :title="lookTitle(item)">
                     Looks alike <span class="num">{{ item.s }}</span><template v-if="item.m != null"> · {{ item.m }} pts</template>
