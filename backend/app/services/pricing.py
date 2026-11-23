@@ -12,7 +12,7 @@ from .ebay import EbayItem, get_ebay
 from .grading import grade_sort_key, parse_grade
 from .identity import Who, same_card
 from .parallels import parse_parallel
-from .lookalike import LOOKALIKE_BORDERLINE, LOOKALIKE_MIN_CONFIDENCE, LOOKALIKE_MIN_MATCHES
+from .lookalike import LOOKALIKE_BORDERLINE, LOOKALIKE_MIN_CONFIDENCE, LOOKALIKE_MIN_MATCHES, LOOKALIKE_STRONG_MATCHES
 from .lookalike import compare as compare_pictures
 
 # Titles that are clearly not a single copy of the card
@@ -140,19 +140,15 @@ async def _top_up_graded(items: list[EbayItem], groups: dict[str, list[EbayItem]
     current_purpose.reset(token)
 
 
-LOOKALIKE_MIN_SHARE = 0.6  # without CLIP: a colour score below this share of the best in its grade is left out
 LOOKALIKE_MAX_IMAGES = 40  # listing pictures fetched per lookup
 
 
 async def _not_alike(image: bytes, items: list[EbayItem], groups: dict[str, list[EbayItem]], grades: list[str],
                      parallel: str | None, exclude: set[str], trace=None) -> tuple[list[tuple[EbayItem, str]], str | None]:
     """The listings of the requested grades whose picture clearly doesn't look like the card's photo, with their
-    grade, and how the pictures were compared ("clip", "colour", or None when nothing was).
+    grade, and how the pictures were compared ("clip", or None when nothing was: no pictures, or no CLIP).
 
-    With CLIP, a listing is left out when its confidence is below LOOKALIKE_MIN_CONFIDENCE, or borderline (below
-    LOOKALIKE_BORDERLINE) and the feature check didn't find the card. With the colour score, when it is below
-    LOOKALIKE_MIN_SHARE of the best in its grade. Only the first LOOKALIKE_MAX_IMAGES pictures in eBay's order are
-    compared. Listings with no picture, past that limit or whose picture didn't load are kept, and so is every
+    See _unlike for the rule. Only the first LOOKALIKE_MAX_IMAGES pictures in eBay's order are compared. Listings with no picture, past that limit or whose picture didn't load are kept, and so is every
     listing of a grade the rule would leave with nothing to price.
     """
     in_items = {i.item_id for i in items}
@@ -179,14 +175,7 @@ async def _not_alike(image: bytes, items: list[EbayItem], groups: dict[str, list
     out = []
     for g in grades:
         group = groups.get(g, [])
-        scored = [scores[i.image_url] for i in group if i.image_url in scores]
-        if not scored:
-            continue
-        if look.method == "clip":
-            drop = {i.item_id for i in group if i.image_url in scores and _unlike(scores[i.image_url], look.matches.get(i.image_url))}
-        else:
-            cut = LOOKALIKE_MIN_SHARE * max(scored)
-            drop = {i.item_id for i in group if i.image_url in scores and scores[i.image_url] < cut}
+        drop = {i.item_id for i in group if i.image_url in scores and _unlike(scores[i.image_url], look.matches.get(i.image_url))}
         if any(map(priceable, group)) and not any(priceable(i) for i in group if i.item_id not in drop):
             if trace is not None and drop:
                 trace.note(f"{g}: the look-alike filter was skipped, because leaving out the listings that don't "
@@ -197,9 +186,14 @@ async def _not_alike(image: bytes, items: list[EbayItem], groups: dict[str, list
 
 
 def _unlike(confidence: int, matches: int | None) -> bool:
-    """CLIP's verdict: clearly low, or borderline with too few matching feature points (kept if never checked)."""
+    """CLIP's verdict, with the feature check as a second opinion below LOOKALIKE_BORDERLINE.
+
+    Clearly low (below LOOKALIKE_MIN_CONFIDENCE) is left out unless the printed design matches strongly
+    (LOOKALIKE_STRONG_MATCHES); borderline is left out with fewer than LOOKALIKE_MIN_MATCHES points, and kept if the
+    check couldn't run.
+    """
     if confidence < LOOKALIKE_MIN_CONFIDENCE:
-        return True
+        return matches is None or matches < LOOKALIKE_STRONG_MATCHES
     return confidence < LOOKALIKE_BORDERLINE and matches is not None and matches < LOOKALIKE_MIN_MATCHES
 
 
@@ -317,10 +311,9 @@ async def _quote_grades(query, grades, image, parallel, exclude, trace, who=None
                 groups[g] = [i for i in groups[g] if i.item_id not in gone]
         items = [i for i in items if i.item_id not in gone]
         if trace is not None:
-            rule = (f"CLIP confidence below {LOOKALIKE_MIN_CONFIDENCE}, or below {LOOKALIKE_BORDERLINE} with fewer than "
-                    f"{LOOKALIKE_MIN_MATCHES} matching feature points" if method == "clip" else
-                    f"below {LOOKALIKE_MIN_SHARE:.0%} of the best colour score in their grade")
-            trace.note(f"{len(unlike)} listings were left out because their picture doesn't look like the card's photo ({rule}).")
+            trace.note(f"{len(unlike)} listings were left out because their picture doesn't look like the card's photo "
+                       f"(CLIP confidence below {LOOKALIKE_MIN_CONFIDENCE} without {LOOKALIKE_STRONG_MATCHES}+ matching "
+                       f"feature points, or below {LOOKALIKE_BORDERLINE} with fewer than {LOOKALIKE_MIN_MATCHES}).")
     quotes, used = build_quotes(groups, grades, query, source, parallel, exclude, trace)
     counts = {g: len(v) for g, v in sorted(groups.items(), key=lambda kv: grade_sort_key(kv[0]) if kv[0] != "Unknown" else (9, "", 0))}
     if trace is not None:

@@ -1,9 +1,9 @@
 """How sure we are that a listing's picture shows the same card as your photo.
 
 With the optional install (requirements-clip.txt), both pictures are cropped to the card and straightened with
-OpenCV, then compared as CLIP image embeddings: a 0-100 confidence. Borderline listings get a second look: local
-features (SIFT) matched between the two cards and confirmed with RANSAC, which finds the same printed design even
-when the photos differ. Without the install, or when the model can't be loaded, the colour score is used instead.
+OpenCV, then compared as CLIP image embeddings: a 0-100 confidence. Listings below LOOKALIKE_BORDERLINE get a second
+look: local features (SIFT) matched between the two cards and confirmed with RANSAC, which finds the same printed design
+even when the photos differ. Without the install, or when the model can't be loaded, nothing is compared at all.
 """
 import asyncio
 import hashlib
@@ -14,11 +14,12 @@ from typing import NamedTuple
 
 import httpx
 
-from .similarity import _MAX_BYTES, _ebay_image, score_urls
+from .similarity import _MAX_BYTES, _ebay_image
 
-LOOKALIKE_MIN_CONFIDENCE = 55  # CLIP confidence below this is clearly not your card: the listing is left out
+LOOKALIKE_MIN_CONFIDENCE = 55  # CLIP confidence below this is clearly not your card: left out unless the design matches strongly
 LOOKALIKE_BORDERLINE = 80  # from LOOKALIKE_MIN_CONFIDENCE up to this, kept only if the feature check finds your card
 LOOKALIKE_MIN_MATCHES = 30  # matching feature points (RANSAC inliers) that confirm the same card
+LOOKALIKE_STRONG_MATCHES = 100  # matching feature points that keep a listing even below LOOKALIKE_MIN_CONFIDENCE
 
 CLIP_MODEL = ("ViT-B-32", "laion2b_s34b_b79k")  # weights are downloaded on first use
 _RETRY_AFTER = 600  # seconds before trying to load the model again after it failed
@@ -26,9 +27,9 @@ _CACHE_SIZE = 5000  # embeddings kept in memory, by picture URL
 
 
 class Look(NamedTuple):
-    method: str  # "clip" or "colour"
+    method: str | None  # "clip", or None when CLIP isn't available and nothing was compared
     scores: dict[str, int]  # picture URL -> 0-100; pictures that didn't load are left out
-    matches: dict[str, int]  # borderline picture URL -> matching feature points (clip only)
+    matches: dict[str, int]  # picture URL below LOOKALIKE_BORDERLINE -> matching feature points
     note: str | None = None  # why CLIP wasn't used
 
 
@@ -67,10 +68,12 @@ def _model():
         return _clip
 
 
-def _fallback_note(e: Exception) -> str:
+def _skipped_note(e: Exception) -> str:
     if isinstance(e, _NotInstalled):
-        return "CLIP isn't installed (backend/requirements-clip.txt), so listing pictures were compared by colour."
-    return f"The CLIP model couldn't be loaded ({e!r}), so listing pictures were compared by colour."
+        why = "CLIP isn't installed (backend/requirements-clip.txt)"
+    else:
+        why = f"the CLIP model couldn't be loaded ({e!r})"
+    return f"The look-alike filter was skipped because {why}, so no listing was left out for its picture."
 
 
 def card(data: bytes):
@@ -200,22 +203,25 @@ async def _fetch(urls: list[str], concurrency: int = 8) -> dict[str, bytes]:
 
 
 async def compare(photo: bytes, urls: list[str]) -> Look:
-    """Confidence that each listing picture shows the card in `photo`. Raises if the photo can't be read."""
+    """Confidence that each listing picture shows the card in `photo`. Raises if the photo can't be read.
+
+    Without CLIP nothing is fetched or scored: the result is empty, with a note saying why.
+    """
     try:
         clip = await asyncio.to_thread(_model)
     except Exception as e:
-        return Look("colour", await score_urls(photo, urls), {}, _fallback_note(e))
+        return Look(None, {}, {}, _skipped_note(e))
     mine = await asyncio.to_thread(card, photo)
     if mine is None:
         raise ValueError("the card's photo can't be read")
     urls = [u for u in dict.fromkeys(urls) if _ebay_image(u)]
     pics = await _fetch([u for u in urls if u not in _embeddings])
     scores = await asyncio.to_thread(_clip_scores, clip, photo, mine, urls, pics)
-    borderline = [u for u, s in scores.items() if LOOKALIKE_MIN_CONFIDENCE <= s < LOOKALIKE_BORDERLINE]
-    pics |= await _fetch([u for u in borderline if u not in pics])  # cached embeddings skipped the download
+    doubtful = [u for u, s in scores.items() if s < LOOKALIKE_BORDERLINE]  # borderline, or low but maybe rescued
+    pics |= await _fetch([u for u in doubtful if u not in pics])  # cached embeddings skipped the download
 
     def check() -> dict[str, int]:
-        cards = {u: card(pics[u]) for u in borderline if u in pics}
+        cards = {u: card(pics[u]) for u in doubtful if u in pics}
         return {u: feature_matches(mine, img) for u, img in cards.items() if img is not None}
 
     return Look("clip", scores, await asyncio.to_thread(check))

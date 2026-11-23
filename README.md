@@ -47,8 +47,8 @@ Tests: `cd backend && pytest`. API docs: `http://localhost:8000/docs`.
    added in scan order). Turn on **Auto-add** to skip review for cards identified at 80% confidence or
    higher.
 4. **Value**: on a card's page, "Refresh value" re-runs that eBay search (filters lots and reprints, trims
-   outliers and, for a card with a photo, leaves out listings whose picture clearly doesn't look like it)
-   and stores a new low / median / high snapshot. The median becomes the card's estimate.
+   outliers and, for a card with a photo and the optional CLIP install, leaves out listings whose picture
+   clearly doesn't look like it) and stores a new low / median / high snapshot. The median becomes the card's estimate.
 5. **Sell**: "List on eBay" creates an inventory item, an offer, and publishes it. The card moves to Listed.
 
 The queue lives in memory: it survives moving between pages, but not a reload (the browser warns first).
@@ -82,11 +82,12 @@ pip install --extra-index-url https://download.pytorch.org/whl/cpu -r requiremen
 With a card photo, a lookup compares each listing's picture with it (the first 40 in eBay's order) and
 leaves out the listings that clearly show another card. Both pictures are cropped to the card and straightened
 with OpenCV, then compared with CLIP (`ViT-B-32`, about 600 MB, downloaded on first use into the Hugging Face
-cache; the first lookup after a restart takes a few seconds longer). A confidence below 55 is left out; from
-55 to 80 the listing is kept only if SIFT feature matching finds the same printed design (30+ matching points).
-Debug mode shows each listing's confidence in "How this price was calculated". Without this install, or if
-the model can't be downloaded, pictures are compared by colour instead: a listing below 60% of the best colour
-score in its grade is left out. The thresholds are in `app/services/lookalike.py`.
+cache; the first lookup after a restart takes a few seconds longer). Below 80, SIFT feature matching also
+checks for the same printed design: from 55 to 80 a listing is kept with 30+ matching points, and below 55 only
+with 100+ (a strong match rescues a picture CLIP misjudges). Debug mode shows each listing's confidence and
+matching points in "How this price was calculated". Without this install, or if the model can't be downloaded,
+the filter is skipped: no listing is left out and prices are worked out as before, with a note in the trace.
+The thresholds are in `app/services/lookalike.py`.
 
 ### eBay
 Set `EBAY_MODE=live` and fill in keys from developer.ebay.com. Start with `EBAY_ENV=sandbox`.

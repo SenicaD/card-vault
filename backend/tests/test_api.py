@@ -1590,11 +1590,25 @@ def test_borderline_look_alikes_are_kept_only_when_the_feature_check_finds_the_c
     p = asyncio.run(pricing.quote_grades("q", ["Raw"], image=b"photo", trace=trace))
     assert p.not_alike == {"C", "E"} and {i.item_id for i in p.groups["Raw"]} == {"A", "B", "D"}
     assert {r["id"]: r["m"] for r in trace.listings} == {"A": None, "B": 120, "C": 10, "D": None, "E": None}
-    assert any("below 55, or below 80 with fewer than 30 matching feature points" in n for n in trace.notes)
+    assert any("below 55 without 100+ matching feature points, or below 80 with fewer than 30" in n for n in trace.notes)
+
+
+def test_a_strong_feature_match_keeps_a_listing_clip_scores_low(monkeypatch):
+    import asyncio
+
+    from app.services import pricing
+    _alike_ebay(monkeypatch, _pics(("A", 200), ("B", 210), ("C", 2), ("D", 3), ("E", 220), ("F", 4)))
+    # all clearly low but A: B and E share the printed design strongly (E right at the threshold), C and F not enough,
+    # and D's picture couldn't be checked
+    _alike_scores(monkeypatch, {"A": 90, "B": 40, "C": 40, "D": 40, "E": 54, "F": 30},
+                  matches={"B": 150, "C": 60, "E": 100, "F": 99})
+    p = asyncio.run(pricing.quote_grades("q", ["Raw"], image=b"photo"))
+    assert p.not_alike == {"C", "D", "F"} and {i.item_id for i in p.groups["Raw"]} == {"A", "B", "E"}
+    assert p.quotes[0].median == 210
 
 
 @pytest.mark.parametrize("problem,note", [("missing", "CLIP isn't installed"), ("download", "couldn't be loaded")])
-def test_without_clip_look_alike_falls_back_to_the_colour_score(monkeypatch, problem, note):
+def test_without_clip_the_look_alike_filter_is_skipped(monkeypatch, problem, note):
     import asyncio
 
     from app.services import lookalike, pricing
@@ -1605,16 +1619,33 @@ def test_without_clip_look_alike_falls_back_to_the_colour_score(monkeypatch, pro
             raise lookalike._NotInstalled("No module named 'open_clip'")
         raise OSError("could not download the weights")
 
-    async def colour(photo, urls):
-        return {u: {"A": 90, "B": 85, "C": 80, "D": 50, "E": 60}[u.rsplit("/", 1)[1][0]] for u in urls}
+    async def no_fetch(urls):
+        raise AssertionError("no picture should be fetched without CLIP")
     monkeypatch.setattr(lookalike, "_model", no_model)
-    monkeypatch.setattr(lookalike, "score_urls", colour)
-    _alike_ebay(monkeypatch, _pics(*_ABCDE))
+    monkeypatch.setattr(lookalike, "_fetch", no_fetch)
+    found = _pics(*_ABCDE)
+    _alike_ebay(monkeypatch, found)
     trace = Trace()
     p = asyncio.run(pricing.quote_grades("q", ["Raw"], image=b"photo", trace=trace))
-    assert p.not_alike == {"D"}  # the colour rule: below 60% of the best (54); CLIP's 60 would have taken E too
-    assert trace.summary["lookalike"] == "colour" and any(note in n for n in trace.notes)
-    assert any("60% of the best colour score" in n for n in trace.notes)
+    unfiltered, _ = pricing.build_quotes(pricing.group_by_grade(found), ["Raw"], "q", "ebay-image")
+    assert [q.model_dump() for q in p.quotes] == [q.model_dump() for q in unfiltered] and not p.not_alike  # median 200
+    assert trace.summary["lookalike"] is None and trace.summary["not_alike"] == 0
+    assert not [r for r in trace.listings if r["d"] == "not_alike" or r["s"] is not None]
+    assert any("look-alike filter was skipped because" in n and note in n for n in trace.notes)
+
+
+def test_without_clip_tracked_listings_are_not_forgotten(monkeypatch):
+    from app.services import lookalike, pricing
+    _alike_ebay(monkeypatch, _pics(*_ABCDE))
+    with TestClient(app) as c:
+        card, _ = _priced_card(c, grade="Raw", id_confidence=0.4)
+        cid = card["id"]
+        _alike_scores(monkeypatch, {k: 90 for k in _ALIKE})  # with CLIP, everything looked alike and was tracked
+        c.post(f"/api/cards/{cid}/price", json={})
+        monkeypatch.setattr(pricing, "compare_pictures", lookalike.compare)  # now the real comparison, but no CLIP
+        monkeypatch.setattr(lookalike, "_model", lambda: (_ for _ in ()).throw(lookalike._NotInstalled("no torch")))
+        assert c.post(f"/api/cards/{cid}/price", json={}).json()["snapshot"]["median"] == 200
+        assert {r["item_id"] for r in c.get(f"/api/cards/{cid}/matches").json()} == {"A", "B", "C", "D", "E"}
 
 
 def test_look_alike_embeddings_are_cached_by_picture_url(monkeypatch):
@@ -1641,11 +1672,11 @@ def test_look_alike_embeddings_are_cached_by_picture_url(monkeypatch):
     urls = [f"https://i.ebayimg.com/{n}.jpg" for n in (90, 65, 20)] + ["https://example.com/90.jpg"]
     first = asyncio.run(lookalike.compare(b"photo", urls))
     assert first.method == "clip" and first.scores == {urls[0]: 90, urls[1]: 65, urls[2]: 20}  # only eBay pictures
-    assert first.matches == {urls[1]: 50} and checked == [b"65"]  # only the borderline one gets the feature check
+    assert first.matches == {urls[1]: 50, urls[2]: 50} and checked == [b"65", b"20"]  # the ones below 80 get the check
     assert fetched == urls[:3]
     fetched.clear()
     again = asyncio.run(lookalike.compare(b"photo", urls))
-    assert again.scores == first.scores and fetched == [urls[1]]  # embeddings were cached; borderline needs the picture
+    assert again.scores == first.scores and fetched == urls[1:3]  # embeddings were cached; the check needs the pictures
 
 
 def test_card_crop_and_feature_check_on_synthetic_pictures():
