@@ -1954,7 +1954,7 @@ def test_card_crop_and_feature_check_on_synthetic_pictures():
 def test_classify_listing_reads_codes_redemption_and_auto():
     from app.services.parallels import classify_listing, parse_parallel
     c = classify_listing("CRA-JMI #BTP-2 BTP2 LOB-EN001 PA-JM I-JM CRA-JMI")
-    assert c.codes == ("CRA-JMI", "BTP-2", "BTP2", "LOB-EN001", "PA-JM", "I-JM")  # in order, once each
+    assert c.codes == ("CRA-JMI", "BTP-2", "LOB-EN001", "PA-JM", "I-JM")  # in order, once each, hyphenated only
     assert classify_listing("2026 Topps #btp-2 Big Ticket").codes == ("BTP-2",)  # upper-cased
     for title in ("PSA10", "MT10", "MLB2026", "NM-MT", "GEM-MT", "ON-CARD", "ALL-STAR", "GAME-USED", "12/150", "/499",
                   "RC/50", "#10", "#23108", "2026", "On-Card", "Cra-Jmi"):
@@ -2139,6 +2139,48 @@ def test_identity_of_card_reads_redemption_from_the_card():
     assert identity_of_card(card(variant="Auto Redemption")) == CardIdentity("crajmi", True)
     assert identity_of_card(card(search_query="2026 Bowman Chrome Misiorowski CRA-JMI REDEMPTION")).redemption
     assert identity_of_card(card(id_confidence=0.3, variant="Auto Redemption")) is None
+
+
+# Ordinary title words that look like a no-hyphen code ("letters then digits")
+_PLAIN_WORDS = ["SP2", "RC1", "Gen2", "PS5", "Top100", "US175"]
+_PLAIN_SPELLINGS = [s for w in _PLAIN_WORDS for s in (w, w.lower(), f"#{w}")]
+
+
+def test_no_hyphen_words_are_not_title_codes():
+    from app.services.parallels import classify_listing
+    for word in _PLAIN_SPELLINGS + ["BTP2", "Vol3", "Series2", "MVP1"]:
+        assert classify_listing(f"2026 Topps Chrome Player {word} Rookie").codes == (), word
+
+
+def test_no_hyphen_words_never_drop_a_listing_for_another_code():
+    from app.services.identity import CardIdentity, fits_identity
+    ident = CardIdentity("bcp50", False)
+    for word in _PLAIN_SPELLINGS:
+        assert fits_identity(f"2026 Bowman Chrome Prospects Player {word} Auto", ident), word
+        assert not fits_identity(f"2026 Bowman Chrome Prospects Player {word} BTP-2 Auto", ident), word
+        assert fits_identity(f"2026 Bowman Chrome Prospects Player BCP-50 {word} Auto", ident), word
+
+
+def test_no_hyphen_word_still_confirms_the_cards_own_code():
+    from app.services.identity import CardIdentity, fits_identity
+    from app.services.parallels import card_code
+    btp2 = CardIdentity(card_code("BTP-2"), False)
+    assert fits_identity("2026 Topps Big Ticket BTP2 Player", btp2)
+    assert fits_identity("2026 Topps CRA-JMI BTP2 Player", btp2)
+    assert fits_identity("Player US175 BCP-50", CardIdentity(card_code("US175"), False))
+    assert not fits_identity("2026 Topps CRA-JMI BTP3 Player", btp2)  # another no-hyphen word doesn't confirm it
+
+
+def test_no_hyphen_words_leave_a_grade_priced():
+    from app.services.identity import CardIdentity
+    from app.services.pricing import build_quotes, group_by_grade
+    from app.services.trace import Trace
+    groups = group_by_grade(_items(*[(f"2026 Bowman Chrome Prospects Player {w} Auto", 20 + n)
+                                     for n, w in enumerate(_PLAIN_WORDS)]))
+    trace = Trace()
+    quotes, used = build_quotes(groups, ["Raw"], "q", "ebay-active", ident=CardIdentity("bcp50", False), trace=trace)
+    assert quotes[0].median is not None and quotes[0].sample_size > 0 and used
+    assert not [r for r in trace.listings if r["d"] == "other_identity"]
 
 
 def test_sold_value_of_a_redemption_uses_only_its_own_redemption_sales(monkeypatch):

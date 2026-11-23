@@ -9,7 +9,7 @@ import re
 import unicodedata
 from typing import NamedTuple
 
-from .parallels import REDEMPTION_RX, card_code, classify_listing, code_key
+from .parallels import REDEMPTION_RX, bare_code_keys, card_code, classify_listing, code_key
 
 _SUFFIX = {"jr", "sr", "ii", "iii", "iv", "v"}
 _YEAR = re.compile(r"\b(19[5-9]\d|20[0-4]\d)(?:\s?[-/]\s?(\d{2}))?\b")
@@ -78,10 +78,14 @@ def identity_of_card(card) -> CardIdentity | None:
 
 
 def fits_identity(title: str, ident: CardIdentity | None) -> bool:
-    """False when the title shows only other card codes, or is a redemption and the card isn't (or the other way round)."""
+    """False when the title shows only other card codes, or is a redemption and the card isn't (or the other way round).
+
+    Only hyphenated codes ("PA-JM") mark a listing as another card; a no-hyphen word ("BTP2") can only confirm the
+    card's own code, since "SP2" or "PS5" are ordinary title words.
+    """
     if ident is None:
         return True
     c = classify_listing(title)
-    if ident.code and c.codes and ident.code not in {code_key(k) for k in c.codes}:
+    if ident.code and c.codes and ident.code not in {code_key(k) for k in c.codes} | bare_code_keys(title):
         return False
     return c.redemption == ident.redemption
