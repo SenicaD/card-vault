@@ -308,15 +308,33 @@ const shownComps = computed(() => {
 })
 const hasScores = computed(() => Object.keys(scores.value).length > 0)
 
-// Leave a listing out of (or put it back into) the prices, without a new eBay search.
-const toggleInclude = (m: MatchRow) => run('exclude', async () => {
-  const res = await api<PriceResult>(`/api/cards/${id}/matches/exclude`, {
-    method: 'POST', body: { item_ids: [m.item_id], excluded: !m.excluded, grades: selectedGrades.value },
-  })
-  history.value = [...res.snapshots, ...history.value]
+// The table's own sort and page, so reloading the listings after a tick doesn't reset them.
+const compSort = ref<{ key: string; order?: boolean | 'asc' | 'desc' }[]>([])
+const compPage = ref(1)
+const compPerPage = ref(10)
+// Scores cleared: the Look column is gone, so don't keep sorting by it.
+watch(hasScores, (has) => { if (!has) compSort.value = compSort.value.filter((s) => s.key !== 'look') })
+
+// Leave listings out of (or put them back into) the prices, without a new eBay search.
+// The backend takes at most 200 ids per call; the card and listings reload once, after the last batch.
+const setExcluded = (itemIds: string[], excluded: boolean) => run('exclude', async () => {
+  for (let i = 0; i < itemIds.length; i += 200) {
+    const res = await api<PriceResult>(`/api/cards/${id}/matches/exclude`, {
+      method: 'POST', body: { item_ids: itemIds.slice(i, i + 200), excluded, grades: selectedGrades.value },
+    })
+    history.value = [...res.snapshots, ...history.value]
+  }
   card.value = await api<Card>(`/api/cards/${id}`)
   await loadMatches()
 })
+const toggleInclude = (m: MatchRow) => setExcluded([m.item_id], !m.excluded)
+// The box at the top of the Use column: unticks every shown listing when any is ticked, else ticks them all.
+// It shows as ticked while any is (a dash when only some are), so each click changes its value.
+const shownTicked = computed(() => shownComps.value.filter((m) => m.included).length)
+function toggleAllShown() {
+  const excluded = shownTicked.value > 0
+  setExcluded(shownComps.value.filter((m) => m.excluded !== excluded).map((m) => m.item_id), excluded)
+}
 
 // The price groups behind a "prices vary too widely" flag, refetched whenever the card is reloaded or changed.
 const clusters = ref<PriceCluster[]>([])
@@ -328,6 +346,7 @@ watch(card, async (c) => {
 const rankByLook = () => run('rank', async () => {
   const res = await api<SimilarityResult>(`/api/cards/${id}/matches/similarity`, { method: 'POST', body: { grades: selectedGrades.value } })
   scores.value = res.scores
+  if (Object.keys(res.scores).length) compSort.value = [{ key: 'look', order: 'desc' }]
   suggestion.value = res.suggested_parallel && res.suggested_parallel !== card.value?.parallel ? res : null
   if (!Object.keys(res.scores).length) error.value = "Couldn't load the listing pictures to compare."
 })
@@ -689,9 +708,14 @@ onMounted(() => {
                 </div>
                 <p class="text-caption text-muted-c px-5 mb-2">
                   Untick a listing that isn't your card and the prices update straight away, and stay that way after each refresh.
+                  The box at the top of the Use column ticks or unticks every listing shown, including after filtering.
                   <template v-if="card.parallel"><v-switch v-model="showAllVersions" density="compact" hide-details color="primary" :label="`Show other versions too (not just ${card.parallel})`" class="mt-1" /></template>
                 </p>
-                <v-data-table :headers="compHeaders" :items="shownComps" density="comfortable" :items-per-page="10" :sort-by="hasScores ? [{ key: 'look', order: 'desc' }] : []" class="no-pointer comp-table">
+                <v-data-table :headers="compHeaders" :items="shownComps" density="comfortable" v-model:sort-by="compSort" v-model:page="compPage" v-model:items-per-page="compPerPage" class="no-pointer comp-table">
+                  <!-- The empty listener keeps the dash until the listings reload -->
+                  <template #header.included>
+                    <v-checkbox-btn :model-value="shownTicked > 0" :indeterminate="shownTicked > 0 && shownTicked < shownComps.length" density="compact" aria-label="Use all shown listings in the prices" :disabled="busy === 'exclude' || !shownComps.length" @update:model-value="toggleAllShown" @update:indeterminate="() => {}" />
+                  </template>
                   <template #item.included="{ item }">
                     <v-checkbox-btn :model-value="item.included" density="compact" :aria-label="`Use this listing in the prices: ${item.title}`" :disabled="busy === 'exclude'" @update:model-value="toggleInclude(item)" />
                   </template>
