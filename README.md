@@ -58,6 +58,8 @@ Tests: `cd backend && pytest`. API docs: `http://localhost:8000/docs`.
    When the middle half of the prices spans more than `MAX_PRICE_SPREAD` (default 100%) of the median, the card is
    flagged "wide spread" and gets no asking value until picking its version, unticking listings or a later re-price
    narrows it, and flagged cards are left out of value totals.
+   A flagged card's page lists the price groups found among its listings (typical price, range, count and most
+   common version), so you can tell which version is which.
 5. **Sell**: "List on eBay" creates an inventory item, an offer, and publishes it. The card moves to Listed.
 
 The queue lives in memory: it survives moving between pages, but not a reload (the browser warns first).
