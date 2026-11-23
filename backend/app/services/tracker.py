@@ -11,8 +11,12 @@ import logging
 
 from sqlmodel import Session, col, select
 
-from ..models import ListingSeen, utcnow
+from ..models import ASKING_SOURCES, Card, ListingSeen, PriceSnapshot, utcnow
+from .app_settings import load_app_settings
 from .ebay import EbayItem, get_ebay
+from .grading import normalize_grade
+from .identity import identity_of_card
+from .pricing import apply_asking, asking_listings
 
 log = logging.getLogger("cardvault.tracker")
 
@@ -78,3 +82,23 @@ async def track_listings(session: Session, card_id: int, groups: dict[str, list[
         session.add(row)
     session.commit()
     return stats
+
+
+def own_snap(session: Session, card: Card) -> PriceSnapshot | None:
+    """The newest asking price for the card's own grade and version."""
+    return session.exec(select(PriceSnapshot).where(
+        PriceSnapshot.card_id == card.id, col(PriceSnapshot.source).in_(ASKING_SOURCES), PriceSnapshot.grade == normalize_grade(card.grade), PriceSnapshot.parallel == card.parallel,
+        col(PriceSnapshot.median).is_not(None)).order_by(col(PriceSnapshot.created_at).desc()).limit(1)).first()
+
+
+def revalue(session: Session, card: Card, app_settings=None) -> bool:
+    """Re-value a card from its newest quote and the listings already saved, with no eBay call. False if it has no quote."""
+    snap = own_snap(session, card)
+    if snap is None:
+        return False
+    own = normalize_grade(card.grade)
+    rows = session.exec(select(ListingSeen).where(ListingSeen.card_id == card.id, ListingSeen.status == "active",
+                                                  ListingSeen.grade == own)).all()
+    listings = asking_listings(rows, card.parallel, {r.item_id for r in rows if r.excluded}, identity_of_card(card))
+    apply_asking(card, snap.median, snap.spread, [r.price for r in listings], app_settings or load_app_settings(session))
+    return True

@@ -108,8 +108,9 @@ class Card(CardBase, table=True):
     # Lets the card page suggest grades that do have listings without making a new search.
     grade_counts: dict[str, int] | None = Field(default=None, sa_column=Column(JSON, nullable=True))
     grade_counts_at: datetime | None = ts(default=None)
-    # The colour/print-run version of the card ("Green /99", "Base") prices are limited to; None = all pooled.
-    parallel: str | None = None
+    # The colour/print-run version of the card ("Green /99", "Base") prices are limited to. New cards start on
+    # "Base" so a numbered parallel's price can't set theirs; None = every version pooled.
+    parallel: str | None = "Base"
     # True once you've looked the card over in the review queue, so it stops being offered there.
     reviewed: bool = False
     # True when the asking prices spread too widely (above MAX_PRICE_SPREAD) to give an asking value.

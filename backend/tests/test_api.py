@@ -258,7 +258,7 @@ def test_trend_ranges_and_sold_flag():
         now = utcnow()
         with Session(engine) as s:
             for days_ago, med in ((400, 50.0), (60, 30.0), (3, 20.0), (3, 24.0)):
-                s.add(PriceSnapshot(card_id=card["id"], query="q", source="ebay-active", grade="Raw", sample_size=5,
+                s.add(PriceSnapshot(card_id=card["id"], query="q", source="ebay-active", grade="Raw", parallel="Base", sample_size=5,
                                     low=med - 5, median=med, mean=med, high=med + 5,
                                     created_at=now - timedelta(days=days_ago)))
             s.add(PriceSnapshot(card_id=card["id"], query="q", source="ebay-image", grade=None, sample_size=5,
@@ -477,7 +477,7 @@ def test_trend_per_grade_and_legacy_snapshots_ignored():
         now = utcnow()
         with Session(engine) as s:
             for grade, med in (("PSA 10", 100.0), ("Raw", 10.0), ("BGS 9.5", 80.0), ("PSA 9", 40.0), ("CGC 9", 30.0), (None, 999.0)):
-                s.add(PriceSnapshot(card_id=card["id"], query="q", source="ebay-active", grade=grade, sample_size=5,
+                s.add(PriceSnapshot(card_id=card["id"], query="q", source="ebay-active", grade=grade, parallel="Base", sample_size=5,
                                     low=med, median=med, mean=med, high=med, created_at=now - timedelta(days=1)))
             s.commit()
 
@@ -1533,6 +1533,7 @@ def test_sold_value_sits_beside_the_estimate_and_follows_grade_and_version(monke
     with TestClient(app) as c:
         card = c.post("/api/cards", json={"name": "Both Card", "category": "sports", "grade": "Raw", "est_value": None}).json()
         cid = card["id"]
+        c.patch(f"/api/cards/{cid}", json={"parallel": None})  # every version counts
         assert c.get(f"/api/cards/{cid}").json()["sold_value"] is None
         c.post(f"/api/cards/{cid}/sold/refresh")
         got = c.get(f"/api/cards/{cid}").json()
@@ -2328,6 +2329,7 @@ def test_sold_value_of_a_redemption_uses_only_its_own_redemption_sales(monkeypat
     with TestClient(app) as c:
         card = c.post("/api/cards", json={"name": "Jacob Misiorowski", "category": "sports", "grade": "Raw",
                                           "card_number": "CRA-JMI", "variant": "Auto Redemption"}).json()
+        c.patch(f"/api/cards/{card['id']}", json={"parallel": None})  # every version counts
         out = c.post(f"/api/cards/{card['id']}/sold/refresh").json()
         assert out["used"] == 3 and out["median"] == 450
         got = c.get(f"/api/cards/{card['id']}").json()
@@ -2887,7 +2889,7 @@ def test_bulk_revalue_applies_new_price_settings_without_ebay(restore_settings):
     from app.db import engine
     from app.models import ListingSeen
     with TestClient(app) as c:
-        card = _mk(c, name="Revalue Bulk", grade="Raw", price=_quote(spread=1.96, grade="Raw"))
+        card = _mk(c, name="Revalue Bulk", grade="Raw", price=_quote(spread=1.96, grade="Raw", parallel="Base"))
         assert card["wide_spread"] is True and card["est_value"] is None  # flagged: no value yet
         with Session(engine) as session:
             for n, p in enumerate((3, 3.2, 3.5, 3.8, 400, 500, 700, 900)):
@@ -2907,7 +2909,7 @@ def test_matches_flag_the_listings_the_wide_spread_rule_prices_from(restore_sett
     from app.db import engine
     from app.models import ListingSeen
     with TestClient(app) as c:
-        card = _mk(c, name="Window Flags", grade="Raw", price=_quote(spread=1.96, grade="Raw"))
+        card = _mk(c, name="Window Flags", grade="Raw", price=_quote(spread=1.96, grade="Raw", parallel="Base"))
         with Session(engine) as session:
             for n, p in enumerate((3, 3.2, 3.5, 3.8, 400, 500, 700, 900)):
                 session.add(ListingSeen(card_id=card["id"], item_id=f"wf{card['id']}-{n}", grade="Raw",
@@ -2925,3 +2927,39 @@ def test_flag_rule_values_a_card_within_the_spread_from_all_its_listings(restore
         assert c.put("/api/settings", json=DEFAULT_SETTINGS).status_code == 200
         card = _mk(c, name="Flag Narrow", grade="Raw", price=_quote(spread=0.5, grade="Raw"))
         assert card["wide_spread"] is False and card["spread_rule"] is None and card["est_value"] is not None
+
+
+def test_refresh_value_prices_a_new_card_from_its_own_version_and_the_new_lookup(monkeypatch):
+    from app.config import get_settings
+    from app.services import pricing
+    from app.services.ebay import EbayItem, get_ebay
+
+    # 8 plain listings at $10-$17, 2 numbered parallels at $300+ that must not set a Base card's price
+    plain = [EbayItem(item_id=f"b{n}", title="Refresh Rookie Chrome", price=10 + n, condition="Ungraded", url="u") for n in range(8)]
+    rare = [EbayItem(item_id=f"r{n}", title="Refresh Rookie Chrome Gold /50", price=300 + n, condition="Ungraded", url="u") for n in range(2)]
+    current = {"items": plain + rare}
+
+    async def search(query, limit=50):
+        return current["items"]
+
+    monkeypatch.setattr(get_ebay(), "search_active", search)
+    monkeypatch.setattr(pricing, "get_ebay", lambda: get_ebay())
+    with TestClient(app) as c:
+        assert c.put("/api/settings", json=HIGHEST_GROUP).status_code == 200
+        card = c.post("/api/cards", json={"category": "sports", "name": "Refresh Rookie", "grade": "Raw",
+                                          "search_query": "refresh rookie"}).json()
+        assert card["parallel"] == "Base"  # a new card starts on the plain version
+        out = c.post(f"/api/cards/{card['id']}/price", json={}).json()
+        got = c.get(f"/api/cards/{card['id']}").json()
+        assert got["est_value"] == 16 and out["snapshot"]["parallel"] == "Base"  # the top 3 plain listings, not the $300 gold ones
+        rows = c.get(f"/api/cards/{card['id']}/matches").json()
+        assert not any(r["price"] >= 300 and r["in_window"] for r in rows)
+
+        # the market moves: a second refresh follows the new lookup, and the listings flagged agree with the value
+        current["items"] = [EbayItem(item_id=f"n{n}", title="Refresh Rookie Chrome", price=50 + n, condition="Ungraded", url="u") for n in range(8)]
+        c.post(f"/api/cards/{card['id']}/price", json={})
+        got = c.get(f"/api/cards/{card['id']}").json()
+        assert 50 <= got["est_value"] <= 60
+        marked = [r["price"] for r in c.get(f"/api/cards/{card['id']}/matches").json() if r["in_window"]]
+        assert marked and all(50 <= p <= 60 for p in marked)
+        assert got["est_value"] == round(__import__("statistics").median(marked), 2)

@@ -18,7 +18,7 @@ from ..services.app_settings import load_app_settings
 from ..services.pricing import apply_asking, asking_listings, build_quotes, card_image, price_clusters, quote_grades, summarize, window_of
 from ..services.similarity import score_urls
 from ..services.trace import Trace, save_trace
-from ..services.tracker import track_listings
+from ..services.tracker import revalue, track_listings
 from .common import get_card_or_404
 
 router = APIRouter(prefix="/api/cards/{card_id}", tags=["ebay"])
@@ -102,6 +102,8 @@ async def price_card(card_id: int, body: PriceRequest | None = None,
         session.rollback()
     try:  # after the commit, so a failure here can never lose the price lookup
         await track_listings(session, card.id, groups, forget=priced.not_alike)
+        if revalue(session, card):  # the value follows the listings the table now shows, not just this search's
+            session.commit()
     except Exception:
         session.rollback()
     for s in snaps:  # tracking commits too, which expires these; reload them before they are serialised

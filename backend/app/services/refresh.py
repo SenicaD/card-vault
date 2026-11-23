@@ -18,7 +18,7 @@ from .identity import identity_of_card, who_of_card
 from .app_settings import load_app_settings
 from .pricing import apply_asking, asking_listings, card_image, quote_grades
 from .trace import Trace, save_trace
-from .tracker import track_listings
+from .tracker import revalue, track_listings
 
 log = logging.getLogger("cardvault.refresh")
 
@@ -85,6 +85,8 @@ async def reprice_card(card_id: int, query: str, own: str, tracked: list[str], i
                 session.rollback()
             try:  # after the commit, so a failure here can never lose the prices
                 await track_listings(session, card_id, groups, forget=priced.not_alike)
+                if card and card.status != CardStatus.sold and revalue(session, card, app_settings):
+                    session.commit()  # the value follows the saved listings the card page shows
             except Exception:
                 log.exception("listing tracking failed for card %s", card_id)
                 session.rollback()

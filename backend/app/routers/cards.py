@@ -15,6 +15,7 @@ from ..services.app_settings import load_app_settings
 from ..services.identity import identity_of_card
 from ..services.pricing import apply_asking, asking_listings
 from ..services.sold_refresh import recompute_sold
+from ..services.tracker import own_snap, revalue
 from ..services.trace import identification_trace, save_trace
 from .common import get_card_or_404, to_read
 
@@ -241,26 +242,6 @@ def get_card(card_id: int, session: Session = Depends(get_session)):
     return to_read(get_card_or_404(session, card_id))
 
 
-def _own_snap(session: Session, card: Card) -> PriceSnapshot | None:
-    """The newest asking price for the card's own grade and version."""
-    return session.exec(select(PriceSnapshot).where(
-        PriceSnapshot.card_id == card.id, col(PriceSnapshot.source).in_(ASKING_SOURCES), PriceSnapshot.grade == normalize_grade(card.grade), PriceSnapshot.parallel == card.parallel,
-        col(PriceSnapshot.median).is_not(None)).order_by(col(PriceSnapshot.created_at).desc()).limit(1)).first()
-
-
-def revalue(session: Session, card: Card, app_settings=None) -> bool:
-    """Re-value a card from its newest quote and the listings already saved, with no eBay call. False if it has no quote."""
-    snap = _own_snap(session, card)
-    if snap is None:
-        return False
-    own = normalize_grade(card.grade)
-    rows = session.exec(select(ListingSeen).where(ListingSeen.card_id == card.id, ListingSeen.status == "active",
-                                                  ListingSeen.grade == own)).all()
-    listings = asking_listings(rows, card.parallel, {r.item_id for r in rows if r.excluded}, identity_of_card(card))
-    apply_asking(card, snap.median, snap.spread, [r.price for r in listings], app_settings or load_app_settings(session))
-    return True
-
-
 def apply_update(session: Session, card: Card, changes: dict) -> None:
     """Apply field changes to a card (single edit or bulk)."""
     old_grade, old_parallel = normalize_grade(card.grade), card.parallel
@@ -269,9 +250,12 @@ def apply_update(session: Session, card: Card, changes: dict) -> None:
     if new_grade != old_grade or card.parallel != old_parallel:
         # The estimate belonged to the old grade or version. Use the newest price we already have for the new one,
         # or clear it until the card is priced, rather than keep showing the old grade's value.
-        snap = _own_snap(session, card)
-        apply_asking(card, snap.median if snap else None, snap.spread if snap else None)
-        card.priced_at = snap.created_at if snap else None
+        snap = own_snap(session, card)
+        if snap and revalue(session, card):  # the price window applies to the new version's saved listings too
+            card.priced_at = snap.created_at
+        else:
+            apply_asking(card, None, None)
+            card.priced_at = None
         recompute_sold(session, card)  # the sold-based value belongs to the grade and version too
     elif {"name", "year", "card_number", "id_confidence", "set_name", "variant", "search_query", "is_redemption"} & changes.keys():
         session.flush()
