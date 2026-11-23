@@ -253,7 +253,7 @@ const lookUp = () => run('price', async () => {
   loadMatches()
   scores.value = {}
   suggestion.value = null
-  if (!listPrice.value && !card.value.wide_spread) listPrice.value = res.snapshot.median
+  if (!listPrice.value && !card.value.wide_spread) listPrice.value = card.value.from_price_group ? card.value.est_value : res.snapshot.median
   loadTrend()
 })
 
@@ -318,10 +318,11 @@ const toggleInclude = (m: MatchRow) => run('exclude', async () => {
   await loadMatches()
 })
 
-// The price groups behind a "prices vary too widely" flag, refetched whenever the card is reloaded or changed.
+// The price groups behind a "prices vary too widely" flag or a value taken from the highest group, refetched whenever
+// the card is reloaded or changed.
 const clusters = ref<PriceCluster[]>([])
 watch(card, async (c) => {
-  const got = c?.wide_spread ? await api<PriceCluster[]>(`/api/cards/${id}/price-clusters`).catch(() => []) : []
+  const got = c?.wide_spread || c?.from_price_group ? await api<PriceCluster[]>(`/api/cards/${id}/price-clusters`).catch(() => []) : []
   if (card.value === c) clusters.value = got // a newer reload wins
 })
 
@@ -542,6 +543,13 @@ onMounted(() => {
                     </div>
                     <div class="mt-1">Pick your version above, or untick the listings that aren't yours in the listings table.</div>
                   </template>
+                </v-alert>
+                <v-alert v-else-if="card.from_price_group" type="info" variant="tonal" density="compact" class="mt-3" icon="mdi-chart-bell-curve">
+                  These listings' prices vary too widely<template v-if="latest?.spread != null"> (the middle half spans {{ Math.round(latest.spread * 100) }}% of the median)</template>, so the asking value of {{ money(card.est_value) }} is the typical price of the highest price group, as set on the Settings page.
+                  <div v-for="(g, i) in clusters" :key="i" class="mt-1">
+                    ~{{ money(g.median) }} · {{ money(g.low) }}–{{ money(g.high) }} · {{ g.count }} {{ g.count === 1 ? 'listing' : 'listings' }}<template v-if="g.versions.length"> · {{ g.versions[0].name }}</template>
+                  </div>
+                  <div class="mt-1">If that's not your card, pick your version above, or untick the listings that aren't yours in the listings table.</div>
                 </v-alert>
                 <v-alert v-else-if="latest && !card.parallel && (latest.spread ?? 0) >= 0.8" type="warning" variant="tonal" density="compact" class="mt-3" icon="mdi-chart-bell-curve">
                   These prices vary a lot (the middle half spans {{ Math.round((latest.spread ?? 0) * 100) }}% of the median), which usually means several versions of this card are mixed together. Pick your version above, or use the listings table to leave out ones that aren't yours.
