@@ -7,6 +7,7 @@ from sqlmodel import Session, col, select
 
 from ..models import PriceTrace
 from .debuglog import current_trace
+from .parallels import classify_listing
 
 KEEP_TRACES = 20  # per card
 KEEP_LISTINGS = 3  # newest traces per card that keep the listing-by-listing table
@@ -18,6 +19,7 @@ DECISIONS = {
     "unknown_grade": "The title doesn't say a grade",
     "grade_not_requested": "A grade you didn't ask about",
     "other_card": "A different player, year or card number",
+    "other_identity": "Doesn't match the card's number or redemption status",
     "not_alike": "Doesn't look like your photo",
     "excluded": "You unticked it",
     "other_version": "A different version of the card",
@@ -58,9 +60,11 @@ class Trace:
 
     def decide(self, item, grade: str | None, decision: str, version: str | None = None) -> None:
         look = self.looks.get(item.item_id, {})
+        c = classify_listing(item.title)
+        tags = [*c.codes, *(["Auto"] if c.auto else []), *(["Redemption"] if c.redemption else [])]
         self._listings[item.item_id] = {"id": item.item_id, "t": item.title[:110], "p": item.price, "g": grade,
                                         "v": version, "d": decision, "r": None, "u": item.url,
-                                        "s": look.get("s"), "m": look.get("m")}
+                                        "s": look.get("s"), "m": look.get("m"), "k": " · ".join(tags) or None}
 
     def role(self, item_id: str, role: str) -> None:
         if item_id in self._listings and self._listings[item_id]["d"] == "used":

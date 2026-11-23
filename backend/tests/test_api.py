@@ -1093,7 +1093,7 @@ def test_price_trace_records_every_step():
         assert t["mode"] == "ebay-image" and t["calls"][0]["api"] == "photo search" and t["calls"][0]["returned"] > 0
         f = t["funnel"][0]
         assert f["grade"] == "Raw" and f["found"] >= f["used"] > 0
-        assert f["found"] == f["excluded"] + f["other_version"] + f["outliers"] + f["used"]  # every listing accounted for
+        assert f["found"] == f["excluded"] + f["other_identity"] + f["other_version"] + f["outliers"] + f["used"]  # every listing accounted for
         decisions = {r["d"] for r in t["listings"]}
         assert "used" in decisions and {"median", "low", "high"} <= {r["r"] for r in t["listings"] if r["r"]}
         # the snapshot price is exactly what the trace says it is
@@ -1848,3 +1848,187 @@ def test_card_crop_and_feature_check_on_synthetic_pictures():
     assert lookalike.feature_matches(cropped, mine) >= lookalike.LOOKALIKE_MIN_MATCHES
     assert lookalike.feature_matches(cropped, other) < lookalike.LOOKALIKE_MIN_MATCHES
     assert lookalike.card(b"not a picture") is None
+
+
+def test_classify_listing_reads_codes_redemption_and_auto():
+    from app.services.parallels import classify_listing, parse_parallel
+    c = classify_listing("CRA-JMI #BTP-2 BTP2 LOB-EN001 PA-JM I-JM CRA-JMI")
+    assert c.codes == ("CRA-JMI", "BTP-2", "BTP2", "LOB-EN001", "PA-JM", "I-JM")  # in order, once each
+    assert classify_listing("2026 Topps #btp-2 Big Ticket").codes == ("BTP-2",)  # upper-cased
+    for title in ("PSA10", "MT10", "MLB2026", "NM-MT", "GEM-MT", "ON-CARD", "ALL-STAR", "GAME-USED", "12/150", "/499",
+                  "RC/50", "#10", "#23108", "2026", "On-Card", "Cra-Jmi"):
+        assert classify_listing(f"2026 Topps Chrome Player {title} Rookie").codes == (), title
+    r = classify_listing("Topps 2026 Bowman Chrome Jacob Misiorowski RC Auto Refractor Redemption #CRA-JMI")
+    assert r.codes == ("CRA-JMI",) and r.redemption and r.auto
+    assert classify_listing("Bowman Chrome Prospect Auto W/Redemption").redemption
+    assert classify_listing("Topps Pristine Redemp Card").redemption
+    assert not classify_listing("2026 Bowman Chrome Refractor RC").redemption
+    for title in ("Red Orbital RPA /99", "Topps Chrome Autograph", "2 Autos Booklet", "on-card auto"):
+        assert classify_listing(title).auto, title
+    assert not classify_listing("2026 Topps Chrome Automatic Big Ticket").auto
+    assert classify_listing("Red Orbital RPA /99")[3:] == ("Red", 99)
+    assert parse_parallel("2026 Bowman Chrome #CRA-JMI Auto Refractor /499") == "/499"
+    assert parse_parallel("2026 Topps Chrome Green #BTP-2 /99") == "Green /99"
+    assert parse_parallel("2026 Topps #BTP-2 Jacob Misiorowski Big Ticket Players") == "Base"
+
+
+def test_card_code_and_code_key():
+    from app.services.parallels import card_code, code_key
+    assert card_code("LOB-001") == card_code("LOB-EN001") == card_code("LOB-E001") == "lob1"
+    assert card_code("CRA-JMI") == card_code("cra-jmi") == card_code(" #CRA-JMI") == "crajmi"
+    assert card_code("BTP-02") == card_code("btp2") == "btp2"
+    for number in ("136", "#23", None, "", "NM-MT", "PSA10", "MLB2026", "Rookie Card", "CRA-JMI 5"):
+        assert card_code(number) is None, number
+    assert code_key("BTP-2") == code_key("btp2") == code_key("BTP-02") == "btp2"
+    assert code_key("LOB-EN001") == code_key("LOB-001") == "lob1" and code_key("CRA-JMI") == "crajmi"
+
+
+# Card 46: a Jacob Misiorowski CRA-JMI auto redemption, whose search also finds $2-3 Big Ticket Players inserts
+_CARD46_REDEMPTIONS = [
+    ("Topps 2026 Bowman Chrome Jacob Misiorowski CRA-JMI Redemption RC Rookie Auto", 416.99),
+    ("Topps 2026 Bowman Chrome Jacob Misiorowski CRA-JMI Redemption RC Rookie Auto", 435),
+    ("Topps 2026 Bowman Chrome Jacob Misiorowski RC Auto Refractor Redemption #CRA-JMI", 864.95),
+    ("Topps 2026 Bowman Chrome Jacob Misiorowski Brewers Auto redemption REDEMPTION", 450),
+]
+_CARD46_OTHERS = [
+    ("2026 Bowman Chrome Jacob Misiorowski #CRA-JMI Rookie Auto Refractor /499 RC", 600),  # not a redemption
+    ("Topps 2026 Topps Pristine Jacob Misiorowski Auto Redemption PA-JM Brewers", 549.99),  # another card's code
+]
+_CARD46_BTP = [(t, p) for t, p in zip(
+    ["2026 Topps #BTP-2 Jacob Misiorowski Big Ticket Players",
+     "Topps 2026 chrome Big Ticket Players Rookie Jacob Misiorowski Brewers BTP-2",
+     "2026 Topps Chrome -#BTP-2 Jacob Misiorowski Admit One Refractor RC Brewers",
+     "2026 Topps Chrome Big Ticket Players Jacob Misiorowski"] * 3,
+    [2.45, 2.5, 2.55, 2.6, 2.65, 2.7, 2.75, 2.8, 2.85, 2.9, 2.95, 3.0])]
+
+
+def _card46():
+    from app.services.pricing import group_by_grade
+    return group_by_grade(_items(*_CARD46_REDEMPTIONS, *_CARD46_OTHERS, *_CARD46_BTP))
+
+
+def test_card46_redemption_is_priced_from_its_own_code_only():
+    from app.services.identity import CardIdentity
+    from app.services.pricing import build_quotes
+    groups = _card46()
+    plain, _ = build_quotes(groups, ["Raw"], "q", "ebay-active")
+    assert plain[0].median < 5
+    quotes, used = build_quotes(groups, ["Raw"], "q", "ebay-active", ident=CardIdentity("crajmi", True))
+    assert not [i for i in used if "BTP" in i.title or "Big Ticket" in i.title]
+    assert sorted(i.price for i in used) == [416.99, 435, 450, 864.95]
+    assert 417 <= quotes[0].median <= 865 and quotes[0].sample_size == 4
+
+
+def test_redemption_rule_works_both_ways():
+    from app.services.identity import CardIdentity
+    from app.services.parallels import classify_listing
+    from app.services.pricing import build_quotes, group_by_grade
+    groups = _card46()
+    _, used = build_quotes(groups, ["Raw"], "q", "ebay-active", ident=CardIdentity("crajmi", True))
+    assert used and all(classify_listing(i.title).redemption for i in used)
+    for ident in (CardIdentity("crajmi", False), CardIdentity(None, False)):
+        quotes, used = build_quotes(groups, ["Raw"], "q", "ebay-active", ident=ident)
+        assert used and not any(classify_listing(i.title).redemption for i in used), ident
+    assert {i.price for i in used} >= {600, 2.45}  # no code to check: only the redemptions are left out
+    # every listing the wrong kind: no price, and nothing to fall back on
+    only_plain = group_by_grade(_items(*_CARD46_OTHERS[:1], *_CARD46_BTP))
+    quotes, used = build_quotes(only_plain, ["Raw"], "q", "ebay-active", ident=CardIdentity("crajmi", True))
+    assert quotes[0].median is None and quotes[0].sample_size == 0 and not used
+    only_redemptions = group_by_grade(_items(*_CARD46_REDEMPTIONS))
+    quotes, _ = build_quotes(only_redemptions, ["Raw"], "q", "ebay-active", ident=CardIdentity(None, False))
+    assert quotes[0].median is None and quotes[0].sample_size == 0
+
+
+def test_cards_without_a_code_are_priced_as_before():
+    from types import SimpleNamespace
+
+    from app.services.identity import CardIdentity, identity_of_card
+    from app.services.pricing import build_quotes, group_by_grade
+    groups = group_by_grade(_items(*_CARD46_OTHERS[:1], *_CARD46_BTP))
+    plain, plain_used = build_quotes(groups, ["Raw"], "q", "ebay-active")
+    for number in (None, "136"):
+        card = SimpleNamespace(name="Jacob Misiorowski", set_name="2026 Topps Chrome", variant=None, card_number=number,
+                               search_query="2026 Topps Chrome Jacob Misiorowski", id_confidence=0.9)
+        ident = identity_of_card(card)
+        assert ident == CardIdentity(None, False)
+        quotes, used = build_quotes(groups, ["Raw"], "q", "ebay-active", ident=ident)
+        assert [q.model_dump() for q in quotes] == [q.model_dump() for q in plain] and used == plain_used
+        assert any("BTP-2" in i.title for i in used)  # a code in the title is kept when the card has none
+
+
+def test_listings_for_another_identity_are_traced(monkeypatch):
+    import asyncio
+
+    from app.services import pricing
+    from app.services.identity import CardIdentity
+    from app.services.trace import DECISIONS, Trace
+    ident = CardIdentity("crajmi", True)
+    trace = Trace()
+    pricing.build_quotes(_card46(), ["Raw"], "q", "ebay-active", trace=trace, ident=ident)
+    dropped = {r["t"] for r in trace.listings if r["d"] == "other_identity"}
+    assert dropped == {t for t, _ in _CARD46_OTHERS + _CARD46_BTP}
+    f = trace.funnel[0]
+    assert f["other_identity"] == 14 and f["used"] == 4
+    assert f["found"] == f["excluded"] + f["other_identity"] + f["other_version"] + f["outliers"] + f["used"]
+    assert sum("CRAJMI" in n and "redemption" in n for n in trace.notes) == 1
+    tags = {r["t"]: r["k"] for r in trace.listings}
+    assert tags[_CARD46_REDEMPTIONS[2][0]] == "CRA-JMI · Auto · Redemption"
+    assert tags[_CARD46_BTP[0][0]] == "BTP-2" and tags[_CARD46_BTP[3][0]] is None
+    assert list(DECISIONS).index("other_identity") == list(DECISIONS).index("other_card") + 1
+    # through the whole lookup, the summary counts them too
+    _alike_ebay(monkeypatch, _pics(*[(f"x{n}", p, t) for n, (t, p) in
+                                     enumerate(_CARD46_REDEMPTIONS + _CARD46_OTHERS + _CARD46_BTP)]))
+    trace = Trace()
+    p = asyncio.run(pricing.quote_grades("q", ["Raw"], image=None, trace=trace, ident=ident))
+    assert trace.summary["other_identity"] == 14 == sum(r["d"] == "other_identity" for r in trace.listings)
+    assert p.quotes[0].sample_size == 4
+    trace = Trace()
+    asyncio.run(pricing.quote_grades("q", ["Raw"], image=None, trace=trace))
+    assert trace.summary["other_identity"] == 0 and trace.funnel[0]["other_identity"] == 0
+
+
+def test_identity_of_card_reads_redemption_from_the_card():
+    from types import SimpleNamespace
+
+    from app.services.identity import CardIdentity, identity_of_card
+
+    def card(**kw):
+        return SimpleNamespace(**{"name": "Jacob Misiorowski", "set_name": "2026 Bowman Chrome", "variant": None,
+                                  "card_number": "CRA-JMI", "search_query": None, "id_confidence": None, **kw})
+    assert identity_of_card(card()) == CardIdentity("crajmi", False)
+    assert identity_of_card(card(variant="Auto Redemption")) == CardIdentity("crajmi", True)
+    assert identity_of_card(card(search_query="2026 Bowman Chrome Misiorowski CRA-JMI REDEMPTION")).redemption
+    assert identity_of_card(card(id_confidence=0.3, variant="Auto Redemption")) is None
+
+
+def test_sold_value_of_a_redemption_uses_only_its_own_redemption_sales(monkeypatch):
+    from sqlmodel import Session, select
+
+    from app.config import get_settings
+    from app.db import engine
+    from app.models import SoldSale
+    from app.services import sold_refresh
+    monkeypatch.setattr(get_settings(), "sold_monthly_budget", 50)
+    page = [_sale(1, "2026 Bowman Chrome Jacob Misiorowski CRA-JMI Redemption Auto", 400, 1),
+            _sale(2, "2026 Bowman Chrome Jacob Misiorowski Auto Redemption #CRA-JMI", 450, 2),
+            _sale(3, "2026 Bowman Chrome Jacob Misiorowski Brewers Auto REDEMPTION", 500, 3),
+            _sale(4, "2026 Bowman Chrome Jacob Misiorowski #CRA-JMI Auto /499", 600, 4),
+            _sale(5, "2026 Bowman Chrome Jacob Misiorowski #CRA-JMI Auto /499", 650, 5),
+            _sale(6, "2026 Topps Jacob Misiorowski Redemption BTP-2", 5, 2)] + \
+           [_sale(10 + n, "2026 Topps #BTP-2 Jacob Misiorowski Big Ticket Players", 2.5 + n / 10, n) for n in range(1, 5)]
+    monkeypatch.setattr(sold_refresh, "get_sold", lambda: _FakeSold([page]))
+    with TestClient(app) as c:
+        card = c.post("/api/cards", json={"name": "Jacob Misiorowski", "category": "sports", "grade": "Raw",
+                                          "card_number": "CRA-JMI", "variant": "Auto Redemption"}).json()
+        out = c.post(f"/api/cards/{card['id']}/sold/refresh").json()
+        assert out["used"] == 3 and out["median"] == 450
+        got = c.get(f"/api/cards/{card['id']}").json()
+        assert got["sold_value"] == 450 and got["sold_count"] == 3 and got["sold_low"] == 400 and got["sold_high"] == 500
+        with Session(engine) as s:
+            assert not any(r.junk for r in s.exec(select(SoldSale).where(SoldSale.card_id == card["id"])).all())
+        trace = c.get(f"/api/cards/{card['id']}/debug/traces").json()[0]
+        assert c.get(f"/api/cards/{card['id']}/debug/traces/{trace['id']}").json()["summary"]["other_identity"] == 7
+        # no longer a redemption: the two plain CRA-JMI sales are all that count, too few for a value
+        c.patch(f"/api/cards/{card['id']}", json={"variant": "Auto", "search_query": "Jacob Misiorowski CRA-JMI Auto"})
+        got = c.get(f"/api/cards/{card['id']}").json()
+        assert got["sold_value"] is None and got["sold_count"] == 2

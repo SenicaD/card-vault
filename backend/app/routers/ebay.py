@@ -12,7 +12,7 @@ from ..db import get_session
 from ..models import ASKING_SOURCES, Card, CardCategory, CardStatus, Listing, ListingSeen, PriceSnapshot, Sale, SoldSale, utcnow
 from ..services.ebay import EbayItem, ListingRequest, get_ebay
 from ..services.grading import grade_sort_key, normalize_grade
-from ..services.identity import who_of_card
+from ..services.identity import identity_of_card, who_of_card
 from ..services.parallels import BASE, parse_parallel
 from ..services.pricing import build_quotes, card_image, quote_grades
 from ..services.similarity import score_urls
@@ -56,7 +56,7 @@ async def price_card(card_id: int, body: PriceRequest | None = None,
     try:
         priced = await quote_grades(query, grades, None if (body and body.text_only) else card_image(card),
                                     parallel=card.parallel, exclude=excluded_ids(session, card.id), trace=trace,
-                                    who=who_of_card(card))
+                                    who=who_of_card(card), ident=identity_of_card(card))
     except Exception as e:
         trace.error = repr(e)[:400]
         save_trace(session, trace, card.id, keep_raw=True)  # a failed lookup is the one you most want to see
@@ -161,7 +161,7 @@ def exclude_matches(card_id: int, body: ExcludeRequest, session: Session = Depen
         groups.setdefault(r.grade, []).append(EbayItem(item_id=r.item_id, title=r.title, price=r.price, currency=r.currency,
                                                        condition=r.condition, url=r.url, image_url=r.image_url))
     quotes, _ = build_quotes(groups, grades, card.search_query or card.name, "ebay-image", card.parallel,
-                             {r.item_id for r in rows if r.excluded})
+                             {r.item_id for r in rows if r.excluded}, ident=identity_of_card(card))
     snaps = [PriceSnapshot(card_id=card.id, **q.model_dump()) for q in quotes]
     session.add_all(snaps)
     own_snap = next((s for s in snaps if s.grade == own), None)
