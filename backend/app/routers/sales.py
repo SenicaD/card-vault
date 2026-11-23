@@ -8,8 +8,10 @@ from sqlmodel import Session, col, func, select
 from ..db import get_session
 from ..config import get_settings
 from ..models import CardStatus, ListingSeen, Sale, SoldCall, SoldSale, utcnow
+from ..services.ebay import EbayItem
 from ..services.grading import grade_sort_key, normalize_grade
 from ..services.parallels import parse_parallel
+from ..services.pricing import summarize
 from ..services.sold import SoldApiError, get_sold
 from ..services.sold_refresh import SoldUnavailable, budget_left, refresh_sold, used_this_month
 from .common import get_card_or_404
@@ -65,7 +67,7 @@ class GradeCompare(BaseModel):
     grade: str
     asking_median: float | None  # what matching listings on eBay are asking right now
     asking_count: int
-    sold_median: float | None  # last asking price of listings that disappeared (likely sold)
+    sold_median: float | None  # sold: outlier-trimmed median of real sales (same rule as the card's sold value); estimated: median last asking price of listings that disappeared
     sold_count: int
     gap: float | None  # likely-sold minus asking, in dollars
     gap_pct: float | None
@@ -124,6 +126,7 @@ def sold_compare(card_id: int, days: int = Query(90, ge=0, le=3650), grades: lis
     eBay's public API has no sold prices, so "sold" here is the last asking price of a listing that has
     vanished from eBay: usually a sale, but it can be a listing the seller ended or relisted. Your own
     recorded sales are shown next to it as the only confirmed figure. days=0 means all time.
+    When real sales are on record for a grade, its sold median is theirs, outliers trimmed like the card's sold value.
     """
     card = get_card_or_404(session, card_id)
     cutoff = utcnow() - timedelta(days=days) if days else None
@@ -148,9 +151,11 @@ def sold_compare(card_id: int, days: int = Query(90, ge=0, le=3650), grades: lis
     for g in wanted:
         ask = [r.price for r in active if r.grade == g]
         sold = [r for r in gone if r.grade == g]
-        real_g = [r.price for r in real if r.grade == g]
+        real_g = [r for r in real if r.grade == g]
         mine = [x.price for x in sales if x.grade == g]
-        a, sm = _med(ask), _med(real_g if real_g else [r.price for r in sold])
+        a = _med(ask)
+        sm = (summarize([EbayItem(item_id=r.item_id, title=r.title, price=r.price) for r in real_g])["median"]
+              if real_g else _med([r.price for r in sold]))
         ask_by_grade[g] = a
         spans = [(r.gone_at - r.first_seen).total_seconds() / 86400 for r in sold if r.gone_at and r.first_seen] if not real_g else []
         dm = _med(spans)

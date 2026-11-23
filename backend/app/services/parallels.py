@@ -4,7 +4,8 @@ Sellers write these in free text ("Red Orbital RPA /99", "Green Mojo /99 Auto"),
 the first colour word plus a print run written as "/NN". Titles with neither are "Base".
 
 classify_listing also reads which card a title is for: its card codes ("CRA-JMI", "BTP-2", "LOB-EN001"),
-and whether it is a redemption or an autograph.
+and whether it is a redemption or an autograph. Only hyphenated codes count as a title's codes, so only they can
+mark a listing as another card; a no-hyphen word ("BTP2", but also "SP2", "PS5") can only confirm a card's own code.
 """
 import re
 from typing import NamedTuple
@@ -18,7 +19,9 @@ _RUN_RX = re.compile(r"(?<![\w/])/\s?(\d{1,4})\b")
 BASE = "Base"
 
 # A card code is letters + digits in any case ("BTP-2", "btp2", "LOB-EN001", region letters optional), or
-# capitals-capitals ("CRA-JMI", "I-JM"); the 2-3 letter suffix keeps "ON-CARD" and "ALL-STAR" out
+# capitals-capitals ("CRA-JMI", "I-JM"); the 2-3 letter suffix keeps "ON-CARD" and "ALL-STAR" out.
+# In titles the no-hyphen form ("btp2") is also an ordinary word ("SP2", "PS5", "Top100"), so it is never one of a
+# title's codes; it can only confirm a card's own code (bare_code_keys)
 _FORM_A = r"([a-z]{1,5})-([a-z]{1,2})?(\d{1,4})|([a-z]{2,5})(\d{1,4})"
 _FORM_B = r"([A-Z]{1,5})-([A-Z]{2,3})"
 _CODE_RX = re.compile(rf"\b(?:(?i:{_FORM_A})|{_FORM_B})\b")
@@ -32,7 +35,7 @@ _AUTO_RX = re.compile(r"\b(auto|autos|autograph\w*|rpa)\b", re.I)
 
 
 class ListingTags(NamedTuple):
-    codes: tuple[str, ...]  # card codes in the title, upper-cased, in order
+    codes: tuple[str, ...]  # hyphenated card codes in the title, upper-cased, in order
     redemption: bool
     auto: bool
     color: str | None
@@ -66,8 +69,13 @@ def card_code(card_number: str | None) -> str | None:
     return _key(m) if m and _is_code(m) else None
 
 
+def bare_code_keys(title: str) -> set[str]:
+    """Code keys of the no-hyphen code-shaped words in a title ("BTP2", "SP2"): they may be ordinary words."""
+    return {_key(m) for m in _CODE_RX.finditer(title) if m.group(4) and _is_code(m)}
+
+
 def classify_listing(title: str) -> ListingTags:
-    codes = [m.group(0).upper() for m in _CODE_RX.finditer(title) if _is_code(m)]
+    codes = [m.group(0).upper() for m in _CODE_RX.finditer(title) if not m.group(4) and _is_code(m)]
     color = _COLOR_RX.search(title)
     run = _RUN_RX.search(title)
     return ListingTags(tuple(dict.fromkeys(codes)), bool(REDEMPTION_RX.search(title)), bool(_AUTO_RX.search(title)),

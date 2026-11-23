@@ -52,8 +52,9 @@ Tests: `cd backend && pytest`. API docs: `http://localhost:8000/docs`.
 4. **Value**: on a card's page, "Refresh value" re-runs that eBay search (filters lots and reprints, trims
    outliers and, for a card with a photo and the optional CLIP install, leaves out listings whose picture
    clearly doesn't look like it) and stores a new low / median / high snapshot. The median becomes the card's estimate.
-   A card whose number is a set code (e.g. CRA-JMI) is only priced from listings that show that code or no code, and a
-   redemption card only from redemption listings (other cards never from redemption listings).
+   A card whose number is a set code (e.g. CRA-JMI) is only priced from listings that show that code or no other
+   hyphenated code (words like SP2 or PS5 don't count as another card's code), and a redemption card only from
+   redemption listings (other cards never from redemption listings).
    A card counts as a redemption when its "Redemption card" box is ticked (set from the identification when scanned,
    editable on the card page) or when its name, set, variant, number or search words say "redemption".
    When the middle half of the prices spans more than `MAX_PRICE_SPREAD` (default 100%) of the median, the card is
