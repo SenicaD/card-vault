@@ -123,6 +123,7 @@ export interface MatchRow {
   url: string | null
   image_url: string | null
   excluded: boolean
+  in_window: boolean
 }
 
 export interface SimilarityResult {

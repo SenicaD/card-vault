@@ -369,6 +369,11 @@ const ruleText = computed(() => {
   if (k != null && k <= n) return k === 1 ? 'the price of its only listing' : `the median of all ${k} listings`
   return windowText(rule, n)
 })
+// How many of the listings in the price count (own grade and version, not unticked) the window actually values the card from
+const windowCounts = computed(() => {
+  const own = matches.value.filter((m) => m.grade === ownGrade.value && !m.excluded && (!card.value?.parallel || m.parallel === card.value.parallel))
+  return { used: matches.value.filter((m) => m.in_window).length, all: own.length }
+})
 const setRule = (v: string) => run('rule', async () => {
   card.value = await api<Card>(`/api/cards/${id}`, { method: 'PATCH', body: { wide_spread_action: v === 'default' ? null : v } })
 })
@@ -389,6 +394,7 @@ function vsMedian(c: { price: number; grade?: string | null }): number | null {
 const compHeaders = computed<TableHeader<CompRow>[]>(() => [
   { title: 'Use', key: 'included', sortable: false, width: 48 },
   ...(xs.value ? [] : [{ title: '', key: 'image_url', sortable: false, width: 64 }]),
+  ...(card.value?.spread_rule ? [{ title: 'Prices card', key: 'in_window', text: (m: CompRow) => (m.in_window ? 'Yes' : '') }] : []),
   // On phones the cell also shows the grade and version
   { title: 'Listing', key: 'title', text: (m) => [m.title, ...(xs.value ? [m.grade, m.parallel] : []), m.condition].filter(Boolean).join(' ') },
   ...(xs.value ? [] : [{ title: 'Grade', key: 'grade' }, { title: 'Version', key: 'parallel' }]),
@@ -599,6 +605,7 @@ onMounted(() => {
                 </v-alert>
                 <v-alert v-else-if="card.spread_rule" type="info" variant="tonal" density="compact" class="mt-3" icon="mdi-chart-bell-curve">
                   These listings' prices vary too widely<template v-if="latest?.spread != null"> (the middle half spans {{ Math.round(latest.spread * 100) }}% of the median)</template>, so the asking value of {{ money(card.est_value) }}<template v-if="ruleText"> is {{ ruleText }}</template>, {{ card.wide_spread_action ? 'as chosen for this card below' : 'the default on the Settings page' }}.
+                  <div v-if="windowCounts.used" class="mt-1 font-weight-medium">{{ windowCounts.used }} of the {{ windowCounts.all }} listings counted set this value (outliers and the rest are left out); they're marked in the listings table.</div>
                   <template v-if="ruleText"> This uses the current "Listings to price from" setting; if you changed it after this card was priced, the value updates the next time it's priced.</template>
                   <div v-for="(g, i) in clusters" :key="i" class="mt-1">
                     ~{{ money(g.median) }} · {{ money(g.low) }}–{{ money(g.high) }} · {{ g.count }} {{ g.count === 1 ? 'listing' : 'listings' }}<template v-if="g.versions.length"> · {{ g.versions[0].name }}</template>
@@ -785,6 +792,7 @@ onMounted(() => {
                     <span v-else class="comp-title" :class="{ dim: !item.included }">{{ item.title }}</span>
                     <div v-if="xs" class="text-caption text-muted-c">{{ [item.grade, item.parallel !== 'Base' ? item.parallel : null, item.condition].filter(Boolean).join(' · ') }}</div>
                   </template>
+                  <template #item.in_window="{ item }"><v-chip v-if="item.in_window" size="x-small" color="primary" variant="tonal">In the price</v-chip></template>
                   <template #item.grade="{ item }"><v-chip size="x-small" variant="tonal">{{ item.grade }}</v-chip></template>
                   <template #item.parallel="{ item }"><v-chip size="x-small" variant="outlined" :color="item.parallel === card.parallel ? 'primary' : undefined">{{ item.parallel }}</v-chip></template>
                   <template #item.look="{ item }"><span v-if="item.look != null" class="num text-caption">{{ item.look }}%</span><span v-else>—</span></template>

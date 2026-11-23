@@ -2900,3 +2900,21 @@ def test_bulk_revalue_applies_new_price_settings_without_ebay(restore_settings):
         got = c.get(f"/api/cards/{card['id']}").json()
         assert got["est_value"] is not None and got["spread_rule"] == "highest_group"
         assert got["wide_spread"] is False
+
+
+def test_matches_flag_the_listings_the_wide_spread_rule_prices_from(restore_settings):
+    from sqlmodel import Session
+    from app.db import engine
+    from app.models import ListingSeen
+    with TestClient(app) as c:
+        card = _mk(c, name="Window Flags", grade="Raw", price=_quote(spread=1.96, grade="Raw"))
+        with Session(engine) as session:
+            for n, p in enumerate((3, 3.2, 3.5, 3.8, 400, 500, 700, 900)):
+                session.add(ListingSeen(card_id=card["id"], item_id=f"wf{card['id']}-{n}", grade="Raw",
+                                        title="Window Flags", price=p))
+            session.commit()
+        assert c.get(f"/api/cards/{card['id']}/matches").json()[0]["in_window"] is False  # no rule applied yet
+        assert c.put("/api/settings", json={**HIGHEST_GROUP, "price_window": 3}).status_code == 200
+        c.post("/api/cards/bulk/revalue")
+        rows = c.get(f"/api/cards/{card['id']}/matches").json()
+        assert sorted(r["price"] for r in rows if r["in_window"]) == [500, 700, 900]

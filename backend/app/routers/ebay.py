@@ -15,7 +15,7 @@ from ..services.grading import grade_sort_key, normalize_grade
 from ..services.identity import identity_of_card, who_of_card
 from ..services.parallels import BASE, parse_parallel
 from ..services.app_settings import load_app_settings
-from ..services.pricing import apply_asking, asking_listings, build_quotes, card_image, price_clusters, quote_grades, summarize
+from ..services.pricing import apply_asking, asking_listings, build_quotes, card_image, price_clusters, quote_grades, summarize, window_of
 from ..services.similarity import score_urls
 from ..services.trace import Trace, save_trace
 from ..services.tracker import track_listings
@@ -120,6 +120,7 @@ class MatchRow(BaseModel):
     url: str | None
     image_url: str | None
     excluded: bool
+    in_window: bool = False  # one of the listings the wide-spread rule values the card from
 
 
 def _active_rows(session: Session, card_id: int, grades: list[str] | None = None) -> list[ListingSeen]:
@@ -132,10 +133,16 @@ def _active_rows(session: Session, card_id: int, grades: list[str] | None = None
 @router.get("/matches", response_model=list[MatchRow])
 def matches(card_id: int, grades: list[str] | None = Query(None), session: Session = Depends(get_session)):
     """Every listing currently matched to this card (kept between visits), for the listings table."""
-    get_card_or_404(session, card_id)
+    card = get_card_or_404(session, card_id)
+    in_window: set[str] = set()
+    if card.spread_rule:  # the listings the card's value comes from, as apply_asking picked them
+        own = [r for r in _active_rows(session, card_id, [card.grade])]
+        listings = asking_listings(own, card.parallel, {r.item_id for r in own if r.excluded}, identity_of_card(card))
+        in_window = {r.item_id for r in window_of(listings, card.spread_rule, load_app_settings(session).price_window,
+                                                  price=lambda r: r.price)}
     return [MatchRow(item_id=r.item_id, title=r.title, price=r.price, currency=r.currency, grade=r.grade,
                      parallel=parse_parallel(r.title), condition=r.condition, url=r.url, image_url=r.image_url,
-                     excluded=r.excluded) for r in _active_rows(session, card_id, grades)]
+                     excluded=r.excluded, in_window=r.item_id in in_window) for r in _active_rows(session, card_id, grades)]
 
 
 class ExcludeRequest(BaseModel):

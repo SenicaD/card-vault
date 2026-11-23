@@ -42,19 +42,22 @@ def apply_asking(card, median: float | None, spread: float | None, prices: list[
         card.wide_spread, card.est_value = False, median
 
 
-def window_value(prices: list[float], rule: str, n: int) -> float | None:
-    """The median of a window of n prices, after outliers are left out: the n most expensive ("highest_group"), the
-    n cheapest ("lowest_group") or the n in the middle of the price order ("median"; it leans one price toward the
-    cheaper side when it can't be centred exactly). With n or fewer prices left, the median of all of them; with
-    none, None."""
-    fences = outlier_fences(prices)
-    p = sorted(x for x in prices if fences is None or fences[2] <= x <= fences[3])
-    if not p:
-        return None
+def window_of(items: list, rule: str, n: int, price=lambda i: i) -> list:
+    """The items whose prices form the window: outliers are left out, then the n most expensive ("highest_group"),
+    the n cheapest ("lowest_group") or the n in the middle of the price order ("median"; it leans one price toward
+    the cheaper side when it can't be centred exactly). With n or fewer left, all of them."""
+    fences = outlier_fences([price(i) for i in items])
+    p = sorted((i for i in items if fences is None or fences[2] <= price(i) <= fences[3]), key=price)
     if len(p) > n:
         s = (len(p) - n) // 2
         p = p[-n:] if rule == "highest_group" else p[:n] if rule == "lowest_group" else p[s:s + n]
-    return round(statistics.median(p), 2)
+    return p
+
+
+def window_value(prices: list[float], rule: str, n: int) -> float | None:
+    """The median of the window (see window_of) of the prices; None with no prices left."""
+    p = window_of(prices, rule, n)
+    return round(statistics.median(p), 2) if p else None
 
 
 def asking_listings(items: list, parallel: str | None, exclude: set[str], ident: CardIdentity | None) -> list:
