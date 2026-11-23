@@ -32,7 +32,7 @@ def apply_asking(card, median: float | None, spread: float | None, prices: list[
     card.spread_rule = None
     rule = (card.wide_spread_action or app_settings.wide_spread_action) if app_settings is not None else "flag"
     if median is not None and rule in ("highest_group", "median", "lowest_group") and prices:
-        value = window_value(prices, rule, app_settings.price_window)
+        value = window_value(prices, rule, app_settings.price_window, app_settings.price_ceiling)
         if value is not None:
             card.wide_spread, card.est_value, card.spread_rule = False, value, rule
             return
@@ -42,10 +42,13 @@ def apply_asking(card, median: float | None, spread: float | None, prices: list[
         card.wide_spread, card.est_value = False, median
 
 
-def window_of(items: list, rule: str, n: int, price=lambda i: i) -> list:
+def window_of(items: list, rule: str, n: int, price=lambda i: i, ceiling: float | None = None) -> list:
     """The items whose prices form the window: outliers are left out, then the n most expensive ("highest_group"),
     the n cheapest ("lowest_group") or the n in the middle of the price order ("median"; it leans one price toward
-    the cheaper side when it can't be centred exactly). With n or fewer left, all of them."""
+    the cheaper side when it can't be centred exactly). With n or fewer left, all of them.
+    A price above the ceiling (when set) is left out first, so the n are picked from what is under it."""
+    if ceiling is not None:
+        items = [i for i in items if price(i) <= ceiling]
     fences = outlier_fences([price(i) for i in items])
     p = sorted((i for i in items if fences is None or fences[2] <= price(i) <= fences[3]), key=price)
     if len(p) > n:
@@ -54,9 +57,9 @@ def window_of(items: list, rule: str, n: int, price=lambda i: i) -> list:
     return p
 
 
-def window_value(prices: list[float], rule: str, n: int) -> float | None:
+def window_value(prices: list[float], rule: str, n: int, ceiling: float | None = None) -> float | None:
     """The mean (average) of the window (see window_of) of the prices; None with no prices left."""
-    p = window_of(prices, rule, n)
+    p = window_of(prices, rule, n, ceiling=ceiling)
     return round(statistics.mean(p), 2) if p else None
 
 

@@ -224,7 +224,8 @@ class AppSettings(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     cluster_min_size: int = 2  # a price group needs at least this many listings
     wide_spread_action: str = "flag"  # the default for every card without its own choice; see WideSpreadAction
-    price_window: int = 10  # how many listings the Highest, Median and Lowest rules take the median of
+    price_window: int = 10  # how many listings the Highest, Median and Lowest rules take the average of
+    price_ceiling: float | None = None  # a listing priced above this is left out of the window, before the n are picked; None = no limit
 
 
 # ---------- Price snapshots ----------

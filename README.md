@@ -66,7 +66,7 @@ Tests: `cd backend && pytest`. API docs: `http://localhost:8000/docs`.
    default 2) leaves smaller groups out as strays; it only shapes the groups shown on the card page. "When prices
    spread too widely" is the default rule for a card that would otherwise be flagged: flag it (the default), or value
    it with Highest, Median or Lowest, the average of the N most expensive listings, the N in the middle of the price
-   order, or the N cheapest. N is "Listings to price from" (1 to 50, default 10). The window is taken from the card's
+   order, or the N cheapest. N is "Listings to price from" (1 to 50, default 10). "Ignore listings priced above" (empty by default) leaves any dearer listing out first, so the N are picked from what is under it. The window is taken from the card's
    asking listings after the same outlier trim as the asking median; with N or fewer listings left, every rule takes
    the average of all of them, and a card with no listings left is still flagged. The card page says which rule set
    the value and lists the groups.

@@ -5,6 +5,7 @@ const { api } = useApi()
 const size = ref('')
 const action = ref<AppSettings['wide_spread_action']>('flag')
 const windowSize = ref('')
+const ceiling = ref('')
 const savedWindow = ref<number | null>(null)
 const error = ref('')
 const notice = ref('')
@@ -26,6 +27,12 @@ const windowError = computed(() => {
   const n = Number(v)
   return n < 1 || n > 50 ? 'Must be from 1 to 50' : ''
 })
+const ceilingError = computed(() => {
+  const v = ceiling.value.trim().replace(/^\$/, '')
+  if (!v) return ''
+  return /^\d+(\.\d{1,2})?$/.test(v) && Number(v) > 0 ? '' : 'Enter a price above $0, or leave empty for no limit'
+})
+const ceilingValue = () => { const v = ceiling.value.trim().replace(/^\$/, ''); return v ? Number(v) : null }
 // The N the rule hints show: what's in the field, or the saved value while the field is invalid
 const shownWindow = computed(() => (windowError.value ? savedWindow.value : Number(windowSize.value.trim())))
 
@@ -37,6 +44,7 @@ async function load() {
     action.value = s.wide_spread_action
     windowSize.value = String(s.price_window)
     savedWindow.value = s.price_window
+    ceiling.value = s.price_ceiling == null ? '' : String(s.price_ceiling)
   } catch (e: any) {
     error.value = `Couldn't load the settings: ${e.message}`
   } finally {
@@ -45,18 +53,19 @@ async function load() {
 }
 
 async function save() {
-  if (sizeError.value || windowError.value) return
+  if (sizeError.value || windowError.value || ceilingError.value) return
   saving.value = true
   error.value = ''
   try {
     const s = await api<AppSettings>('/api/settings', {
       method: 'PUT',
-      body: { cluster_min_size: Number(size.value.trim()), wide_spread_action: action.value, price_window: Number(windowSize.value.trim()) },
+      body: { cluster_min_size: Number(size.value.trim()), wide_spread_action: action.value, price_window: Number(windowSize.value.trim()), price_ceiling: ceilingValue() },
     })
     size.value = String(s.cluster_min_size)
     action.value = s.wide_spread_action
     windowSize.value = String(s.price_window)
     savedWindow.value = s.price_window
+    ceiling.value = s.price_ceiling == null ? '' : String(s.price_ceiling)
     notice.value = 'Settings saved'
   } catch (e: any) {
     error.value = `Couldn't save the settings: ${e.message}`
@@ -118,11 +127,22 @@ onMounted(load)
               persistent-hint
               style="max-width: 360px"
             />
+            <v-text-field
+              v-model="ceiling"
+              label="Ignore listings priced above"
+              prefix="$"
+              inputmode="decimal"
+              :disabled="loading"
+              :error-messages="loading ? [] : ceilingError"
+              hint="An outlier price: a listing above this is left out of every card's value, even if it would be one of the listings above. Leave empty for no limit."
+              persistent-hint
+              style="max-width: 360px"
+            />
             <v-alert type="info" variant="tonal" density="compact" icon="mdi-information-outline">
               Changes apply the next time a card is priced: Refresh value, ticking or unticking listings, or the daily and bulk re-price. Saving does not re-price your existing cards. To apply them to every card at once without waiting on eBay, use Re-price → Re-value all on Inventory.
             </v-alert>
             <div>
-              <v-btn type="submit" color="primary" variant="flat" prepend-icon="mdi-content-save-outline" :loading="saving" :disabled="loading || !!sizeError || !!windowError">
+              <v-btn type="submit" color="primary" variant="flat" prepend-icon="mdi-content-save-outline" :loading="saving" :disabled="loading || !!sizeError || !!windowError || !!ceilingError">
                 Save
               </v-btn>
             </div>

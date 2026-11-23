@@ -2552,8 +2552,8 @@ def test_price_clusters_endpoint_unknown_card_and_no_listings():
         assert r.status_code == 200 and r.json() == []
 
 
-DEFAULT_SETTINGS = {"cluster_min_size": 2, "wide_spread_action": "flag", "price_window": 10}
-HIGHEST_GROUP = {"cluster_min_size": 2, "wide_spread_action": "highest_group", "price_window": 3}
+DEFAULT_SETTINGS = {"cluster_min_size": 2, "wide_spread_action": "flag", "price_window": 10, "price_ceiling": None}
+HIGHEST_GROUP = {"cluster_min_size": 2, "wide_spread_action": "highest_group", "price_window": 3, "price_ceiling": None}
 
 
 @pytest.fixture
@@ -2578,7 +2578,7 @@ def test_settings_are_the_defaults_when_nothing_is_saved():
 
 
 def test_settings_are_saved_and_kept_after_a_restart(restore_settings):
-    saved = {"cluster_min_size": 5, "wide_spread_action": "highest_group", "price_window": 3}
+    saved = {"cluster_min_size": 5, "wide_spread_action": "highest_group", "price_window": 3, "price_ceiling": 100.5}
     with TestClient(app) as c:
         r = c.put("/api/settings", json=saved)
         assert r.status_code == 200 and r.json() == saved
@@ -2593,9 +2593,11 @@ def test_settings_are_saved_and_kept_after_a_restart(restore_settings):
                                           ({"wide_spread_action": "lowest"}, "flag, highest_group"),
                                           ({"price_window": 0}, "from 1 to 50"),
                                           ({"price_window": 51}, "from 1 to 50"),
-                                          ({"price_window": 2.5}, None)])
+                                          ({"price_window": 2.5}, None),
+                                          ({"price_ceiling": 0}, "above $0"),
+                                          ({"price_ceiling": -5}, "above $0")])
 def test_settings_reject_invalid_values_and_keep_the_saved_ones(restore_settings, bad, message):
-    saved = {"cluster_min_size": 4, "wide_spread_action": "highest_group", "price_window": 7}
+    saved = {"cluster_min_size": 4, "wide_spread_action": "highest_group", "price_window": 7, "price_ceiling": None}
     with TestClient(app) as c:
         assert c.put("/api/settings", json=saved).status_code == 200
         r = c.put("/api/settings", json={**saved, **bad})
@@ -2729,6 +2731,20 @@ def test_the_window_rules_ignore_the_minimum_group_size(restore_settings):
         assert c.put("/api/settings", json={**HIGHEST_GROUP, "cluster_min_size": 5}).status_code == 200
         got = _reprice_from_saved(c, _spread_card(c, "Group Fallback"))
         assert got["wide_spread"] is False and got["est_value"] == 700 and got["spread_rule"] == "highest_group"
+
+
+def test_the_price_ceiling_leaves_listings_out_even_when_they_are_in_the_window(restore_settings):
+    with TestClient(app) as c:
+        assert c.put("/api/settings", json=HIGHEST_GROUP).status_code == 200
+        card = _spread_card(c, "Ceiling")  # 3, 3.2, 3.5, 3.8, 400, 500, 700, 900
+        assert _reprice_from_saved(c, card)["est_value"] == 700  # mean of 500, 700, 900
+        assert c.put("/api/settings", json={**HIGHEST_GROUP, "price_ceiling": 600}).status_code == 200
+        out = c.post(f"/api/cards/{card['id']}/matches/exclude", json={"item_ids": [f"{card['id']}-l0"], "excluded": False})
+        assert out.status_code == 200
+        got = c.get(f"/api/cards/{card['id']}").json()
+        assert got["est_value"] == 301.27  # the 700 and 900 are over the ceiling, so the 3 highest left are 3.8, 400, 500
+        marked = sorted(r["price"] for r in c.get(f"/api/cards/{card['id']}/matches").json() if r["in_window"])
+        assert marked == [3.8, 400, 500] and max(marked) <= 600
 
 
 def test_excluding_a_listing_moves_the_window(restore_settings):
