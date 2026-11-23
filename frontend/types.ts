@@ -17,6 +17,8 @@ export interface CardFields {
   search_query: string | null
   cost?: number | null // paid per copy
   batch?: string | null // scan session it was added in
+  is_redemption?: boolean // an exchange card for a later autograph
+  is_auto?: boolean // autographed
 }
 
 export interface Card extends CardFields {
@@ -54,6 +56,8 @@ export interface Identification {
   condition: string | null
   confidence: number
   search_query: string
+  is_redemption: boolean
+  is_auto: boolean
 }
 
 export interface PriceQuote {
