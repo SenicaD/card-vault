@@ -247,7 +247,8 @@ docker start "$backend" >/dev/null
 backend_paused=0
 
 mkdir -- "$stage_dir"
-tar -xf - -C "$stage_dir"
+# Keep the staging directory private while giving the container users readable source files.
+(umask 022; tar -xf - -C "$stage_dir")
 test -f "$stage_dir/backend/Dockerfile"
 test -f "$stage_dir/frontend/Dockerfile"
 
@@ -268,6 +269,21 @@ PYTHON
 compose -f "$backup_dir/staged-compose.json" build "${services[@]}"
 test "$(image_revision "$staged_backend")" = "$revision"
 test "$(image_revision "$staged_frontend")" = "$revision"
+
+# Start the staged backend as its image user with an empty database before cutover.
+docker run --rm --network none --entrypoint python \
+    -e DATABASE_URL=sqlite:////tmp/cardvault.db -e IMAGE_DIR=/tmp/cardvault-images \
+    -e IDENTIFIER=mock -e EBAY_MODE=mock "$staged_backend" -c '
+from fastapi.testclient import TestClient
+from app.main import app
+
+with TestClient(app) as client:
+    response = client.get("/api/health")
+    response.raise_for_status()
+    if not response.json().get("ok"):
+        raise SystemExit("Staged CardVault backend did not report healthy")
+'
+printf 'Staged backend passed its startup check.\n'
 
 docker tag "$old_backend" "$backend_image:rollback-$suffix"
 docker tag "$old_frontend" "$frontend_image:rollback-$suffix"
