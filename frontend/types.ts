@@ -149,8 +149,8 @@ const windowHint = (rule: Exclude<WideSpreadAction, 'flag'>) => (n: number) => {
 }
 export const WIDE_SPREAD_ACTIONS: { value: WideSpreadAction; title: string; hint: (n: number) => string }[] = [
   { value: 'flag', title: 'Median of all listings, flag wide spreads', hint: () => 'The median of every listing. If prices spread too widely the card shows a "wide spread" warning and gets no asking value until you pick its version or untick listings.' },
-  { value: 'highest_group', title: 'Highest', hint: windowHint('highest_group') },
-  { value: 'median', title: 'Median', hint: windowHint('median') },
+  { value: 'highest_group', title: 'Highest', hint: (n: number) => `${windowHint('highest_group')(n)} Asking prices at the top are often overpriced or a dearer version, so this runs high.` },
+  { value: 'median', title: 'Median (recommended)', hint: windowHint('median') },
   { value: 'lowest_group', title: 'Lowest', hint: windowHint('lowest_group') },
 ]
 
