@@ -52,6 +52,36 @@ class Who(NamedTuple):
     number: str | None
 
 
+# Words that only ever lead an insert name ("Young Guns Luke Haymes", "Rookies Grey Zabel"); never stripped from the end
+_LEADING_ONLY = {"young", "rookies", "rookie", "the"}
+_TEAM_WORDS = None  # the team, city and college part of _NOT_A_SURNAME, filled on first use
+
+
+def split_player(name: str | None) -> tuple[str, list[str]]:
+    """Split a sports card name into the player and the insert/product words around it, in their own spelling:
+    "Samurai Japan Yoshinobu Yamamoto Sensational Samurai" -> ("Yoshinobu Yamamoto", ["Samurai Japan",
+    "Sensational Samurai"]). Team, city and college words are dropped (they don't say which card it is). When nothing
+    would be left, the name is returned unchanged."""
+    global _TEAM_WORDS
+    if _TEAM_WORDS is None:
+        _TEAM_WORDS = _NOT_A_SURNAME - set("""samurai japan sensational generational greats cosmic chrome star stars
+            clusters stellar portraits ud rookies rookie rated prospect prospects elite guns sizzle reel speckle obsidian
+            orbital turbocharged best topps bowman panini prizm donruss optic select mosaic upper deck refractor auto
+            autograph autographs chromographs rc sp ssp insert parallel card baseball football basketball hockey soccer
+            wbc team collection variation short print""".split())
+    words = (name or "").split()
+    key = lambda w: _fold(w).strip(".,'-")  # noqa: E731
+    lo, hi = 0, len(words)
+    while lo < hi and (key(words[lo]) in _NOT_A_SURNAME or key(words[lo]) in _LEADING_ONLY):
+        lo += 1
+    while hi > lo and (key(words[hi - 1]) in _NOT_A_SURNAME or key(words[hi - 1]) in _SUFFIX and hi - 1 == lo):
+        hi -= 1
+    if lo >= hi or not surname_of(" ".join(words[lo:hi])):
+        return (name or "").strip(), []
+    extras = [" ".join(w for w in run if key(w) not in _TEAM_WORDS) for run in (words[:lo], words[hi:])]
+    return " ".join(words[lo:hi]), [e for e in extras if e]
+
+
 def surname_of(name: str | None) -> str | None:
     """The player's surname: the last word of the name once suffixes (Jr, II) and trailing insert, team, city and
     college words (_NOT_A_SURNAME) are dropped. None when nothing of 3+ letters is left."""

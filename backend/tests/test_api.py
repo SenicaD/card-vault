@@ -173,6 +173,41 @@ def test_ebay_image_parser_keeps_numbers_and_skips_uppercase_words():
         assert r.card_number not in bad and not r.is_auto and not r.is_redemption
 
 
+def test_ebay_image_parser_keeps_the_player_in_the_name_and_reads_rare_letter_codes():
+    r = _parse(["2026 Topps Chrome Samurai Japan Yoshinobu Yamamoto Sensational Samurai SS-4 SP",
+                "Topps 2026 Chrome Yoshinobu Yamamoto Sensational Samurai Insert #SS-4 WBC",
+                "2026 Topps Chrome Samurai Japan Yoshinobu Yamamoto Sensational Samurai",
+                "2026 Topps Chrome Japan Samurai #SS-4 Yoshinobu Yamamoto Sensational Samurai",
+                "2026 Topps Chrome Samurai Japan Yoshinobu Yamamoto Sensational Samurai SP"])
+    assert r.name == "Yoshinobu Yamamoto" and "Sensational Samurai" in (r.variant or "")
+
+    trout = _parse(["2026 Topps Chrome Chromographs Mike Trout Auto Gold Refractor /50 CHR-MT",
+                    "2026 Topps Chrome Chromographs Mike Trout On Card Auto",
+                    "Topps 2026 Chrome Chromographs Mike Trout Angels Auto CHR-MT",
+                    "2026 Topps Chrome Mike Trout Chromographs Auto Orange",
+                    "2026 Topps Chrome Chromographs Mike Trout Autograph Angels",
+                    "2026 Topps Chrome Chromographs Auto Mike Trout"])
+    assert trout.card_number == "CHR-MT" and trout.name == "Mike Trout" and trout.is_auto  # 2 of 6 titles say CHR-MT
+
+    team = _parse(["2024 Topps Tampa Bay Buccaneers Team Card #190"] * 4)
+    assert team.name.startswith("Tampa Bay Buccaneers")  # no player in it: kept as the titles had it
+
+
+@pytest.mark.parametrize("name, player, extras", [
+    ("Samurai Japan Yoshinobu Yamamoto Sensational Samurai", "Yoshinobu Yamamoto", ["Samurai Japan", "Sensational Samurai"]),
+    ("RJ Harvey Denver Broncos", "RJ Harvey", []),
+    ("Young Guns Luke Haymes", "Luke Haymes", ["Young Guns"]),
+    ("Obsidian Orbital King Miller USC", "King Miller", ["Obsidian Orbital"]),
+    ("Pat Surtain II Denver Broncos", "Pat Surtain II", []),
+    ("Luka Doncic", "Luka Doncic", []),
+    ("Samurai Japan Generational Greats", "Samurai Japan Generational Greats", []),
+    ("Tampa Bay Buccaneers", "Tampa Bay Buccaneers", []),
+])
+def test_split_player(name, player, extras):
+    from app.services.identity import split_player
+    assert split_player(name) == (player, extras)
+
+
 def test_letter_code_pattern_shapes():
     from app.services.identify.ebay_image import _LETTER_CODE
 

@@ -10,6 +10,7 @@ from collections import Counter
 
 from ...models import CardCategory
 from ..ebay import EbayClient, EbayItem
+from ..identity import split_player
 from .base import CardIdentification
 
 _JUNK = re.compile(r"\b(lot|lots|bundle|set of|choose|pick|you pick|reprint|proxy|custom|digital)\b", re.I)
@@ -129,6 +130,16 @@ def parse_matches(matches: list[EbayItem]) -> CardIdentification:
     name_words = [w for w in consensus if w not in taken and not _YEAR.fullmatch(w) and not w.startswith("#")
                   and not re.fullmatch(r"\d+(/\d+)?|\d+(\.5)?", w)]
     name = _name_from(titles[centre], set(name_words[:6])) or titles[centre][:60]
+    if category == CardCategory.sports:
+        # keep the player in the name and move insert words ("Sensational Samurai") to the variant
+        name, extras = split_player(name)
+        if extras:
+            variant = ", ".join(dict.fromkeys([*extras, *(variant.split(", ") if variant else [])]))
+    if number is None:
+        # a letter-only card code ("CHR-MT") is printed small and often left out of titles, but when a quarter of the
+        # matches agree on one it names the card far better than nothing
+        codes = [m.group(1) for t in titles for m in [_LETTER_CODE.search(t)] if m]
+        number = _most_common(codes, 0.25, n)
 
     # Confidence: how many of the top matches are plainly the same listing as the central one,
     # discounted when there are only a few matches to go on.
