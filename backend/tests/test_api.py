@@ -173,6 +173,41 @@ def test_ebay_image_parser_keeps_numbers_and_skips_uppercase_words():
         assert r.card_number not in bad and not r.is_auto and not r.is_redemption
 
 
+def test_ebay_image_parser_keeps_the_player_in_the_name_and_reads_rare_letter_codes():
+    r = _parse(["2026 Topps Chrome Samurai Japan Yoshinobu Yamamoto Sensational Samurai SS-4 SP",
+                "Topps 2026 Chrome Yoshinobu Yamamoto Sensational Samurai Insert #SS-4 WBC",
+                "2026 Topps Chrome Samurai Japan Yoshinobu Yamamoto Sensational Samurai",
+                "2026 Topps Chrome Japan Samurai #SS-4 Yoshinobu Yamamoto Sensational Samurai",
+                "2026 Topps Chrome Samurai Japan Yoshinobu Yamamoto Sensational Samurai SP"])
+    assert r.name == "Yoshinobu Yamamoto" and "Sensational Samurai" in (r.variant or "")
+
+    trout = _parse(["2026 Topps Chrome Chromographs Mike Trout Auto Gold Refractor /50 CHR-MT",
+                    "2026 Topps Chrome Chromographs Mike Trout On Card Auto",
+                    "Topps 2026 Chrome Chromographs Mike Trout Angels Auto CHR-MT",
+                    "2026 Topps Chrome Mike Trout Chromographs Auto Orange",
+                    "2026 Topps Chrome Chromographs Mike Trout Autograph Angels",
+                    "2026 Topps Chrome Chromographs Auto Mike Trout"])
+    assert trout.card_number == "CHR-MT" and trout.name == "Mike Trout" and trout.is_auto  # 2 of 6 titles say CHR-MT
+
+    team = _parse(["2024 Topps Tampa Bay Buccaneers Team Card #190"] * 4)
+    assert team.name.startswith("Tampa Bay Buccaneers")  # no player in it: kept as the titles had it
+
+
+@pytest.mark.parametrize("name, player, extras", [
+    ("Samurai Japan Yoshinobu Yamamoto Sensational Samurai", "Yoshinobu Yamamoto", ["Samurai Japan", "Sensational Samurai"]),
+    ("RJ Harvey Denver Broncos", "RJ Harvey", []),
+    ("Young Guns Luke Haymes", "Luke Haymes", ["Young Guns"]),
+    ("Obsidian Orbital King Miller USC", "King Miller", ["Obsidian Orbital"]),
+    ("Pat Surtain II Denver Broncos", "Pat Surtain II", []),
+    ("Luka Doncic", "Luka Doncic", []),
+    ("Samurai Japan Generational Greats", "Samurai Japan Generational Greats", []),
+    ("Tampa Bay Buccaneers", "Tampa Bay Buccaneers", []),
+])
+def test_split_player(name, player, extras):
+    from app.services.identity import split_player
+    assert split_player(name) == (player, extras)
+
+
 def test_letter_code_pattern_shapes():
     from app.services.identify.ebay_image import _LETTER_CODE
 
@@ -258,7 +293,7 @@ def test_trend_ranges_and_sold_flag():
         now = utcnow()
         with Session(engine) as s:
             for days_ago, med in ((400, 50.0), (60, 30.0), (3, 20.0), (3, 24.0)):
-                s.add(PriceSnapshot(card_id=card["id"], query="q", source="ebay-active", grade="Raw", sample_size=5,
+                s.add(PriceSnapshot(card_id=card["id"], query="q", source="ebay-active", grade="Raw", parallel="Base", sample_size=5,
                                     low=med - 5, median=med, mean=med, high=med + 5,
                                     created_at=now - timedelta(days=days_ago)))
             s.add(PriceSnapshot(card_id=card["id"], query="q", source="ebay-image", grade=None, sample_size=5,
@@ -477,7 +512,7 @@ def test_trend_per_grade_and_legacy_snapshots_ignored():
         now = utcnow()
         with Session(engine) as s:
             for grade, med in (("PSA 10", 100.0), ("Raw", 10.0), ("BGS 9.5", 80.0), ("PSA 9", 40.0), ("CGC 9", 30.0), (None, 999.0)):
-                s.add(PriceSnapshot(card_id=card["id"], query="q", source="ebay-active", grade=grade, sample_size=5,
+                s.add(PriceSnapshot(card_id=card["id"], query="q", source="ebay-active", grade=grade, parallel="Base", sample_size=5,
                                     low=med, median=med, mean=med, high=med, created_at=now - timedelta(days=1)))
             s.commit()
 
@@ -1105,11 +1140,15 @@ def test_bulk_update_delete_and_cost():
         # identity fields are not bulk-editable
         assert c.post("/api/cards/bulk/update", json={"ids": ids, "changes": {"name": "x"}}).status_code == 422
         assert c.post("/api/cards/bulk/update", json={"ids": ids, "changes": {}}).status_code == 422
-        # a grade change in bulk clears the old grade's estimate, same as a single edit
+        # a grade change in bulk drops the old grade's estimate, same as a single edit: the card is valued from its
+        # saved listings of the new grade, or left unpriced when it has none
         c.post(f"/api/cards/{ids[0]}/price")
-        assert c.get(f"/api/cards/{ids[0]}").json()["est_value"]
+        raw = c.get(f"/api/cards/{ids[0]}").json()["est_value"]
+        assert raw
         c.post("/api/cards/bulk/update", json={"ids": [ids[0]], "changes": {"grade": "PSA 9"}})
-        assert c.get(f"/api/cards/{ids[0]}").json()["est_value"] is None
+        assert c.get(f"/api/cards/{ids[0]}").json()["est_value"] != raw
+        c.post("/api/cards/bulk/update", json={"ids": [ids[1]], "changes": {"grade": "PSA 9"}})  # never priced
+        assert c.get(f"/api/cards/{ids[1]}").json()["est_value"] is None
         assert c.post("/api/cards/bulk/delete", json={"ids": ids}).json() == {"deleted": 3}
         assert c.get(f"/api/cards/{ids[0]}").status_code == 404
 
@@ -1395,6 +1434,38 @@ def test_automatic_sold_checks_respect_the_auto_budget(monkeypatch):
         assert again == 0  # every card was just checked, so none is due until the refresh interval passes
 
 
+def test_sold_checks_go_to_the_most_dollars_at_risk_first():
+    from sqlmodel import Session
+
+    from app.db import engine
+    from app.models import Card, CardCategory
+    from app.services import sold_refresh
+    with TestClient(app):
+        with Session(engine) as session:
+            cards = {k: Card(name=f"Zed Risk {k}", category=CardCategory.sports, est_value=v, id_confidence=conf)
+                     for k, v, conf in (("sure_dear", 400, 0.95), ("unsure_dear", 400, 0.2), ("unsure_cheap", 2, 0.2))}
+            for c in cards.values():
+                session.add(c)
+            session.commit()
+            ids = {k: c.id for k, c in cards.items()}
+            due = [i for i in sold_refresh._due_cards(session) if i in ids.values()]
+        assert due == [ids["unsure_dear"], ids["sure_dear"], ids["unsure_cheap"]]
+
+
+def test_the_settings_switch_turns_automatic_sold_checks_on_and_off(restore_settings):
+    from sqlmodel import Session
+
+    from app.db import engine
+    from app.services.sold_refresh import auto_enabled
+    with TestClient(app) as c:
+        assert c.get("/api/settings").json()["sold_auto"] is False  # .env default: off
+        assert c.put("/api/settings", json={**DEFAULT_SETTINGS, "sold_auto": True}).json()["sold_auto"] is True
+        with Session(engine) as session:
+            assert auto_enabled(session) is True
+        r = c.post("/api/cards/bulk/sold", params={"limit": 1})  # the mock provider: one card checked by hand
+        assert r.status_code == 200 and r.json()["checked"] + r.json()["failed"] <= 1 and "budget_left" in r.json()
+
+
 class _FakeSold:
     """A sold-prices provider that serves canned pages, to test what gets stored and when paging stops."""
     name = "fake"
@@ -1533,6 +1604,7 @@ def test_sold_value_sits_beside_the_estimate_and_follows_grade_and_version(monke
     with TestClient(app) as c:
         card = c.post("/api/cards", json={"name": "Both Card", "category": "sports", "grade": "Raw", "est_value": None}).json()
         cid = card["id"]
+        c.patch(f"/api/cards/{cid}", json={"parallel": None})  # every version counts
         assert c.get(f"/api/cards/{cid}").json()["sold_value"] is None
         c.post(f"/api/cards/{cid}/sold/refresh")
         got = c.get(f"/api/cards/{cid}").json()
@@ -2157,15 +2229,19 @@ def test_cards_without_a_code_are_priced_as_before():
     from app.services.identity import CardIdentity, identity_of_card
     from app.services.pricing import build_quotes, group_by_grade
     groups = group_by_grade(_items(*_CARD46_OTHERS[:1], *_CARD46_BTP))
-    plain, plain_used = build_quotes(groups, ["Raw"], "q", "ebay-active")
+    # the $600 listing is an autograph, which this card isn't, so it is the only one left out
+    plain, plain_used = build_quotes(group_by_grade(_items(*_CARD46_BTP)), ["Raw"], "q", "ebay-active")
     for number in (None, "136"):
         card = SimpleNamespace(name="Jacob Misiorowski", set_name="2026 Topps Chrome", variant=None, card_number=number,
-                               search_query="2026 Topps Chrome Jacob Misiorowski", id_confidence=0.9, is_redemption=False)
+                               search_query="2026 Topps Chrome Jacob Misiorowski", id_confidence=0.9, is_redemption=False,
+                               is_auto=False)
         ident = identity_of_card(card)
-        assert ident == CardIdentity(None, False)
+        assert ident == CardIdentity(None, False, False)
         quotes, used = build_quotes(groups, ["Raw"], "q", "ebay-active", ident=ident)
-        assert [q.model_dump() for q in quotes] == [q.model_dump() for q in plain] and used == plain_used
+        stats = lambda qs: [(q.sample_size, q.low, q.median, q.high) for q in qs]  # noqa: E731 (item ids shift by one)
+        assert stats(quotes) == stats(plain) and [i.price for i in used] == [i.price for i in plain_used]
         assert any("BTP-2" in i.title for i in used)  # a code in the title is kept when the card has none
+        assert all(i.price != 600 for i in used)
 
 
 def test_listings_for_another_identity_are_traced(monkeypatch):
@@ -2246,9 +2322,9 @@ def test_identity_of_card_reads_redemption_from_the_card():
     def card(**kw):
         return SimpleNamespace(**{"name": "Jacob Misiorowski", "set_name": "2026 Bowman Chrome", "variant": None,
                                   "card_number": "CRA-JMI", "search_query": None, "id_confidence": None,
-                                  "is_redemption": False, **kw})
-    assert identity_of_card(card()) == CardIdentity("crajmi", False)
-    assert identity_of_card(card(variant="Auto Redemption")) == CardIdentity("crajmi", True)
+                                  "is_redemption": False, "is_auto": False, **kw})
+    assert identity_of_card(card()) == CardIdentity("crajmi", False, False)
+    assert identity_of_card(card(variant="Auto Redemption")) == CardIdentity("crajmi", True, True)
     assert identity_of_card(card(search_query="2026 Bowman Chrome Misiorowski CRA-JMI REDEMPTION")).redemption
     assert identity_of_card(card(id_confidence=0.3, variant="Auto Redemption")) is None
 
@@ -2261,10 +2337,84 @@ def test_identity_of_card_reads_the_saved_redemption_flag():
     def card(**kw):
         return SimpleNamespace(**{"name": "Jacob Misiorowski", "set_name": "2026 Bowman Chrome", "variant": None,
                                   "card_number": "CRA-JMI", "search_query": "2026 Bowman Chrome Jacob Misiorowski CRA-JMI",
-                                  "id_confidence": 0.9, "is_redemption": False, **kw})
+                                  "id_confidence": 0.9, "is_redemption": False, "is_auto": False, **kw})
     assert identity_of_card(card(is_redemption=True)).redemption is True  # no "redemp" in any text
     assert identity_of_card(card(variant="Auto Redemption")).redemption is True  # text alone still counts
     assert identity_of_card(card(is_redemption=True, id_confidence=0.3)) is None
+
+
+def test_identity_of_card_reads_autograph_status_from_the_flag_or_the_text():
+    """Cards saved before the is_auto flag existed only say "Auto" in their variant."""
+    from types import SimpleNamespace
+
+    from app.services.identity import identity_of_card
+
+    def card(**kw):
+        return SimpleNamespace(**{"name": "Chrome Chromographs Mike Trout", "set_name": "Topps", "variant": None,
+                                  "card_number": None, "search_query": "topps 2026 chrome chromographs mike trout",
+                                  "id_confidence": 0.75, "is_redemption": False, "is_auto": False, **kw})
+    assert identity_of_card(card()).auto is False
+    assert identity_of_card(card(is_auto=True)).auto is True
+    assert identity_of_card(card(variant="Auto")).auto is True  # an older card: only the variant says it
+    assert identity_of_card(card(search_query="topps 2026 chrome chromographs mike trout auto")).auto is True
+    assert identity_of_card(card(is_redemption=True)).auto is True  # a redemption is for an autograph
+
+
+def test_autograph_status_must_match_the_card():
+    from app.services.identity import CardIdentity, fits_identity
+    auto, plain, either = CardIdentity(None, False, True), CardIdentity(None, False, False), CardIdentity(None, False)
+    trout_auto = "2026 Topps Chrome Chromographs Mike Trout Auto Gold Refractor /50 CHR-MT"
+    trout_insert = "2026 Topps Chrome Big Ticket Players Mike Trout #BTP-1"
+    assert fits_identity(trout_auto, auto) and not fits_identity(trout_insert, auto)
+    assert fits_identity(trout_insert, plain) and not fits_identity(trout_auto, plain)
+    assert fits_identity(trout_auto, either) and fits_identity(trout_insert, either)
+    for word in ("AUTO", "Autograph", "Autographed", "RPA", "autos"):
+        assert fits_identity(f"2026 Bowman Chrome Player {word}", auto), word
+    redemption = CardIdentity(None, True, True)  # sellers often leave "auto" out of a redemption's title
+    assert fits_identity("2026 Bowman Chrome Jacob Misiorowski CRA-JMI Redemption", redemption)
+
+
+@pytest.mark.parametrize("name, surname", [
+    ("Samurai Japan Yoshinobu Yamamoto Sensational Samurai", "yamamoto"),
+    ("Yoshinobu Yamamoto SAMURAI JAPAN", "yamamoto"),
+    ("RJ Harvey Denver Broncos", "harvey"),
+    ("Pat Surtain II Denver Broncos", "surtain"),
+    ("Wesley Walls Carolina Panthers", "walls"),
+    ("Reggie Wayne Colts", "wayne"),
+    ("Cosmic Chrome Juan Soto Stellar Stars", "soto"),
+    ("Cosmic Chrome Star Clusters Mets Soto", "soto"),
+    ("William Nylander UD Portraits", "nylander"),
+    ("Obsidian Orbital King Miller USC", "miller"),
+    ("Chrome Chromographs Mike Trout", "trout"),
+    ("Jacob Misiorowski", "misiorowski"),
+    ("Best Jaron-Keawe Sagapolutele", "sagapolutele"),
+    ("D'Andre Swift", "swift"),
+    ("A.J. Green Bengals", "green"),  # a surname that is also a city word (Green Bay) is kept
+    ("Bryce Young Carolina Panthers", "young"),
+    ("Young Guns Luke Haymes", "haymes"),
+    # nothing names a player: filter by year and number only, never by an insert or team word
+    ("Samurai Japan Generational Greats", None),
+    ("Samurai Japan", None),
+    ("Tampa Bay Buccaneers", None),
+    ("dallas stars", None),
+    ("Rated Prospect Elite OKLAHOMA", None),
+    ("Chrome", None),
+])
+def test_the_surname_skips_insert_team_and_college_words(name, surname):
+    from app.services.identity import surname_of, who_from
+    assert surname_of(name) == surname
+    who = who_from(name, "2026", None)
+    assert who is not None and who.surname == surname
+
+
+def test_an_insert_word_in_the_name_no_longer_lets_other_players_through():
+    from app.services.identity import same_card, who_from
+    who = who_from("Samurai Japan Yoshinobu Yamamoto Sensational Samurai", "2026", None)
+    assert same_card("2026 Topps Chrome Samurai Japan Yoshinobu Yamamoto Sensational Samurai SS-4", who)
+    for other in ("2026 Topps Chrome Samurai Japan Yu Darvish Sensational Samurai SS-3",
+                  "ICHIRO 2026 Topps Chrome Samurai Japan Sensational Samurai Refractor SS-2",
+                  "Kazuma Okamoto 2026 Topps Chrome Samurai Japan Collection Sensational SS-10 /50"):
+        assert not same_card(other, who), other
 
 
 # Ordinary title words that look like a no-hyphen code ("letters then digits")
@@ -2328,6 +2478,7 @@ def test_sold_value_of_a_redemption_uses_only_its_own_redemption_sales(monkeypat
     with TestClient(app) as c:
         card = c.post("/api/cards", json={"name": "Jacob Misiorowski", "category": "sports", "grade": "Raw",
                                           "card_number": "CRA-JMI", "variant": "Auto Redemption"}).json()
+        c.patch(f"/api/cards/{card['id']}", json={"parallel": None})  # every version counts
         out = c.post(f"/api/cards/{card['id']}/sold/refresh").json()
         assert out["used"] == 3 and out["median"] == 450
         got = c.get(f"/api/cards/{card['id']}").json()
@@ -2550,8 +2701,11 @@ def test_price_clusters_endpoint_unknown_card_and_no_listings():
         assert r.status_code == 200 and r.json() == []
 
 
-DEFAULT_SETTINGS = {"cluster_min_size": 2, "wide_spread_action": "flag", "price_window": 10}
-HIGHEST_GROUP = {"cluster_min_size": 2, "wide_spread_action": "highest_group", "price_window": 3}
+TARGET_DEFAULTS = {"asking_discount": 1.0, "smoothing_band": 0.1, "list_markup": 1.1, "review_below": 40,
+                   "sold_auto": False, "sold_available": True}  # the tests' mock provider counts as set up
+DEFAULT_SETTINGS = {"cluster_min_size": 2, "wide_spread_action": "flag", "price_window": 10, "outlier_ratio": None,
+                    **TARGET_DEFAULTS}
+HIGHEST_GROUP = {"cluster_min_size": 2, "wide_spread_action": "highest_group", "price_window": 3, "outlier_ratio": None}
 
 
 @pytest.fixture
@@ -2576,7 +2730,9 @@ def test_settings_are_the_defaults_when_nothing_is_saved():
 
 
 def test_settings_are_saved_and_kept_after_a_restart(restore_settings):
-    saved = {"cluster_min_size": 5, "wide_spread_action": "highest_group", "price_window": 3}
+    saved = {"cluster_min_size": 5, "wide_spread_action": "highest_group", "price_window": 3, "outlier_ratio": 4.5,
+             "asking_discount": 0.85, "smoothing_band": 0.15, "list_markup": 1.2, "review_below": 55,
+             "sold_auto": True, "sold_available": True}
     with TestClient(app) as c:
         r = c.put("/api/settings", json=saved)
         assert r.status_code == 200 and r.json() == saved
@@ -2591,9 +2747,19 @@ def test_settings_are_saved_and_kept_after_a_restart(restore_settings):
                                           ({"wide_spread_action": "lowest"}, "flag, highest_group"),
                                           ({"price_window": 0}, "from 1 to 50"),
                                           ({"price_window": 51}, "from 1 to 50"),
-                                          ({"price_window": 2.5}, None)])
+                                          ({"price_window": 2.5}, None),
+                                          ({"outlier_ratio": 0}, "from 1.5 to 100"),
+                                          ({"outlier_ratio": 1}, "from 1.5 to 100"),
+                                          ({"outlier_ratio": -5}, "from 1.5 to 100"),
+                                          ({"outlier_ratio": 101}, "from 1.5 to 100"),
+                                          ({"asking_discount": 0.2}, "from 30% to 100%"),
+                                          ({"asking_discount": 1.1}, "from 30% to 100%"),
+                                          ({"smoothing_band": 0.6}, "from 0% to 50%"),
+                                          ({"list_markup": 0.9}, "from 100% to 200%"),
+                                          ({"review_below": 101}, "from 0 to 100")])
 def test_settings_reject_invalid_values_and_keep_the_saved_ones(restore_settings, bad, message):
-    saved = {"cluster_min_size": 4, "wide_spread_action": "highest_group", "price_window": 7}
+    saved = {"cluster_min_size": 4, "wide_spread_action": "highest_group", "price_window": 7, "outlier_ratio": None,
+             **TARGET_DEFAULTS}
     with TestClient(app) as c:
         assert c.put("/api/settings", json=saved).status_code == 200
         r = c.put("/api/settings", json={**saved, **bad})
@@ -2729,6 +2895,32 @@ def test_the_window_rules_ignore_the_minimum_group_size(restore_settings):
         assert got["wide_spread"] is False and got["est_value"] == 700 and got["spread_rule"] == "highest_group"
 
 
+def test_the_outlier_ratio_leaves_listings_out_even_when_they_are_in_the_window(restore_settings):
+    with TestClient(app) as c:
+        assert c.put("/api/settings", json=HIGHEST_GROUP).status_code == 200
+        card = _spread_card(c, "Ceiling")  # 3, 3.2, 3.5, 3.8, 400, 500, 700, 900: median 201.9
+        assert _reprice_from_saved(c, card)["est_value"] == 700  # mean of 500, 700, 900
+        assert c.put("/api/settings", json={**HIGHEST_GROUP, "outlier_ratio": 3}).status_code == 200
+        out = c.post(f"/api/cards/{card['id']}/matches/exclude", json={"item_ids": [f"{card['id']}-l0"], "excluded": False})
+        assert out.status_code == 200
+        got = c.get(f"/api/cards/{card['id']}").json()
+        assert got["est_value"] == 301.27  # 3 × 201.9 = 605.7, so the 700 and 900 are out and the 3 highest are 3.8, 400, 500
+        marked = sorted(r["price"] for r in c.get(f"/api/cards/{card['id']}/matches").json() if r["in_window"])
+        assert marked == [3.8, 400, 500]
+
+
+def test_the_outlier_ratio_scales_with_the_card_so_it_never_caps_an_expensive_card():
+    from app.services.pricing import relative_ceiling, window_value
+    dear = [350, 380, 400, 420, 450, 500, 16_500]  # a $400 card with one absurd listing
+    assert relative_ceiling(dear, 5) == 2100  # 5 × the 420 median
+    assert window_value(dear, "highest_group", 3, ratio=5) == 456.67  # the 16,500 is out; 420, 450, 500 stay in
+    cheap = [1, 2, 2, 3, 3, 4, 250]  # a $3 card with one dear listing
+    assert relative_ceiling(cheap, 5) == 15
+    assert window_value(cheap, "highest_group", 3, ratio=5) == 3.33  # 3, 3, 4
+    assert relative_ceiling(dear, None) is None and relative_ceiling([], 5) is None
+    assert relative_ceiling([0, 0, 10], 2) == 20  # $0 prices don't pull the median down
+
+
 def test_excluding_a_listing_moves_the_window(restore_settings):
     with TestClient(app) as c:
         assert c.put("/api/settings", json=HIGHEST_GROUP).status_code == 200
@@ -2737,7 +2929,7 @@ def test_excluding_a_listing_moves_the_window(restore_settings):
         out = c.post(f"/api/cards/{card['id']}/matches/exclude", json={"item_ids": [f"{card['id']}-l7"], "excluded": True})
         assert out.status_code == 200 and out.json()["snapshot"]["spread"] > 1.0
         got = c.get(f"/api/cards/{card['id']}").json()
-        assert got["est_value"] == 500 and got["wide_spread"] is False and got["spread_rule"] == "highest_group"
+        assert got["est_value"] == 533.33 and got["wide_spread"] is False and got["spread_rule"] == "highest_group"  # mean of 400, 500, 700
 
 
 def test_default_settings_still_flag_a_wide_spread_card():
@@ -2795,10 +2987,10 @@ def test_a_group_value_is_replaced_by_the_next_pricing(monkeypatch, restore_sett
         reprice = lambda: asyncio.run(refresh.reprice_card(card["id"], "q", "Raw", ["Raw"], None, None))  # noqa: E731
         reprice()
         assert c.get(f"/api/cards/{card['id']}").json()["spread_rule"] == "highest_group"
-        quote.update(median=123.0, spread=0.5)  # within MAX_PRICE_SPREAD: the plain median
+        quote.update(median=123.0, spread=0.5)  # within MAX_PRICE_SPREAD: the window still applies to every card
         reprice()
         got = c.get(f"/api/cards/{card['id']}").json()
-        assert got["est_value"] == 123 and got["wide_spread"] is False and got["spread_rule"] is None
+        assert got["wide_spread"] is False and got["spread_rule"] == "highest_group" and got["est_value"] == 700
         quote.update(median=201.9, spread=1.9)
         reprice()
         assert c.get(f"/api/cards/{card['id']}").json()["spread_rule"] == "highest_group"
@@ -2834,7 +3026,7 @@ def test_highest_group_on_refresh_value_uses_only_the_asking_listings(monkeypatc
         assert got["est_value"] == 700 and got["wide_spread"] is False and got["spread_rule"] == "highest_group"
 
 
-@pytest.mark.parametrize("rule, value", [("lowest_group", 3.2), ("median", 3.8)])
+@pytest.mark.parametrize("rule, value", [("lowest_group", 3.23), ("median", 135.77)])  # means of 3, 3.2, 3.5 and of 3.5, 3.8, 400
 def test_lowest_group_and_median_rules_value_a_wide_spread_card(restore_settings, rule, value):
     with TestClient(app) as c:
         settings = {**DEFAULT_SETTINGS, "wide_spread_action": rule, "price_window": 3}
@@ -2846,13 +3038,12 @@ def test_lowest_group_and_median_rules_value_a_wide_spread_card(restore_settings
 
 
 @pytest.mark.parametrize("rule", ["highest_group", "median", "lowest_group"])
-def test_every_window_rule_takes_the_median_of_all_with_n_or_fewer_listings(restore_settings, rule):
+def test_every_window_rule_takes_the_mean_of_all_with_n_or_fewer_listings(restore_settings, rule):
     with TestClient(app) as c:
         assert c.put("/api/settings", json={**DEFAULT_SETTINGS, "wide_spread_action": rule}).status_code == 200
         card = _spread_card(c, f"Window All {rule}")
         got = _reprice_from_saved(c, card)
-        assert got["est_value"] == 201.9 and got["wide_spread"] is False and got["spread_rule"] == rule
-        assert got["est_value"] == c.get(f"/api/cards/{card['id']}/prices").json()[0]["median"]
+        assert got["est_value"] == 314.19 and got["wide_spread"] is False and got["spread_rule"] == rule  # mean of all 8
 
 
 def test_a_cards_own_rule_overrides_the_default_and_applies_at_once(restore_settings):
@@ -2864,7 +3055,7 @@ def test_a_cards_own_rule_overrides_the_default_and_applies_at_once(restore_sett
         got = c.patch(url, json={"wide_spread_action": "highest_group"}).json()
         assert got["wide_spread_action"] == "highest_group" and got["est_value"] == 700 and got["spread_rule"] == "highest_group"
         got = c.patch(url, json={"wide_spread_action": "lowest_group"}).json()
-        assert got["est_value"] == 3.2 and got["spread_rule"] == "lowest_group" and got["wide_spread"] is False
+        assert got["est_value"] == 3.23 and got["spread_rule"] == "lowest_group" and got["wide_spread"] is False
         # the card's own choice wins over the saved default, also at the next pricing
         assert c.put("/api/settings", json=HIGHEST_GROUP).status_code == 200
         got = c.patch(url, json={"wide_spread_action": "flag"}).json()
@@ -2880,3 +3071,89 @@ def test_a_cards_own_rule_must_be_a_known_one():
         card = _mk(c, name="Rule Unknown")
         assert c.patch(f"/api/cards/{card['id']}", json={"wide_spread_action": "sometimes"}).status_code == 422
         assert c.get(f"/api/cards/{card['id']}").json()["wide_spread_action"] is None
+
+
+def test_bulk_revalue_applies_new_price_settings_without_ebay(restore_settings):
+    from sqlmodel import Session
+    from app.db import engine
+    from app.models import ListingSeen
+    with TestClient(app) as c:
+        card = _mk(c, name="Revalue Bulk", grade="Raw", price=_quote(spread=1.96, grade="Raw", parallel="Base"))
+        assert card["wide_spread"] is True and card["est_value"] is None  # flagged: no value yet
+        with Session(engine) as session:
+            for n, p in enumerate((3, 3.2, 3.5, 3.8, 400, 500, 700, 900)):
+                session.add(ListingSeen(card_id=card["id"], item_id=f"rv{card['id']}-{n}", grade="Raw",
+                                        title="Revalue Bulk", price=p))
+            session.commit()
+        assert c.put("/api/settings", json=HIGHEST_GROUP).status_code == 200
+        out = c.post("/api/cards/bulk/revalue").json()
+        assert out["changed"] >= 1
+        got = c.get(f"/api/cards/{card['id']}").json()
+        assert got["est_value"] is not None and got["spread_rule"] == "highest_group"
+        assert got["wide_spread"] is False
+
+
+def test_matches_flag_the_listings_the_wide_spread_rule_prices_from(restore_settings):
+    from sqlmodel import Session
+    from app.db import engine
+    from app.models import ListingSeen
+    with TestClient(app) as c:
+        card = _mk(c, name="Window Flags", grade="Raw", price=_quote(spread=1.96, grade="Raw", parallel="Base"))
+        with Session(engine) as session:
+            for n, p in enumerate((3, 3.2, 3.5, 3.8, 400, 500, 700, 900)):
+                session.add(ListingSeen(card_id=card["id"], item_id=f"wf{card['id']}-{n}", grade="Raw",
+                                        title="Window Flags", price=p))
+            session.commit()
+        assert c.get(f"/api/cards/{card['id']}/matches").json()[0]["in_window"] is False  # no rule applied yet
+        assert c.put("/api/settings", json={**HIGHEST_GROUP, "price_window": 3}).status_code == 200
+        c.post("/api/cards/bulk/revalue")
+        rows = c.get(f"/api/cards/{card['id']}/matches").json()
+        assert sorted(r["price"] for r in rows if r["in_window"]) == [500, 700, 900]
+
+
+def test_flag_rule_values_a_card_within_the_spread_from_all_its_listings(restore_settings):
+    with TestClient(app) as c:
+        assert c.put("/api/settings", json=DEFAULT_SETTINGS).status_code == 200
+        card = _mk(c, name="Flag Narrow", grade="Raw", price=_quote(spread=0.5, grade="Raw"))
+        assert card["wide_spread"] is False and card["spread_rule"] is None and card["est_value"] is not None
+
+
+def test_refresh_value_prices_a_new_card_from_its_own_version_and_the_new_lookup(monkeypatch):
+    from app.config import get_settings
+    from app.services import pricing
+    from app.services.ebay import EbayItem, get_ebay
+
+    # 8 plain listings at $10-$17, 2 numbered parallels at $300+ that must not set a Base card's price
+    plain = [EbayItem(item_id=f"b{n}", title="Refresh Rookie Chrome", price=10 + n, condition="Ungraded", url="u") for n in range(8)]
+    rare = [EbayItem(item_id=f"r{n}", title="Refresh Rookie Chrome Gold /50", price=300 + n, condition="Ungraded", url="u") for n in range(2)]
+    current = {"items": plain + rare}
+
+    async def search(query, limit=50):
+        return current["items"]
+
+    monkeypatch.setattr(get_ebay(), "search_active", search)
+    monkeypatch.setattr(pricing, "get_ebay", lambda: get_ebay())
+    with TestClient(app) as c:
+        assert c.put("/api/settings", json=HIGHEST_GROUP).status_code == 200
+        card = c.post("/api/cards", json={"category": "sports", "name": "Refresh Rookie", "grade": "Raw",
+                                          "search_query": "refresh rookie"}).json()
+        assert card["parallel"] == "Base"  # a new card starts on the plain version
+        out = c.post(f"/api/cards/{card['id']}/price", json={}).json()
+        got = c.get(f"/api/cards/{card['id']}").json()
+        assert got["est_value"] == 16 and out["snapshot"]["parallel"] == "Base"  # the top 3 plain listings, not the $300 gold ones
+        rows = c.get(f"/api/cards/{card['id']}/matches").json()
+        assert not any(r["price"] >= 300 and r["in_window"] for r in rows)
+
+        # the market moves: a second refresh follows the new lookup, and the listings flagged agree with the value
+        current["items"] = [EbayItem(item_id=f"n{n}", title="Refresh Rookie Chrome", price=50 + n, condition="Ungraded", url="u") for n in range(8)]
+        c.post(f"/api/cards/{card['id']}/price", json={})
+        got = c.get(f"/api/cards/{card['id']}").json()
+        assert 50 <= got["est_value"] <= 60
+        marked = [r["price"] for r in c.get(f"/api/cards/{card['id']}/matches").json() if r["in_window"]]
+        assert marked and all(50 <= p <= 60 for p in marked)
+        assert got["est_value"] == round(__import__("statistics").median(marked), 2)
+        # the trace's "used" listings are the whole search; only the window's (3 here) are flagged as setting the value
+        tr = c.get(f"/api/cards/{card['id']}/debug/traces").json()[0]
+        listings = c.get(f"/api/cards/{card['id']}/debug/traces/{tr['id']}").json()["listings"]
+        used = [l for l in listings if l["d"] == "used"]
+        assert len(used) == 8 and sorted(l["p"] for l in used if l.get("w")) == sorted(marked)

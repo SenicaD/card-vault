@@ -15,11 +15,11 @@ from ..services.grading import grade_sort_key, normalize_grade
 from ..services.identity import identity_of_card, who_of_card
 from ..services.parallels import BASE, parse_parallel
 from ..services.app_settings import load_app_settings
-from ..services.pricing import apply_asking, asking_listings, build_quotes, card_image, price_clusters, quote_grades, summarize
+from ..services.pricing import apply_asking, asking_listings, build_quotes, card_image, price_clusters, quote_grades, summarize, window_of
 from ..services.similarity import score_urls
 from ..services.trace import Trace, save_trace
-from ..services.tracker import track_listings
-from .common import get_card_or_404
+from ..services.tracker import mark_window, revalue, track_listings
+from .common import get_card_or_404, to_read
 
 router = APIRouter(prefix="/api/cards/{card_id}", tags=["ebay"])
 
@@ -102,6 +102,9 @@ async def price_card(card_id: int, body: PriceRequest | None = None,
         session.rollback()
     try:  # after the commit, so a failure here can never lose the price lookup
         await track_listings(session, card.id, groups, forget=priced.not_alike)
+        if revalue(session, card):  # the value follows the listings the table now shows, not just this search's
+            session.commit()
+            mark_window(session, card)
     except Exception:
         session.rollback()
     for s in snaps:  # tracking commits too, which expires these; reload them before they are serialised
@@ -120,6 +123,7 @@ class MatchRow(BaseModel):
     url: str | None
     image_url: str | None
     excluded: bool
+    in_window: bool = False  # one of the listings the wide-spread rule values the card from
 
 
 def _active_rows(session: Session, card_id: int, grades: list[str] | None = None) -> list[ListingSeen]:
@@ -132,10 +136,17 @@ def _active_rows(session: Session, card_id: int, grades: list[str] | None = None
 @router.get("/matches", response_model=list[MatchRow])
 def matches(card_id: int, grades: list[str] | None = Query(None), session: Session = Depends(get_session)):
     """Every listing currently matched to this card (kept between visits), for the listings table."""
-    get_card_or_404(session, card_id)
+    card = get_card_or_404(session, card_id)
+    in_window: set[str] = set()
+    if card.spread_rule:  # the listings the card's value comes from, as apply_asking picked them
+        own = [r for r in _active_rows(session, card_id, [card.grade])]
+        listings = asking_listings(own, card.parallel, {r.item_id for r in own if r.excluded}, identity_of_card(card))
+        st = load_app_settings(session)
+        in_window = {r.item_id for r in window_of(listings, card.spread_rule, st.price_window, price=lambda r: r.price,
+                                                  ratio=st.outlier_ratio)}
     return [MatchRow(item_id=r.item_id, title=r.title, price=r.price, currency=r.currency, grade=r.grade,
                      parallel=parse_parallel(r.title), condition=r.condition, url=r.url, image_url=r.image_url,
-                     excluded=r.excluded) for r in _active_rows(session, card_id, grades)]
+                     excluded=r.excluded, in_window=r.item_id in in_window) for r in _active_rows(session, card_id, grades)]
 
 
 class ExcludeRequest(BaseModel):
@@ -386,7 +397,7 @@ async def create_listing(card_id: int, body: ListingCreate, session: Session = D
     card = get_card_or_404(session, card_id)
     if card.status == CardStatus.sold:
         raise HTTPException(409, "This card is marked sold")
-    price = body.price or card.est_value or card.manual_value
+    price = body.price or to_read(card, load_app_settings(session).list_markup).list_price  # the target x markup
     if not price:
         raise HTTPException(422, "Set a price, or look up the card's value first")
 

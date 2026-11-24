@@ -9,9 +9,35 @@ import re
 import unicodedata
 from typing import NamedTuple
 
-from .parallels import REDEMPTION_RX, bare_code_keys, card_code, classify_listing, code_key
+from .parallels import AUTO_RX, REDEMPTION_RX, bare_code_keys, card_code, classify_listing, code_key
 
 _SUFFIX = {"jr", "sr", "ii", "iii", "iv", "v"}
+# Words a card name often ends in that are not the player's surname: insert and product names, card terms, and team,
+# city and college names ("Samurai Japan Yoshinobu Yamamoto Sensational Samurai", "RJ Harvey Denver Broncos",
+# "King Miller USC"). They are dropped from the end of a name before its last word is taken as the surname, so
+# "Samurai" doesn't let every Samurai Japan player through. A real surname here (Washington) only makes the filter
+# use the word before it; a name left with nothing ("Tampa Bay Buccaneers") filters by year and number alone.
+# Words that are also common surnames (Green, Young, Brown) are deliberately left out.
+_NOT_A_SURNAME = set("""
+samurai japan sensational generational greats cosmic chrome star stars clusters stellar portraits ud rookies rookie
+rated prospect prospects elite guns sizzle reel speckle obsidian orbital turbocharged best topps bowman panini
+prizm donruss optic select mosaic upper deck refractor auto autograph autographs chromographs rc sp ssp insert
+parallel card baseball football basketball hockey soccer wbc team collection variation short print
+cardinals falcons ravens bills panthers bears bengals browns cowboys broncos lions packers texans colts jaguars chiefs
+raiders chargers rams dolphins vikings patriots saints giants jets eagles steelers niners seahawks buccaneers bucs
+titans commanders diamondbacks dbacks braves orioles sox cubs reds guardians rockies tigers astros royals angels
+dodgers marlins brewers twins mets yankees athletics phillies pirates padres mariners rays rangers jays nationals
+hawks celtics nets hornets bulls cavaliers cavs mavericks mavs nuggets pistons warriors rockets pacers clippers lakers
+grizzlies heat bucks timberwolves pelicans knicks thunder sixers suns blazers trail kings spurs raptors jazz wizards
+ducks bruins sabres flames hurricanes blackhawks avalanche jackets wings oilers wild canadiens predators devils
+islanders senators flyers penguins sharks kraken blues lightning leafs maple canucks knights capitals
+arizona atlanta baltimore buffalo carolina chicago cincinnati cleveland dallas denver detroit bay houston
+indianapolis jacksonville kansas city las vegas los angeles miami minnesota new england orleans york philadelphia
+pittsburgh san francisco diego jose seattle tampa tennessee washington boston brooklyn charlotte golden state memphis
+milwaukee oklahoma orlando phoenix portland sacramento antonio toronto utah anaheim calgary columbus edmonton florida
+montreal nashville jersey ottawa st louis vancouver winnipeg colorado texas oakland
+usc ucla lsu tcu smu byu alabama clemson michigan georgia oregon auburn notre dame university college
+""".split())
 _YEAR = re.compile(r"\b(19[5-9]\d|20[0-4]\d)(?:\s?[-/]\s?(\d{2}))?\b")
 _NUM = re.compile(r"#\s?([A-Za-z]{0,4}-?\d+[A-Za-z]?)(?!\s?/)")
 
@@ -26,9 +52,47 @@ class Who(NamedTuple):
     number: str | None
 
 
+# Words that only ever lead an insert name ("Young Guns Luke Haymes", "Rookies Grey Zabel"); never stripped from the end
+_LEADING_ONLY = {"young", "rookies", "rookie", "the"}
+_TEAM_WORDS = None  # the team, city and college part of _NOT_A_SURNAME, filled on first use
+
+
+def split_player(name: str | None) -> tuple[str, list[str]]:
+    """Split a sports card name into the player and the insert/product words around it, in their own spelling:
+    "Samurai Japan Yoshinobu Yamamoto Sensational Samurai" -> ("Yoshinobu Yamamoto", ["Samurai Japan",
+    "Sensational Samurai"]). Team, city and college words are dropped (they don't say which card it is). When nothing
+    would be left, the name is returned unchanged."""
+    global _TEAM_WORDS
+    if _TEAM_WORDS is None:
+        _TEAM_WORDS = _NOT_A_SURNAME - set("""samurai japan sensational generational greats cosmic chrome star stars
+            clusters stellar portraits ud rookies rookie rated prospect prospects elite guns sizzle reel speckle obsidian
+            orbital turbocharged best topps bowman panini prizm donruss optic select mosaic upper deck refractor auto
+            autograph autographs chromographs rc sp ssp insert parallel card baseball football basketball hockey soccer
+            wbc team collection variation short print""".split())
+    words = (name or "").split()
+    key = lambda w: _fold(w).strip(".,'-")  # noqa: E731
+    lo, hi = 0, len(words)
+    while lo < hi and (key(words[lo]) in _NOT_A_SURNAME or key(words[lo]) in _LEADING_ONLY):
+        lo += 1
+    while hi > lo and (key(words[hi - 1]) in _NOT_A_SURNAME or key(words[hi - 1]) in _SUFFIX and hi - 1 == lo):
+        hi -= 1
+    if lo >= hi or not surname_of(" ".join(words[lo:hi])):
+        return (name or "").strip(), []
+    extras = [" ".join(w for w in run if key(w) not in _TEAM_WORDS) for run in (words[:lo], words[hi:])]
+    return " ".join(words[lo:hi]), [e for e in extras if e]
+
+
+def surname_of(name: str | None) -> str | None:
+    """The player's surname: the last word of the name once suffixes (Jr, II) and trailing insert, team, city and
+    college words (_NOT_A_SURNAME) are dropped. None when nothing of 3+ letters is left."""
+    words = [w.replace("'", "") for w in re.findall(r"[a-z']+", _fold(name or "")) if w not in _SUFFIX]
+    while words and words[-1] in _NOT_A_SURNAME:
+        words.pop()
+    return words[-1] if words and len(words[-1]) >= 3 else None
+
+
 def who_from(name: str | None, year: str | None, number: str | None) -> Who | None:
-    words = [w for w in re.findall(r"[a-z']+", _fold(name or "")) if w not in _SUFFIX]
-    surname = words[-1].replace("'", "") if words and len(words[-1]) >= 3 else None
+    surname = surname_of(name)
     y = re.search(r"(19[5-9]\d|20[0-4]\d)", year or "")
     n = re.sub(r"[^a-z0-9-]", "", _fold(number or "")) or None
     if not (surname or y or n):
@@ -67,27 +131,34 @@ def same_card(title: str, who: Who | None) -> bool:
 class CardIdentity(NamedTuple):
     code: str | None  # code_key of the card number, when the number is a card code ("CRA-JMI")
     redemption: bool
+    auto: bool | None = None  # whether listings must (True) or must not (False) be autographs; None = either
 
 
 def identity_of_card(card) -> CardIdentity | None:
-    """The card code and redemption status listings must match; None when the card is too uncertain (as who_of_card).
-    A card is a redemption when its saved is_redemption flag is set or its text says so."""
+    """The card code, redemption and autograph status listings must match; None when the card is too uncertain (as
+    who_of_card). A card is a redemption or an autograph when its saved flag is set or its text says so: cards saved
+    before the flags existed only say it in their variant ("Refractor, Auto, RC")."""
     if card.id_confidence is not None and card.id_confidence < 0.5:
         return None
-    texts = (card.name, card.set_name, card.variant, card.card_number, card.search_query)
-    redemption = card.is_redemption or any(REDEMPTION_RX.search(t) for t in texts if t)
-    return CardIdentity(card_code(card.card_number), redemption)
+    texts = [t for t in (card.name, card.set_name, card.variant, card.card_number, card.search_query) if t]
+    redemption = card.is_redemption or any(REDEMPTION_RX.search(t) for t in texts)
+    auto = bool(card.is_auto or redemption or any(AUTO_RX.search(t) for t in texts))  # a redemption is for an auto
+    return CardIdentity(card_code(card.card_number), redemption, auto)
 
 
 def fits_identity(title: str, ident: CardIdentity | None) -> bool:
-    """False when the title shows only other card codes, or is a redemption and the card isn't (or the other way round).
+    """False when the title shows only other card codes, is a redemption and the card isn't (or the other way round),
+    or is an autograph and the card isn't (or the other way round).
 
     Only hyphenated codes ("PA-JM") mark a listing as another card; a no-hyphen word ("BTP2") can only confirm the
-    card's own code, since "SP2" or "PS5" are ordinary title words.
+    card's own code, since "SP2" or "PS5" are ordinary title words. A redemption listing counts as an autograph, since
+    sellers often leave "auto" out of a redemption's title.
     """
     if ident is None:
         return True
     c = classify_listing(title)
     if ident.code and c.codes and ident.code not in {code_key(k) for k in c.codes} | bare_code_keys(title):
         return False
-    return c.redemption == ident.redemption
+    if c.redemption != ident.redemption:
+        return False
+    return ident.auto is None or (c.auto or c.redemption) == ident.auto

@@ -34,15 +34,19 @@ export interface Card extends CardFields {
   reviewed?: boolean
   wide_spread?: boolean // asking prices spread too widely to give an asking value
   wide_spread_action?: WideSpreadAction | null // this card's own choice when prices spread too widely; null follows the Settings page
-  spread_rule?: Exclude<WideSpreadAction, 'flag'> | null // the rule that set the asking value because prices spread too widely
+  spread_rule?: Exclude<WideSpreadAction, 'flag'> | null // the window rule that set the asking value
   sold_value?: number | null // what it sold for (median of recent sales), beside the asking-based estimate
   sold_count?: number
   sold_low?: number | null
   sold_high?: number | null
   sold_at?: string | null
-  value?: number | null // the value to show: sold when enough sales, else the asking estimate
+  value?: number | null // the target price: yours, else sold when enough sales, else asking x the asking discount
   manual_value?: number | null // set by hand; overrides sold and asking
   value_basis?: 'manual' | 'sold' | 'asking' | null
+  value_pending?: number | null // a jump from a daily lookup waiting for the next lookup to agree
+  confidence?: number | null // 0-100: how sure the value is
+  confidence_reasons?: string[] | null // why points were taken off, worst first
+  list_price?: number | null // what to list it at: the value x the list markup, ending in .99
   created_at: string
   updated_at: string
 }
@@ -123,6 +127,7 @@ export interface MatchRow {
   url: string | null
   image_url: string | null
   excluded: boolean
+  in_window: boolean
 }
 
 export interface SimilarityResult {
@@ -133,26 +138,33 @@ export interface SimilarityResult {
 }
 
 export type WideSpreadAction = 'flag' | 'highest_group' | 'median' | 'lowest_group'
-// What Highest, Median and Lowest take, n being the Settings page's "Listings to price from": the median of n
+// What Highest, Median and Lowest take, n being the Settings page's "Listings to price from": the average of n
 // listings, or a single listing's price when n is 1
 export const windowText = (rule: Exclude<WideSpreadAction, 'flag'>, n: number) => n === 1
   ? `the price of ${({ highest_group: 'the most expensive listing', median: 'the listing in the middle of the price order', lowest_group: 'the cheapest listing' })[rule]}`
-  : `the median of ${({ highest_group: `the ${n} most expensive listings`, median: `the ${n} listings in the middle of the price order`, lowest_group: `the ${n} cheapest listings` })[rule]}`
+  : `the average of ${({ highest_group: `the ${n} most expensive listings`, median: `the ${n} listings in the middle of the price order`, lowest_group: `the ${n} cheapest listings` })[rule]}`
 const windowHint = (rule: Exclude<WideSpreadAction, 'flag'>) => (n: number) => {
   const text = windowText(rule, n)
-  return `${text[0].toUpperCase()}${text.slice(1)}, after outliers are left out.${n > 1 ? ` With ${n} or fewer listings, the median of all of them.` : ''}`
+  return `${text[0].toUpperCase()}${text.slice(1)}, after outliers are left out.${n > 1 ? ` With ${n} or fewer listings, the average of all of them.` : ''}`
 }
 export const WIDE_SPREAD_ACTIONS: { value: WideSpreadAction; title: string; hint: (n: number) => string }[] = [
-  { value: 'flag', title: 'Flag the card and leave it unvalued', hint: () => 'The card shows a "wide spread" warning and gets no asking value until you pick its version or untick listings.' },
-  { value: 'highest_group', title: 'Highest', hint: windowHint('highest_group') },
-  { value: 'median', title: 'Median', hint: windowHint('median') },
+  { value: 'flag', title: 'Median of all listings, flag wide spreads', hint: () => 'The median of every listing. If prices spread too widely the card shows a "wide spread" warning and gets no asking value until you pick its version or untick listings.' },
+  { value: 'highest_group', title: 'Highest', hint: (n: number) => `${windowHint('highest_group')(n)} Asking prices at the top are often overpriced or a dearer version, so this runs high.` },
+  { value: 'median', title: 'Median (recommended)', hint: windowHint('median') },
   { value: 'lowest_group', title: 'Lowest', hint: windowHint('lowest_group') },
 ]
 
 export interface AppSettings {
   cluster_min_size: number
   wide_spread_action: WideSpreadAction
-  price_window: number // how many listings Highest, Median and Lowest take the median of
+  price_window: number // how many listings Highest, Median and Lowest take the average of
+  outlier_ratio: number | null // a listing above this many times the card's own median is left out; null = no limit
+  asking_discount: number // a card valued from asking prices alone is valued at this share of them (0.3-1)
+  smoothing_band: number // a daily lookup moving the value by more than this share waits for a second (0-0.5)
+  list_markup: number // list at the value times this (1-2)
+  review_below: number // cards with less price confidence than this (0-100) go to the review queue
+  sold_auto: boolean // check sold prices automatically, the most dollars at risk first
+  sold_available?: boolean // read only: a sold-price provider is set up
 }
 
 export interface PriceCluster {
@@ -253,6 +265,7 @@ export interface Stats {
   asking_value: number
   asking_cards: number
   flagged_cards?: number // unsold cards whose asking prices spread too widely to value
+  no_version_cards?: number // unsold cards pooling every colour and print run (no version picked)
   sold_value: number
   sold_cards: number
   asking_value_of_sold_cards: number
@@ -354,7 +367,7 @@ export interface TraceFunnel {
   fences: { q1: number; q3: number; lo: number; hi: number } | null
 }
 export type Decision = 'junk' | 'unknown_grade' | 'grade_not_requested' | 'other_card' | 'other_identity' | 'not_alike' | 'excluded' | 'other_version' | 'outlier' | 'used'
-export interface TraceListing { id: string; t: string; p: number; g: string | null; v: string | null; d: Decision; r: 'low' | 'median' | 'high' | null; u: string | null; s?: number | null; m?: number | null; k?: string | null }
+export interface TraceListing { id: string; t: string; p: number; g: string | null; v: string | null; d: Decision; r: 'low' | 'median' | 'high' | null; u: string | null; s?: number | null; m?: number | null; k?: string | null; w?: boolean }
 export interface TraceSummary {
   id: number; kind: 'lookup' | 'sold'; created_at: string; trigger: string | null; mode: string | null; query: string | null; grades: string[] | null
   parallel: string | null; duration_ms: number | null; error: string | null; has_listings: boolean; has_raw: boolean

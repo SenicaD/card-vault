@@ -11,8 +11,12 @@ import logging
 
 from sqlmodel import Session, col, select
 
-from ..models import ListingSeen, utcnow
+from ..models import ASKING_SOURCES, Card, ListingSeen, PriceSnapshot, PriceTrace, utcnow
+from .app_settings import load_app_settings
 from .ebay import EbayItem, get_ebay
+from .grading import normalize_grade
+from .identity import identity_of_card
+from .pricing import apply_asking, asking_listings, window_of
 
 log = logging.getLogger("cardvault.tracker")
 
@@ -78,3 +82,56 @@ async def track_listings(session: Session, card_id: int, groups: dict[str, list[
         session.add(row)
     session.commit()
     return stats
+
+
+def own_snap(session: Session, card: Card) -> PriceSnapshot | None:
+    """The newest asking price for the card's own grade and version."""
+    return session.exec(select(PriceSnapshot).where(
+        PriceSnapshot.card_id == card.id, col(PriceSnapshot.source).in_(ASKING_SOURCES), PriceSnapshot.grade == normalize_grade(card.grade), PriceSnapshot.parallel == card.parallel,
+        col(PriceSnapshot.median).is_not(None)).order_by(col(PriceSnapshot.created_at).desc()).limit(1)).first()
+
+
+def window_ids(session: Session, card: Card, app_settings=None) -> set[str]:
+    """The saved listings the card's value is taken from (its price window); empty when no window rule set it."""
+    if not card.spread_rule:
+        return set()
+    rows = session.exec(select(ListingSeen).where(ListingSeen.card_id == card.id, ListingSeen.status == "active",
+                                                  ListingSeen.grade == normalize_grade(card.grade))).all()
+    listings = asking_listings(rows, card.parallel, {r.item_id for r in rows if r.excluded}, identity_of_card(card))
+    st = app_settings or load_app_settings(session)
+    return {r.item_id for r in window_of(listings, card.spread_rule, st.price_window, price=lambda r: r.price,
+                                         ratio=st.outlier_ratio)}
+
+
+def mark_window(session: Session, card: Card, app_settings=None) -> None:
+    """Flag, in the card's newest lookup trace, the listings that set its value ("w"). The trace's "used" only means a
+    listing went into the search's own median, which is far more than the window."""
+    trace = session.exec(select(PriceTrace).where(PriceTrace.card_id == card.id, PriceTrace.kind == "lookup")
+                         .order_by(col(PriceTrace.id).desc()).limit(1)).first()
+    if trace is None or not trace.listings:
+        return
+    ids = window_ids(session, card, app_settings)
+    trace.listings = [{**l, "w": l["id"] in ids} if l.get("d") == "used" else l for l in trace.listings]
+    session.add(trace)
+    session.commit()
+
+
+def revalue(session: Session, card: Card, app_settings=None) -> bool:
+    """Re-value a card from its newest quote and the listings already saved, with no eBay call. With no quote for the
+    card's grade and version yet (its version was just changed), the saved listings of that version are summarised
+    instead, as a lookup would. False when there is neither."""
+    snap = own_snap(session, card)
+    own = normalize_grade(card.grade)
+    rows = session.exec(select(ListingSeen).where(ListingSeen.card_id == card.id, ListingSeen.status == "active",
+                                                  ListingSeen.grade == own)).all()
+    listings = asking_listings(rows, card.parallel, {r.item_id for r in rows if r.excluded}, identity_of_card(card))
+    if snap is not None:
+        median, spread = snap.median, snap.spread
+    elif listings:
+        from .pricing import summarize
+        stats = summarize([EbayItem(item_id=r.item_id, title=r.title, price=r.price) for r in listings])
+        median, spread = stats["median"], stats["spread"]
+    else:
+        return False
+    apply_asking(card, median, spread, [r.price for r in listings], app_settings or load_app_settings(session))
+    return True

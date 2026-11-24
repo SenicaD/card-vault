@@ -1,0 +1,10 @@
+{
+  "extraKnownMarketplaces": {
+    "senicad-tools": {
+      "source": { "source": "github", "repo": "SenicaD/plugin-marketplace" }
+    }
+  },
+  "enabledPlugins": {
+    "factory@senicad-tools": true
+  }
+}

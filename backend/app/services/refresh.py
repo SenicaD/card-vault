@@ -17,13 +17,15 @@ from .grading import grade_sort_key, normalize_grade
 from .identity import identity_of_card, who_of_card
 from .app_settings import load_app_settings
 from .pricing import apply_asking, asking_listings, card_image, quote_grades
+from .target import clear_fresh, mark_fresh
 from .trace import Trace, save_trace
-from .tracker import track_listings
+from .tracker import mark_window, revalue, track_listings
 
 log = logging.getLogger("cardvault.refresh")
 
 CHECK_EVERY_SECONDS = 3600  # how often to look for cards that are due
 PAUSE_BETWEEN_CARDS = 1.0  # be polite to the eBay API
+BULK_WORKERS = 4  # cards a hand-started bulk re-price works on at once
 MAX_TRACKED_GRADES = 6
 LOOKUP_ON_ADD = True  # look a new card up on eBay as soon as it's added (tests switch this off)
 
@@ -75,7 +77,10 @@ async def reprice_card(card_id: int, query: str, own: str, tracked: list[str], i
             if own_empty and not any(q.grade == own for q in quotes):
                 card.est_value, card.wide_spread, card.spread_rule, card.priced_at = None, False, None, utcnow()  # no matching listings: don't keep an old, wrong number
             session.add(card)
+            if trigger in ("daily", "bulk"):  # a scheduled or bulk lookup: a big jump waits for the next one to agree
+                mark_fresh(card_id)
             session.commit()
+            clear_fresh(card_id)
             ok = bool(quotes)
             try:
                 save_trace(session, trace, card_id)
@@ -84,6 +89,9 @@ async def reprice_card(card_id: int, query: str, own: str, tracked: list[str], i
                 session.rollback()
             try:  # after the commit, so a failure here can never lose the prices
                 await track_listings(session, card_id, groups, forget=priced.not_alike)
+                if card and card.status != CardStatus.sold and revalue(session, card, app_settings):
+                    session.commit()  # the value follows the saved listings the card page shows
+                    mark_window(session, card, app_settings)
             except Exception:
                 log.exception("listing tracking failed for card %s", card_id)
                 session.rollback()
@@ -238,8 +246,11 @@ def start_job(ids: list[int] | None, pause: float | None = None) -> RepriceJob |
 
 
 async def _run_job(job: RepriceJob, plans: list[tuple], pause: float) -> None:
-    try:
-        for plan, name, before in plans:
+    queue = list(reversed(plans))
+
+    async def worker() -> None:
+        while queue:
+            plan, name, before = queue.pop()
             try:
                 await reprice_card(*plan, trigger="bulk")
                 with Session(engine) as session:
@@ -252,6 +263,9 @@ async def _run_job(job: RepriceJob, plans: list[tuple], pause: float) -> None:
                 log.warning("bulk re-price failed for card %s (%r): %s", plan[0], plan[1], e)
             job.done += 1
             await asyncio.sleep(pause)
+
+    try:
+        await asyncio.gather(*(worker() for _ in range(BULK_WORKERS)))
     finally:
         job.state, job.finished_at = "done", utcnow()
         record_run("bulk", job.started_at, job.total, job.done - job.failed, job.failed, job.errors)

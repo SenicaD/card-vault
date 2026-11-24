@@ -31,7 +31,7 @@ _NOT_PREFIX = {"PSA", "BGS", "SGC", "CGC", "CSG", "HGA", "TAG", "GMA", "BVG", "B
                "MINT", "MT", "NM", "EX", "VG", "NO"}
 _CONDITION = {"NM", "EX", "MT", "VG", "GEM", "GD", "PR", "FR"}  # "NM-MT", "GEM-MT"
 REDEMPTION_RX = re.compile(r"\bredemp", re.I)
-_AUTO_RX = re.compile(r"\b(auto|autos|autograph\w*|rpa)\b", re.I)
+AUTO_RX = re.compile(r"\b(auto|autos|autograph\w*|rpa)\b", re.I)
 
 
 class ListingTags(NamedTuple):
@@ -78,7 +78,7 @@ def classify_listing(title: str) -> ListingTags:
     codes = [m.group(0).upper() for m in _CODE_RX.finditer(title) if not m.group(4) and _is_code(m)]
     color = _COLOR_RX.search(title)
     run = _RUN_RX.search(title)
-    return ListingTags(tuple(dict.fromkeys(codes)), bool(REDEMPTION_RX.search(title)), bool(_AUTO_RX.search(title)),
+    return ListingTags(tuple(dict.fromkeys(codes)), bool(REDEMPTION_RX.search(title)), bool(AUTO_RX.search(title)),
                    color.group(1).title() if color else None, int(run.group(1)) if run else None)
 
 

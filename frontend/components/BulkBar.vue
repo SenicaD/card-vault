@@ -13,7 +13,14 @@ const error = ref('')
 const notice = ref('')
 
 const KEEP = '__keep__'
-const blank = () => ({ location_id: KEEP as number | string | null, status: KEEP as string, grade: null as string | null, parallel: '', cost: '' as string | number, manual_value: '' as string | number, condition: KEEP as string | null })
+const blank = () => ({ location_id: KEEP as number | string | null, status: KEEP as string, grade: null as string | null, parallel: KEEP as string | null, cost: '' as string | number, manual_value: '' as string | number, condition: KEEP as string | null })
+// The versions listing titles are read as (colour, then print run); type any other, e.g. "Teal /199"
+const ALL_VERSIONS = '__all__'
+const versionItems = [
+  { value: KEEP, title: 'Leave as is' }, { value: 'Base', title: 'Base' },
+  ...['Silver', 'Gold /50', 'Orange /25', 'Green /99', 'Blue /150', 'Purple /75', 'Red /5', 'Black /10', 'Pink', 'Refractor'].map((v) => ({ value: v, title: v })),
+  { value: ALL_VERSIONS, title: 'All versions (pool every colour and print run)' },
+]
 const f = ref(blank())
 
 const locationItems = computed(() => [
@@ -29,7 +36,12 @@ const changes = computed(() => {
   if (f.value.status !== KEEP) c.status = f.value.status
   if (f.value.condition !== KEEP) c.condition = f.value.condition
   if (f.value.grade) c.grade = f.value.grade
-  if (f.value.parallel.trim()) c.parallel = f.value.parallel.trim()
+  // A combobox can hand back the shown title ("Leave as is") instead of the value: map titles back to values
+  const typed = typeof f.value.parallel === 'string' ? f.value.parallel.trim() : f.value.parallel
+  const item = versionItems.find((i) => i.value === typed || i.title.toLowerCase() === String(typed ?? '').toLowerCase())
+  const v = item ? item.value : typed
+  if (v === ALL_VERSIONS) c.parallel = null
+  else if (v && v !== KEEP) c.parallel = v
   if (f.value.cost !== '' && f.value.cost != null) c.cost = Number(f.value.cost)
   if (f.value.manual_value !== '' && f.value.manual_value != null) c.manual_value = Number(f.value.manual_value)
   return c
@@ -70,14 +82,14 @@ const remove = () => run(async () => {
       <v-card>
         <v-card-title>Edit {{ ids.length }} cards</v-card-title>
         <v-card-text>
-          <p class="text-body-2 text-secondary-c mb-4">Only the fields you change are applied. Changing grade or version clears each card's value until it is re-priced.</p>
+          <p class="text-body-2 text-secondary-c mb-4">Only the fields you change are applied. Changing grade or version re-values each card from its saved listings of that grade and version, or clears the value until it is re-priced if it has none.</p>
           <v-alert v-if="error" type="error" variant="tonal" class="mb-3" :text="error" />
           <v-row dense>
             <v-col cols="12" sm="6"><v-select v-model="f.location_id" :items="locationItems" label="Move to" /></v-col>
             <v-col cols="12" sm="6"><v-select v-model="f.status" :items="statusItems" label="Status" /></v-col>
             <v-col cols="12" sm="6"><v-combobox v-model="f.grade" :items="GRADE_OPTIONS" label="Grade" placeholder="Leave as is" clearable /></v-col>
             <v-col cols="12" sm="6"><v-select v-model="f.condition" :items="conditionItems" label="Condition" /></v-col>
-            <v-col cols="12" sm="6"><v-text-field v-model="f.parallel" label="Version" placeholder="Leave as is" /></v-col>
+            <v-col cols="12" sm="6"><v-combobox v-model="f.parallel" :items="versionItems" :return-object="false" label="Version" hint="Pick one, or type one like Teal /199" /></v-col>
             <v-col cols="12" sm="6"><v-text-field v-model="f.cost" label="Paid per card" type="number" min="0" step="0.01" prefix="$" /></v-col>
             <v-col cols="12" sm="6"><v-text-field v-model="f.manual_value" label="Your value per card" type="number" min="0" step="0.01" prefix="$" hint="Overrides sold and asking" /></v-col>
           </v-row>

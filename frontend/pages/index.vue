@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { useDisplay } from 'vuetify'
+import type { TableHeader } from '~/composables/tables'
 import { CATEGORY_LABELS, STATUS_LABELS, type Card, type Category, type Location, type Stats } from '~/types'
 
 const { api } = useApi()
@@ -12,7 +13,7 @@ const q = ref((route.query.q as string) || '')
 const category = ref<string | null>(null)
 const status = ref<string | null>(null)
 const locationId = ref<number | null>(route.query.location ? Number(route.query.location) : null)
-const sort = ref<'recent' | 'value' | 'name' | 'oldest_price'>('recent')
+const sort = ref<'recent' | 'value' | 'name' | 'oldest_price' | 'risk'>('recent')
 const grade = ref<string | null>(null)
 const minValue = ref<string>('')
 const maxValue = ref<string>('')
@@ -21,6 +22,8 @@ const FLAGS = [
   { key: 'unpriced', label: 'No price' },
   { key: 'stale_days', label: 'Price over 7 days old' },
   { key: 'low_confidence', label: 'Weak match' },
+  { key: 'unsure', label: 'Doubtful price' },
+  { key: 'no_version', label: 'No version' },
   { key: 'no_photo', label: 'No photo' },
   { key: 'no_cost', label: 'No cost' },
 ] as const
@@ -49,17 +52,22 @@ const sortItems = [
   { value: 'value', title: 'Highest value' },
   { value: 'name', title: 'Name A–Z' },
   { value: 'oldest_price', title: 'Oldest price first' },
+  { value: 'risk', title: 'Most at risk (value × doubt)' },
 ]
 
-const headers = [
-  { title: 'Card', key: 'name', sortable: false },
-  { title: 'Type', key: 'category', sortable: false },
-  { title: 'Location', key: 'location', sortable: false },
-  { title: 'Grade', key: 'grade', sortable: false },
-  { title: 'Qty', key: 'quantity', sortable: false, align: 'end' as const },
-  { title: 'Status', key: 'status', sortable: false },
-  { title: 'Value', key: 'value', sortable: false, align: 'end' as const },
-  { title: 'Asking', key: 'est_value', sortable: false, align: 'end' as const },
+// Clicking a column heading sorts the loaded cards (empty values last); the Sort menu sets the order they arrive in.
+const tableSort = ref<{ key: string; order?: boolean | 'asc' | 'desc' }[]>([])
+const desc = (key: string) => () => tableSort.value.find((s) => s.key === key)?.order === 'desc'
+const col = (h: TableHeader<Card>): TableHeader<Card> => ({ ...h, sortRaw: columnCompare(h, desc(h.key)) })
+const headers: TableHeader<Card>[] = [
+  col({ title: 'Card', key: 'name' }),
+  col({ title: 'Type', key: 'category', value: (c) => CATEGORY_LABELS[c.category] }),
+  col({ title: 'Location', key: 'location', value: (c) => locName(c.location_id) }),
+  col({ title: 'Grade', key: 'grade' }),
+  col({ title: 'Qty', key: 'quantity', align: 'end' }),
+  col({ title: 'Status', key: 'status', value: (c) => STATUS_LABELS[c.status] }),
+  col({ title: 'Value', key: 'value', align: 'end' }),
+  col({ title: 'Asking', key: 'est_value', align: 'end' }),
 ]
 
 // Category mix bar: one segment per category, coloured from a fixed categorical palette.
@@ -104,6 +112,8 @@ function saveView() {
 }
 function deleteView(name: string) { views.value = views.value.filter((v) => v.name !== name); persistViews() }
 
+const dupGroups = ref<Card[][]>([]) // cards entered more than once, offered for merging
+const dupOpen = ref(false)
 async function load() {
   loading.value = true
   error.value = ''
@@ -117,10 +127,11 @@ async function load() {
     if (minValue.value !== '') query.min_value = String(minValue.value)
     if (maxValue.value !== '') query.max_value = String(maxValue.value)
     for (const f of flags.value) query[f] = f === 'stale_days' ? '7' : 'true'
-    ;[cards.value, stats.value, locations.value] = await Promise.all([
+    ;[cards.value, stats.value, locations.value, dupGroups.value] = await Promise.all([
       api<Card[]>('/api/cards', { query }),
       api<Stats>('/api/cards/stats'),
       api<Location[]>('/api/locations'),
+      api<Card[][]>('/api/cards/duplicate-groups').catch(() => []), // an optional hint: never block the inventory
     ])
     const here = new Set(cards.value.map((c) => c.id))
     selected.value = selected.value.filter((id) => here.has(id)) // drop anything that is no longer listed
@@ -137,10 +148,41 @@ const toggle = (id: number) => { selected.value = selected.value.includes(id) ? 
 const gradeItems = GRADE_OPTIONS
 const repriceSelected = () => reprice.value?.start(selected.value)
 const repriceAll = () => reprice.value?.start(null)
+const revaluing = ref(false)
+const revalued = ref('')
+async function revalueAll() {
+  revaluing.value = true; revalued.value = ''
+  try {
+    const r = await api<{ changed: number; unchanged: number; skipped: number }>('/api/cards/bulk/revalue', { method: 'POST' })
+    revalued.value = `Re-valued from saved listings: ${r.changed} changed, ${r.unchanged} the same${r.skipped ? `, ${r.skipped} have no quote yet` : ''}.`
+    await load()
+  } catch (e: any) { error.value = e.message } finally { revaluing.value = false }
+}
+// Cards pooling every version (usually saved before versions existed) go to Base in one go; each one is re-valued
+// from its saved Base listings, so nothing waits on eBay
+async function setAllBase() {
+  revaluing.value = true; revalued.value = ''
+  try {
+    const ids = (await api<Card[]>('/api/cards', { query: { no_version: 'true' } })).map((c) => c.id)
+    if (ids.length) await api('/api/cards/bulk/update', { method: 'POST', body: { ids, changes: { parallel: 'Base' } } })
+    revalued.value = `Set ${ids.length} card${ids.length === 1 ? '' : 's'} to the Base version. Pick another version on a card's page if it's a parallel.`
+    await load()
+  } catch (e: any) { error.value = e.message } finally { revaluing.value = false }
+}
+// Spend a few sold-price lookups now, on the cards with the most dollars at risk
+async function checkSold(limit: number) {
+  revaluing.value = true; revalued.value = ''
+  try {
+    const r = await api<{ checked: number; failed: number; budget_left: number }>('/api/cards/bulk/sold', { method: 'POST', query: { limit } })
+    revalued.value = `Checked sold prices for ${r.checked} card${r.checked === 1 ? '' : 's'}${r.failed ? ` (${r.failed} failed)` : ''}. ${r.budget_left} lookups left this month.`
+    await load()
+  } catch (e: any) { error.value = e.message } finally { revaluing.value = false }
+}
 
 let t: ReturnType<typeof setTimeout>
 watch(q, () => { clearTimeout(t); t = setTimeout(load, 250) })
 watch([category, status, locationId, sort, grade, flags], load)
+watch(sort, () => { tableSort.value = [] }) // a new Sort menu choice replaces a heading sort
 watch([minValue, maxValue], () => { clearTimeout(t); t = setTimeout(load, 400) })
 // Header search navigates here with ?q=
 watch(() => route.query.q, (v) => { q.value = (v as string) || '' })
@@ -160,14 +202,37 @@ watch(view, (v) => { try { localStorage.setItem('cv-view', v) } catch {} })
     <PageHeader title="Inventory" subtitle="Every card in your collection, where it's stored, and what it's worth.">
       <template #actions>
         <v-btn variant="outlined" prepend-icon="mdi-refresh" :loading="loading" @click="load">Refresh</v-btn>
-        <v-btn variant="outlined" prepend-icon="mdi-cash-sync" @click="repriceAll">Re-price all</v-btn>
+        <v-menu>
+          <template #activator="{ props }">
+            <v-btn v-bind="props" variant="outlined" prepend-icon="mdi-cash-sync" append-icon="mdi-menu-down" :loading="revaluing">Re-price</v-btn>
+          </template>
+          <v-list density="comfortable">
+            <v-list-item prepend-icon="mdi-calculator-variant-outline" title="Re-value all, instantly" subtitle="From saved listings. Use after changing price settings." @click="revalueAll" />
+            <v-list-item prepend-icon="mdi-cash-sync" title="Re-price all from eBay" subtitle="Fresh searches. Slow with many cards." @click="repriceAll" />
+            <v-list-item prepend-icon="mdi-cash-check" title="Check sold prices: riskiest 10" subtitle="Spends up to 10 monthly lookups where a wrong price costs most." @click="checkSold(10)" />
+          </v-list>
+        </v-menu>
         <v-btn variant="outlined" prepend-icon="mdi-clipboard-check-outline" to="/review" class="d-none d-sm-flex">Review queue</v-btn>
         <v-btn color="primary" variant="flat" prepend-icon="mdi-camera-plus-outline" to="/scan" class="d-none d-md-flex">Scan card</v-btn>
       </template>
     </PageHeader>
 
     <v-alert v-if="error" type="error" variant="tonal" border="start" class="mb-4" :text="error" />
+    <v-alert v-if="revalued" type="success" variant="tonal" border="start" class="mb-4" closable :text="revalued" @click:close="revalued = ''" />
     <RepriceStatus ref="reprice" @finished="load" />
+    <v-alert v-if="dupGroups.length" type="info" variant="tonal" border="start" density="compact" class="mb-4" icon="mdi-content-duplicate">
+      <div class="d-flex align-center justify-space-between flex-wrap ga-2">
+        <span>{{ dupGroups.length }} card{{ dupGroups.length === 1 ? ' looks' : 's look' }} entered more than once.</span>
+        <v-btn size="small" variant="outlined" @click="dupOpen = true">Review and merge</v-btn>
+      </div>
+    </v-alert>
+    <DuplicatesDialog v-model="dupOpen" :groups="dupGroups" @merged="load" />
+    <v-alert v-if="stats?.no_version_cards" type="info" variant="tonal" border="start" density="compact" class="mb-4" icon="mdi-palette-outline">
+      <div class="d-flex align-center justify-space-between flex-wrap ga-2">
+        <span>{{ stats.no_version_cards }} card{{ stats.no_version_cards === 1 ? ' pools' : 's pool' }} every colour and print run, which mixes cheap base listings with numbered parallels.</span>
+        <v-btn size="small" variant="outlined" :loading="revaluing" @click="setAllBase">Set {{ stats.no_version_cards === 1 ? 'it' : 'all' }} to Base</v-btn>
+      </div>
+    </v-alert>
 
     <!-- KPIs -->
     <v-row dense class="mb-2">
@@ -274,6 +339,7 @@ watch(view, (v) => { try { localStorage.setItem('cv-view', v) } catch {} })
       <v-data-table
         v-else-if="showTable"
         :headers="headers"
+        v-model:sort-by="tableSort"
         v-model="selected"
         :items="cards"
         item-value="id"
@@ -313,6 +379,7 @@ watch(view, (v) => { try { localStorage.setItem('cv-view', v) } catch {} })
           <span class="num font-weight-semibold text-no-wrap">{{ money(item.value) }}</span>
           <v-chip v-if="item.value_basis" size="x-small" :color="item.value_basis === 'sold' ? 'success' : item.value_basis === 'manual' ? 'primary' : undefined" variant="tonal" class="ml-1" :title="item.value_basis === 'manual' ? 'A value you set yourself' : item.value_basis === 'sold' ? `Median of ${item.sold_count} recent sales` : 'Too few sales, so this is the asking-price estimate'">{{ item.value_basis === 'manual' ? 'manual' : item.value_basis === 'sold' ? `sold ${item.sold_count}` : 'asking' }}</v-chip>
           <v-chip v-if="item.wide_spread" size="x-small" color="warning" variant="tonal" prepend-icon="mdi-chart-bell-curve" class="ml-1" title="Prices vary widely; pick a version">wide spread</v-chip>
+          <ConfidenceDot :confidence="item.confidence" :reasons="item.confidence_reasons" :pending="item.value_pending" />
           <v-btn v-if="debug.on" icon="mdi-bug-outline" size="x-small" variant="text" color="warning" :to="`/cards/${item.id}?debug=1`" aria-label="How this price was calculated" title="How this price was calculated" @click.stop />
         </template>
       </v-data-table>
@@ -325,7 +392,7 @@ watch(view, (v) => { try { localStorage.setItem('cv-view', v) } catch {} })
           <div class="pa-3">
             <div class="tile-row d-flex justify-space-between align-baseline ga-2">
               <strong class="truncate">{{ c.name }}</strong>
-              <span class="num font-weight-semibold text-no-wrap">{{ money(c.value) }}</span>
+              <span class="num font-weight-semibold text-no-wrap">{{ money(c.value) }}<ConfidenceDot :confidence="c.confidence" :reasons="c.confidence_reasons" :pending="c.value_pending" /></span>
             </div>
             <div v-if="c.value_basis || c.wide_spread" class="text-caption text-muted-c num"><template v-if="c.value_basis">{{ c.value_basis === 'manual' ? 'your value' : c.value_basis === 'sold' ? `sold, ${c.sold_count} sales` : 'asking price' }}<template v-if="c.value_basis === 'sold' && c.est_value != null"> · asking {{ money(c.est_value) }}</template></template><v-chip v-if="c.wide_spread" size="x-small" color="warning" variant="tonal" prepend-icon="mdi-chart-bell-curve" :class="{ 'ml-1': c.value_basis }" title="Prices vary widely; pick a version">wide spread</v-chip></div>
             <div v-if="debug.on" class="text-caption text-muted-c truncate">#{{ c.id }} · {{ c.priced_at ? isoDate(c.priced_at).slice(0, 10) : 'never priced' }} · {{ c.id_confidence != null ? Math.round(c.id_confidence * 100) + '% match' : 'no match data' }}</div>

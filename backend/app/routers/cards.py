@@ -15,16 +15,21 @@ from ..services.app_settings import load_app_settings
 from ..services.identity import identity_of_card
 from ..services.pricing import apply_asking, asking_listings
 from ..services.sold_refresh import recompute_sold
+from ..services.tracker import own_snap, revalue
 from ..services.trace import identification_trace, save_trace
 from .common import get_card_or_404, to_read
 
 router = APIRouter(prefix="/api/cards", tags=["cards"])
-VALUE = func.coalesce(Card.manual_value, Card.sold_value, Card.est_value)  # the value shown: yours, else sold, else asking
+# the value shown: the target price (services/target.py), else (a card not saved since targets existed) yours, else
+# sold, else asking
+VALUE = func.coalesce(Card.target_value, Card.manual_value, Card.sold_value, Card.est_value)
+# Dollars at risk: what a wrong price costs, the value times how unsure it is. Unpriced cards come first.
+RISK = func.coalesce(VALUE, 1e9) * (100 - func.coalesce(Card.confidence, 0))
 
 
 def filtered(stmt, q=None, category=None, status=None, location_id=None, grade=None, min_value=None,
              max_value=None, unpriced=False, stale_days=None, low_confidence=False, no_photo=False,
-             no_cost=False, needs_review=False):
+             no_cost=False, needs_review=False, review_below: int = 40, unsure=False, no_version=False):
     """Narrow a card query. Every filter given must hold (they stack)."""
     if q:
         like = f"%{q}%"
@@ -52,8 +57,14 @@ def filtered(stmt, q=None, category=None, status=None, location_id=None, grade=N
         stmt = stmt.where(col(Card.image_path).is_(None))
     if no_cost:
         stmt = stmt.where(col(Card.cost).is_(None))
-    if needs_review:  # not yet looked over, and either poorly identified or without a price
-        stmt = stmt.where(col(Card.reviewed) == False, or_(col(Card.id_confidence) < LOW_CONFIDENCE, VALUE.is_(None)))  # noqa: E712
+    unsure_price = col(Card.confidence) < review_below
+    if needs_review:  # not yet looked over, and poorly identified, without a price, or its price is doubtful
+        stmt = stmt.where(col(Card.reviewed) == False, col(Card.status) != CardStatus.sold,  # noqa: E712
+                          or_(col(Card.id_confidence) < LOW_CONFIDENCE, VALUE.is_(None), unsure_price))
+    if unsure:
+        stmt = stmt.where(unsure_price)
+    if no_version:  # every colour and print run pooled: usually a card saved before versions existed
+        stmt = stmt.where(col(Card.parallel).is_(None))
     return stmt
 
 
@@ -75,16 +86,21 @@ def list_cards(
     no_photo: bool = False,
     no_cost: bool = False,
     needs_review: bool = False,
-    sort: str = Query("recent", pattern="^(recent|value|name|oldest_price)$"),
+    unsure: bool = False,
+    no_version: bool = False,
+    sort: str = Query("recent", pattern="^(recent|value|name|oldest_price|risk)$"),
     session: Session = Depends(get_session),
 ):
+    st = load_app_settings(session)
     stmt = filtered(select(Card), q, category, status, location_id, normalize_grade(grade) if grade else None,
-                    min_value, max_value, unpriced, stale_days, low_confidence, no_photo, no_cost, needs_review)
+                    min_value, max_value, unpriced, stale_days, low_confidence, no_photo, no_cost, needs_review,
+                    st.review_below, unsure, no_version)
     order = {"recent": col(Card.created_at).desc(),
              "value": VALUE.desc().nulls_last(),
              "name": col(Card.name).asc(),
-             "oldest_price": col(Card.priced_at).asc().nulls_first()}[sort]
-    return [to_read(c) for c in session.exec(stmt.order_by(order)).all()]
+             "oldest_price": col(Card.priced_at).asc().nulls_first(),
+             "risk": RISK.desc()}[sort]
+    return [to_read(c, st.list_markup) for c in session.exec(stmt.order_by(order)).all()]
 
 
 @router.get("/stats")
@@ -112,6 +128,8 @@ def stats(session: Session = Depends(get_session)):
     out["asking_cards"] = fallback  # cards still valued at their asking estimate for lack of sales
     # cards whose asking prices spread too widely to give an asking value
     out["flagged_cards"] = session.exec(select(func.count()).where(Card.wide_spread == True, live)).one()  # noqa: E712
+    # cards pooling every colour and print run, offered a one-click "set to Base"
+    out["no_version_cards"] = session.exec(select(func.count()).where(col(Card.parallel).is_(None), live)).one()
     s = get_settings()
     out["modes"] = {"identifier": s.identifier, "ebay": s.ebay_mode}
     return out
@@ -185,6 +203,41 @@ async def bulk_reprice(body: BulkIds | None = None):
     return job.snapshot()
 
 
+@router.post("/bulk/revalue")
+def bulk_revalue(session: Session = Depends(get_session)):
+    """Re-value every unsold card from its saved quote and listings (no eBay calls, takes seconds). Use it after
+    changing the price settings; the rest of the work a full re-price does is only needed for fresh listings."""
+    app_settings = load_app_settings(session)
+    changed = same = skipped = 0
+    for card in session.exec(select(Card).where(col(Card.status) != CardStatus.sold)).all():
+        before = card.est_value
+        if not revalue(session, card, app_settings):
+            skipped += 1
+            continue
+        if card.est_value != before:
+            card.updated_at = utcnow()
+            changed += 1
+        else:
+            same += 1
+        session.add(card)
+    session.commit()
+    return {"changed": changed, "unchanged": same, "skipped": skipped}
+
+
+@router.post("/bulk/sold")
+async def bulk_sold(limit: int = Query(10, ge=1, le=50)):
+    """Check sold prices now for up to `limit` due cards, the most dollars at risk first. Spends the monthly
+    lookup budget (one lookup per card, sometimes more), so you choose how many."""
+    from ..services.sold import get_sold
+    from ..services.sold_refresh import budget_left, sold_once
+    if get_sold() is None:
+        raise HTTPException(422, "Sold prices aren't set up. Add a SoldComps key to turn them on.")
+    done, failed = await sold_once(pause=0.5, limit=limit, kind="manual")
+    with Session(engine) as session:
+        left = budget_left(session, "manual")
+    return {"checked": done, "failed": failed, "budget_left": left}
+
+
 @router.get("/bulk/reprice")
 def bulk_reprice_status():
     job = refresh_service.current_job()
@@ -215,16 +268,63 @@ def duplicates(name: str, set_name: str | None = None, card_number: str | None =
     return out[:5]
 
 
+def _dup_key(c: Card) -> tuple:
+    """Cards with the same key are the same card entered twice: name, grade, set, number and version all agree."""
+    return ((c.name or "").strip().lower(), normalize_grade(c.grade), (c.set_name or "").strip().lower(),
+            _norm_num(c.card_number), c.parallel or "")
+
+
+@router.get("/duplicate-groups", response_model=list[list[CardRead]])
+def duplicate_groups(session: Session = Depends(get_session)):
+    """Unsold cards entered more than once (same name, grade, set, number and version), oldest first in each group,
+    so they can be merged into one card with the quantities added up."""
+    groups: dict[tuple, list[Card]] = {}
+    for c in session.exec(select(Card).where(col(Card.status) != CardStatus.sold).order_by(col(Card.id))).all():
+        groups.setdefault(_dup_key(c), []).append(c)
+    markup = load_app_settings(session).list_markup
+    return [[to_read(c, markup) for c in g] for g in groups.values() if len(g) > 1]
+
+
+class MergeBody(BaseModel):
+    keep: int  # the card that stays (its photo, prices and history)
+    merge: list[int] = Field(min_length=1, max_length=500)  # cards folded into it, then deleted
+
+
+@router.post("/merge", response_model=CardRead)
+def merge_cards(body: MergeBody, session: Session = Depends(get_session)):
+    """Fold duplicate cards into one: the quantities are added up, a cost or value missing on the kept card is taken
+    from the others (cost averaged over the copies), notes are joined, and the other cards are deleted."""
+    keep = get_card_or_404(session, body.keep)
+    others = session.exec(select(Card).where(col(Card.id).in_(set(body.merge) - {keep.id}))).all()
+    if not others:
+        raise HTTPException(422, "Nothing to merge")
+    if any(c.status == CardStatus.sold for c in [keep, *others]):
+        raise HTTPException(409, "Sold cards can't be merged")
+    if any(_dup_key(c) != _dup_key(keep) for c in others):
+        raise HTTPException(422, "Only the same card can be merged: name, grade, set, number and version must match")
+    cards = [keep, *others]
+    costed = [c for c in cards if c.cost is not None]
+    if costed:  # the average paid per copy, over the copies whose cost is known
+        keep.cost = round(sum(c.cost * c.quantity for c in costed) / sum(c.quantity for c in costed), 2)
+    keep.quantity = sum(c.quantity for c in cards)
+    keep.manual_value = keep.manual_value if keep.manual_value is not None else next(
+        (c.manual_value for c in others if c.manual_value is not None), None)
+    keep.location_id = keep.location_id if keep.location_id is not None else next(
+        (c.location_id for c in others if c.location_id is not None), None)
+    notes = [n for n in dict.fromkeys(c.notes.strip() for c in cards if c.notes and c.notes.strip())]
+    keep.notes = "\n".join(notes) or None
+    keep.updated_at = utcnow()
+    session.add(keep)
+    for c in others:
+        session.delete(c)
+    session.commit()
+    session.refresh(keep)
+    return to_read(keep, load_app_settings(session).list_markup)
+
+
 @router.get("/{card_id}", response_model=CardRead)
 def get_card(card_id: int, session: Session = Depends(get_session)):
-    return to_read(get_card_or_404(session, card_id))
-
-
-def _own_snap(session: Session, card: Card) -> PriceSnapshot | None:
-    """The newest asking price for the card's own grade and version."""
-    return session.exec(select(PriceSnapshot).where(
-        PriceSnapshot.card_id == card.id, col(PriceSnapshot.source).in_(ASKING_SOURCES), PriceSnapshot.grade == normalize_grade(card.grade), PriceSnapshot.parallel == card.parallel,
-        col(PriceSnapshot.median).is_not(None)).order_by(col(PriceSnapshot.created_at).desc()).limit(1)).first()
+    return to_read(get_card_or_404(session, card_id), load_app_settings(session).list_markup)
 
 
 def apply_update(session: Session, card: Card, changes: dict) -> None:
@@ -235,19 +335,18 @@ def apply_update(session: Session, card: Card, changes: dict) -> None:
     if new_grade != old_grade or card.parallel != old_parallel:
         # The estimate belonged to the old grade or version. Use the newest price we already have for the new one,
         # or clear it until the card is priced, rather than keep showing the old grade's value.
-        snap = _own_snap(session, card)
-        apply_asking(card, snap.median if snap else None, snap.spread if snap else None)
-        card.priced_at = snap.created_at if snap else None
+        snap = own_snap(session, card)
+        if revalue(session, card):  # the newest quote, else the new version's saved listings
+            card.priced_at = snap.created_at if snap else card.priced_at
+        else:
+            apply_asking(card, None, None)
+            card.priced_at = None
         recompute_sold(session, card)  # the sold-based value belongs to the grade and version too
     elif {"name", "year", "card_number", "id_confidence", "set_name", "variant", "search_query", "is_redemption"} & changes.keys():
         session.flush()
         recompute_sold(session, card)  # who the card is (and whether it's a redemption) decides which sales count
-    if "wide_spread_action" in changes and (snap := _own_snap(session, card)):
-        # A new choice for wide-spread prices shows at once: re-value from the newest quote and the saved listings.
-        rows = session.exec(select(ListingSeen).where(ListingSeen.card_id == card.id, ListingSeen.status == "active",
-                                                      ListingSeen.grade == new_grade)).all()
-        listings = asking_listings(rows, card.parallel, {r.item_id for r in rows if r.excluded}, identity_of_card(card))
-        apply_asking(card, snap.median, snap.spread, [r.price for r in listings], load_app_settings(session))
+    if "wide_spread_action" in changes:
+        revalue(session, card)  # a new choice for wide-spread prices shows at once
     card.updated_at = utcnow()
     session.add(card)
 

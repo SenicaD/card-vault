@@ -29,6 +29,17 @@ const busy = ref('')
 const error = ref('')
 const confirmDelete = ref(false)
 const tab = ref('value')
+const showScatter = ref(false) // "Every price" is a dense chart: folded until asked for
+
+// One line on how far to trust the value, and the reasons, above the numbers
+const verdict = computed(() => {
+  const c = card.value
+  if (!c || c.confidence == null) return null
+  const level = c.confidence >= 70 ? { type: 'success', word: 'High' } : c.confidence >= 40 ? { type: 'warning', word: 'Medium' } : { type: 'error', word: 'Low' }
+  const source = c.value_basis === 'manual' ? 'your own value' : c.value_basis === 'sold' ? `the median of ${c.sold_count} recent sales`
+    : c.value_basis === 'asking' ? 'asking prices (no recent sales)' : 'nothing yet'
+  return { ...level, source, reasons: c.confidence_reasons ?? [] }
+})
 
 const listTitle = ref('')
 const listPrice = ref<number | null>(null)
@@ -101,6 +112,7 @@ const soldDays = ref(90)
 const sold = ref<SoldCompare | null>(null)
 const pctText = (v: number | null | undefined) => (v == null ? '' : `${v > 0 ? '+' : ''}${v}%`)
 const soldHeaders: TableHeader<SoldRow>[] = [
+  { title: '', key: 'image_url', sortable: false, width: 64 },
   { title: 'Sold / gone', key: 'gone_at', text: (r) => (r.gone_at ? isoDate(r.gone_at).slice(0, 10) : '') },
   { title: 'Grade', key: 'grade' }, { title: 'Version', key: 'parallel' }, { title: 'Listing', key: 'title' },
   { title: 'Days up', key: 'days_listed', align: 'end' },
@@ -203,7 +215,7 @@ async function load() {
     loadGone()
     form.value = fieldsOf(card.value)
     listTitle.value = defaultTitle(card.value)
-    listPrice.value = card.value.est_value
+    listPrice.value = card.value.list_price ?? card.value.est_value // the value x the Settings page's list markup
     gradeCounts.value = card.value.grade_counts ?? {}
     if (!selectedGrades.value.length) selectedGrades.value = [normalizeGrade(card.value.grade)]
     loadMatches()
@@ -361,12 +373,17 @@ const ruleItems = computed(() => [
   { value: 'default', title: `Use the default${defaultRule.value ? ` (${ruleTitle(defaultRule.value)})` : ''}` },
   ...WIDE_SPREAD_ACTIONS.map((a) => ({ value: a.value, title: a.title })),
 ])
-// The window the rule takes, with the current Settings N (the median of all when there were N or fewer)
+// The window the rule takes, with the current Settings N (the average of all when there were N or fewer)
 const ruleText = computed(() => {
   const rule = card.value?.spread_rule, n = priceWindow.value, k = latest.value?.sample_size
   if (!rule || n == null) return ''
-  if (k != null && k <= n) return k === 1 ? 'the price of its only listing' : `the median of all ${k} listings`
+  if (k != null && k <= n) return k === 1 ? 'the price of its only listing' : `the average of all ${k} listings`
   return windowText(rule, n)
+})
+// How many of the listings in the price count (own grade and version, not unticked) the window actually values the card from
+const windowCounts = computed(() => {
+  const own = matches.value.filter((m) => m.grade === ownGrade.value && !m.excluded && (!card.value?.parallel || m.parallel === card.value.parallel))
+  return { used: matches.value.filter((m) => m.in_window).length, all: own.length }
 })
 const setRule = (v: string) => run('rule', async () => {
   card.value = await api<Card>(`/api/cards/${id}`, { method: 'PATCH', body: { wide_spread_action: v === 'default' ? null : v } })
@@ -388,6 +405,7 @@ function vsMedian(c: { price: number; grade?: string | null }): number | null {
 const compHeaders = computed<TableHeader<CompRow>[]>(() => [
   { title: 'Use', key: 'included', sortable: false, width: 48 },
   ...(xs.value ? [] : [{ title: '', key: 'image_url', sortable: false, width: 64 }]),
+  ...(card.value?.spread_rule ? [{ title: 'Prices card', key: 'in_window', text: (m: CompRow) => (m.in_window ? 'Yes' : '') }] : []),
   // On phones the cell also shows the grade and version
   { title: 'Listing', key: 'title', text: (m) => [m.title, ...(xs.value ? [m.grade, m.parallel] : []), m.condition].filter(Boolean).join(' ') },
   ...(xs.value ? [] : [{ title: 'Grade', key: 'grade' }, { title: 'Version', key: 'parallel' }]),
@@ -500,6 +518,21 @@ onMounted(() => {
           </div>
         </v-card>
 
+        <!-- Verdict: the value, where it comes from, and how far to trust it -->
+        <v-alert v-if="verdict" :type="verdict.type" variant="tonal" density="compact" border="start" class="mb-3" :icon="verdict.type === 'success' ? 'mdi-shield-check-outline' : 'mdi-shield-alert-outline'">
+          <div class="text-body-2">
+            <strong class="num">{{ money(card.value) }}</strong> from {{ verdict.source }} ·
+            <strong>{{ verdict.word }} confidence</strong> <span class="num">({{ card.confidence }}/100)</span>
+            <template v-if="card.list_price"> · list at <strong class="num">{{ money(card.list_price) }}</strong></template>
+          </div>
+          <div v-if="card.value_pending != null" class="text-caption mt-1">
+            <v-icon icon="mdi-timer-sand" size="12" /> The last lookup found {{ money(card.value_pending) }}. It becomes the value if the next daily lookup agrees.
+          </div>
+          <ul v-if="verdict.reasons.length" class="verdict-reasons text-caption mt-1">
+            <li v-for="r in verdict.reasons" :key="r">{{ r }}</li>
+          </ul>
+        </v-alert>
+
         <!-- Value KPIs -->
         <v-row dense class="mb-2">
           <v-col cols="6" sm="3" class="kpi-wrap">
@@ -597,11 +630,12 @@ onMounted(() => {
                   </template>
                 </v-alert>
                 <v-alert v-else-if="card.spread_rule" type="info" variant="tonal" density="compact" class="mt-3" icon="mdi-chart-bell-curve">
-                  These listings' prices vary too widely<template v-if="latest?.spread != null"> (the middle half spans {{ Math.round(latest.spread * 100) }}% of the median)</template>, so the asking value of {{ money(card.est_value) }}<template v-if="ruleText"> is {{ ruleText }}</template>, {{ card.wide_spread_action ? 'as chosen for this card below' : 'the default on the Settings page' }}.
+                  The asking value of {{ money(card.est_value) }}<template v-if="ruleText"> is {{ ruleText }}</template>, {{ card.wide_spread_action ? 'the rule chosen for this card below' : 'the default on the Settings page' }}.<template v-if="latest?.spread != null"> The middle half of the prices spans {{ Math.round(latest.spread * 100) }}% of the median.</template>
+                  <div v-if="windowCounts.used" class="mt-1 font-weight-medium">{{ windowCounts.used }} of the {{ windowCounts.all }} listings counted set this value (outliers and the rest are left out); they're marked in the listings table.</div>
                   <template v-if="ruleText"> This uses the current "Listings to price from" setting; if you changed it after this card was priced, the value updates the next time it's priced.</template>
-                  <div v-for="(g, i) in clusters" :key="i" class="mt-1">
+                  <template v-if="(latest?.spread ?? 0) >= 0.8"><div v-for="(g, i) in clusters" :key="i" class="mt-1">
                     ~{{ money(g.median) }} · {{ money(g.low) }}–{{ money(g.high) }} · {{ g.count }} {{ g.count === 1 ? 'listing' : 'listings' }}<template v-if="g.versions.length"> · {{ g.versions[0].name }}</template>
-                  </div>
+                  </div></template>
                   <div class="mt-1">If that's not your card, pick your version above, or untick the listings that aren't yours in the listings table.</div>
                 </v-alert>
                 <v-alert v-else-if="latest && !card.parallel && (latest.spread ?? 0) >= 0.8" type="warning" variant="tonal" density="compact" class="mt-3" icon="mdi-chart-bell-curve">
@@ -694,9 +728,12 @@ onMounted(() => {
               <v-divider />
               <div class="px-5 pt-4 pb-2 d-flex align-center justify-space-between flex-wrap ga-2">
                 <span class="text-body-2 font-weight-medium">Every price: asking vs sold</span>
-                <v-select v-model="pointsGrade" :items="selectedGrades" :placeholder="normalizeGrade(card.grade)" density="compact" hide-details clearable style="max-width: 180px" aria-label="Grade for this chart" />
+                <div class="d-flex align-center ga-2">
+                  <v-select v-if="showScatter" v-model="pointsGrade" :items="selectedGrades" :placeholder="normalizeGrade(card.grade)" density="compact" hide-details clearable style="max-width: 180px" aria-label="Grade for this chart" />
+                  <v-btn size="small" variant="text" :append-icon="showScatter ? 'mdi-chevron-up' : 'mdi-chevron-down'" :aria-expanded="showScatter" @click="showScatter = !showScatter">{{ showScatter ? 'Hide' : 'Show' }}</v-btn>
+                </div>
               </div>
-              <div class="px-5 pb-4"><PriceScatter :data="points" /></div>
+              <div v-if="showScatter" class="px-5 pb-4"><PriceScatter :data="points" /></div>
 
               <!-- Asking vs sold -->
               <template v-if="sold && (sold.provider.configured || sold.grades.some((g) => g.sold_count || g.yours_count) || sold.rows.length)">
@@ -739,6 +776,7 @@ onMounted(() => {
                   </tbody>
                 </v-table>
                 <div v-if="sold.rows.length" class="sold-scroll"><DataTable :headers="soldHeaders" :items="sold.rows" :sort-by="SOLD_SORT" search-placeholder="Search sold listings">
+                  <template #item.image_url="{ item }"><ListingThumb :src="item.image_url" :url="item.url" :title="item.title" /></template>
                   <template #item.gone_at="{ item }"><span class="num text-no-wrap">{{ item.gone_at ? isoDate(item.gone_at).slice(0, 10) : '' }}</span></template>
                   <template #item.parallel="{ item }"><v-chip size="x-small" variant="tonal">{{ item.parallel }}</v-chip></template>
                   <template #item.title="{ item }"><span class="truncate d-block gone-title">{{ item.title }}</span></template>
@@ -776,16 +814,14 @@ onMounted(() => {
                     <v-checkbox-btn :model-value="item.included" density="compact" :aria-label="`Use this listing in the prices: ${item.title}`" :disabled="busy === 'exclude'" @update:model-value="toggleInclude(item)" />
                   </template>
                   <template #item.image_url="{ item }">
-                    <a :href="item.url || undefined" target="_blank" rel="noopener" class="comp-thumb" :class="{ dim: !item.included }">
-                      <img v-if="item.image_url" :src="item.image_url" alt="" loading="lazy" />
-                      <v-icon v-else icon="mdi-image-off-outline" size="small" />
-                    </a>
+                    <ListingThumb :src="item.image_url" :url="item.url" :title="item.title" :dim="!item.included" />
                   </template>
                   <template #item.title="{ item }">
                     <a v-if="item.url" :href="item.url" target="_blank" rel="noopener" class="comp-link comp-title" :class="{ dim: !item.included }">{{ item.title }}</a>
                     <span v-else class="comp-title" :class="{ dim: !item.included }">{{ item.title }}</span>
                     <div v-if="xs" class="text-caption text-muted-c">{{ [item.grade, item.parallel !== 'Base' ? item.parallel : null, item.condition].filter(Boolean).join(' · ') }}</div>
                   </template>
+                  <template #item.in_window="{ item }"><v-chip v-if="item.in_window" size="x-small" color="primary" variant="tonal">In the price</v-chip></template>
                   <template #item.grade="{ item }"><v-chip size="x-small" variant="tonal">{{ item.grade }}</v-chip></template>
                   <template #item.parallel="{ item }"><v-chip size="x-small" variant="outlined" :color="item.parallel === card.parallel ? 'primary' : undefined">{{ item.parallel }}</v-chip></template>
                   <template #item.look="{ item }"><span v-if="item.look != null" class="num text-caption">{{ item.look }}%</span><span v-else>—</span></template>
@@ -807,7 +843,7 @@ onMounted(() => {
                       <v-text-field v-model="listTitle" label="Listing title" maxlength="80" counter="80" hide-details="auto" />
                     </v-col>
                     <v-col cols="12" sm="4">
-                      <v-text-field v-model.number="listPrice" label="Price" prefix="$" type="number" min="0.99" step="0.01" inputmode="decimal" />
+                      <v-text-field v-model.number="listPrice" label="Price" prefix="$" type="number" min="0.99" step="0.01" inputmode="decimal" :hint="card?.list_price ? `Suggested ${money(card.list_price)}: the value × your list markup` : undefined" persistent-hint />
                     </v-col>
                     <v-col cols="12" sm="8" class="d-flex align-center">
                       <v-btn color="primary" variant="flat" prepend-icon="mdi-upload-outline" :loading="busy === 'list'" :disabled="!listPrice || !listTitle" @click="list">
@@ -906,6 +942,7 @@ onMounted(() => {
 </template>
 
 <style scoped>
+.verdict-reasons { margin: 0; padding-left: 18px; }
 .side { display: grid; gap: 16px; position: sticky; top: 84px; }
 @media (max-width: 959px) { .side { position: static; } }
 @media (max-width: 959px) { .photo { max-width: 240px; margin: 0 auto; } }
@@ -920,8 +957,6 @@ onMounted(() => {
 .footer-actions { display: flex; gap: 8px; padding: 12px 18px; background: rgb(var(--v-theme-surface-chrome)); }
 .font-weight-semibold { font-weight: 600; }
 .comp-link { color: rgb(var(--v-theme-primary)); text-decoration: none; }
-.comp-thumb { width: 48px; height: 48px; border-radius: 6px; overflow: hidden; display: grid; place-items: center; background: rgb(var(--v-theme-surface-sunken)); color: rgb(var(--v-theme-text-muted)); }
-.comp-thumb img { width: 100%; height: 100%; object-fit: cover; }
 .comp-title { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; max-width: 460px; white-space: normal; }
 .dim { opacity: 0.4; text-decoration: line-through; }
 .comp-link:hover { text-decoration: underline; }

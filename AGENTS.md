@@ -32,9 +32,12 @@ Client-side data tables use `components/DataTable.vue`: three-click sort with em
 
 ## Software factory
 
+The factory is the `factory` plugin from the `senicad-tools` marketplace (`SenicaD/plugin-marketplace`);
+this repo only holds its state and settings: `factory/checks.sh`, `factory/PROJECT.md`
+(what the agents read about CardVault) and an optional `factory/config.json` that overrides the plugin defaults.
 `/factory run` builds every open GitHub issue labeled `factory` through
 intake → spec → build → gate → review → approve, one PR per issue. State is in
-`factory/jobs/` (gitignored); `factory/bin/job` is its only writer. Several windows can run it at once (per-job
+`factory/jobs/` (gitignored); `factory-job` (from the plugin) is its only writer. Several windows can run it at once (per-job
 leases); `/factory solo` works one job in a single agent; `/factory review` finds
 where the pipeline churns. Checks:
 `factory/checks.sh`. Dashboard: `cd factory && python3 -m http.server`, then

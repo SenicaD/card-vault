@@ -19,7 +19,7 @@ from ..services import refresh as refresh_service
 from ..services.debuglog import EVENTS
 from ..services.ebay import get_ebay
 from ..services.sold import SoldCompsClient, get_sold
-from ..services.sold_refresh import used_this_month
+from ..services.sold_refresh import auto_enabled, used_this_month
 from ..services.trace import compare_traces
 from .common import get_card_or_404
 
@@ -177,8 +177,8 @@ def health():
                         "budget": s.sold_monthly_budget, "used_this_month": used_this_month(session),
                         "auto_used": used_this_month(session, "auto"), "refresh_days": s.sold_refresh_days,
                         "min_value": s.sold_min_value, "window_days": s.sold_window_days,
-                        "auto_enabled": isinstance(provider, SoldCompsClient) and s.sold_auto_refresh,
-                        "auto_setting": s.sold_auto_refresh}
+                        "auto_enabled": isinstance(provider, SoldCompsClient) and auto_enabled(session),
+                        "auto_setting": auto_enabled(session)}  # the Settings page's switch, else .env
     return info
 
 

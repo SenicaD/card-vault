@@ -21,40 +21,53 @@ _JUNK = re.compile(r"\b(lot|lots|bundle|set of|choose|pick|you pick|reprint|prox
 
 def apply_asking(card, median: float | None, spread: float | None, prices: list[float] | None = None,
                  app_settings=None) -> None:
-    """Set the card's asking estimate from a quote, unless its prices spread too widely to trust.
+    """Set the card's asking estimate from a quote.
 
-    Above MAX_PRICE_SPREAD the card is flagged and gets no asking value; otherwise the flag is cleared. With
-    app_settings, the card's own wide_spread_action (else the saved default) can value it instead: at the median of
-    the price_window most expensive, middle or cheapest asking listings, after outliers are left out (see
-    window_value). spread_rule records which rule did.
+    With app_settings, the card's own wide_spread_action (else the saved default) can value every card: at the average (mean)
+    of the price_window most expensive, middle or cheapest asking listings, after outliers are left out (see
+    window_value). spread_rule records which rule did. With the "flag" rule (or no listings to take a window from),
+    the card gets the median of all its listings, unless they spread beyond MAX_PRICE_SPREAD: then it is flagged and
+    gets no asking value.
     """
     card.spread_rule = None
-    if median is not None and spread is not None and spread > get_settings().max_price_spread:
-        rule = (card.wide_spread_action or app_settings.wide_spread_action) if app_settings is not None else "flag"
-        value = None
-        if rule in ("highest_group", "median", "lowest_group") and prices is not None:
-            value = window_value(prices, rule, app_settings.price_window)
+    rule = (card.wide_spread_action or app_settings.wide_spread_action) if app_settings is not None else "flag"
+    if median is not None and rule in ("highest_group", "median", "lowest_group") and prices:
+        value = window_value(prices, rule, app_settings.price_window, app_settings.outlier_ratio)
         if value is not None:
             card.wide_spread, card.est_value, card.spread_rule = False, value, rule
-        else:
-            card.wide_spread, card.est_value = True, None
+            return
+    if median is not None and spread is not None and spread > get_settings().max_price_spread:
+        card.wide_spread, card.est_value = True, None
     else:
         card.wide_spread, card.est_value = False, median
 
 
-def window_value(prices: list[float], rule: str, n: int) -> float | None:
-    """The median of a window of n prices, after outliers are left out: the n most expensive ("highest_group"), the
-    n cheapest ("lowest_group") or the n in the middle of the price order ("median"; it leans one price toward the
-    cheaper side when it can't be centred exactly). With n or fewer prices left, the median of all of them; with
-    none, None."""
-    fences = outlier_fences(prices)
-    p = sorted(x for x in prices if fences is None or fences[2] <= x <= fences[3])
-    if not p:
-        return None
+def window_of(items: list, rule: str, n: int, price=lambda i: i, ratio: float | None = None) -> list:
+    """The items whose prices form the window: outliers are left out, then the n most expensive ("highest_group"),
+    the n cheapest ("lowest_group") or the n in the middle of the price order ("median"; it leans one price toward
+    the cheaper side when it can't be centred exactly). With n or fewer left, all of them.
+    With a ratio, a price more than ratio times the median of the card's own listings is left out first (see
+    relative_ceiling), so a $16,500 listing can't set a $400 card's value while a $400 card's real listings stay in."""
+    if (cap := relative_ceiling([price(i) for i in items], ratio)) is not None:
+        items = [i for i in items if price(i) <= cap]
+    fences = outlier_fences([price(i) for i in items])
+    p = sorted((i for i in items if fences is None or fences[2] <= price(i) <= fences[3]), key=price)
     if len(p) > n:
         s = (len(p) - n) // 2
         p = p[-n:] if rule == "highest_group" else p[:n] if rule == "lowest_group" else p[s:s + n]
-    return round(statistics.median(p), 2)
+    return p
+
+
+def relative_ceiling(prices: list[float], ratio: float | None) -> float | None:
+    """The highest price kept: ratio times the median of the prices above $0. None (no limit) without a ratio or prices."""
+    p = [x for x in prices if x > 0]
+    return round(ratio * statistics.median(p), 2) if ratio and p else None
+
+
+def window_value(prices: list[float], rule: str, n: int, ratio: float | None = None) -> float | None:
+    """The mean (average) of the window (see window_of) of the prices; None with no prices left."""
+    p = window_of(prices, rule, n, ratio=ratio)
+    return round(statistics.mean(p), 2) if p else None
 
 
 def asking_listings(items: list, parallel: str | None, exclude: set[str], ident: CardIdentity | None) -> list:
@@ -356,6 +369,8 @@ def build_quotes(groups: dict[str, list[EbayItem]], grades: list[str], query: st
     if other_identity:
         code = f"shows a different card code than {ident.code.upper()} or " if ident.code else ""
         rule = "isn't for a redemption card" if ident.redemption else "is for a redemption card, which this card isn't"
+        if ident.auto is not None and not ident.redemption:
+            rule += (", or isn't for an autograph" if ident.auto else ", or is for an autograph, which this card isn't")
         trace.note(f"{other_identity} listings were left out because their title {code}{rule}.")
     return quotes, used
 
