@@ -30,7 +30,16 @@ Open `http://localhost:3000`, or from your phone on the same Wi-Fi, `http://<you
 Scanning uses the phone's native camera via a file input (`capture="environment"`), which works over
 plain http. Live in-browser camera preview (getUserMedia) would need https.
 
-Tests: `cd backend && pytest`. API docs: `http://localhost:8000/docs`.
+API docs: `http://localhost:8000/docs`.
+
+## Validation
+
+These are the same checks Factory runs (`factory/checks.sh`). Run them from the repository root after the setup above.
+
+```bash
+(cd backend && .venv/bin/python -m pytest -q)   # backend tests
+(cd frontend && npx nuxt build)                 # frontend typecheck/build
+```
 
 ## Deploy to the UGREEN NAS
 
