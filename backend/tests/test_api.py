@@ -1140,11 +1140,15 @@ def test_bulk_update_delete_and_cost():
         # identity fields are not bulk-editable
         assert c.post("/api/cards/bulk/update", json={"ids": ids, "changes": {"name": "x"}}).status_code == 422
         assert c.post("/api/cards/bulk/update", json={"ids": ids, "changes": {}}).status_code == 422
-        # a grade change in bulk clears the old grade's estimate, same as a single edit
+        # a grade change in bulk drops the old grade's estimate, same as a single edit: the card is valued from its
+        # saved listings of the new grade, or left unpriced when it has none
         c.post(f"/api/cards/{ids[0]}/price")
-        assert c.get(f"/api/cards/{ids[0]}").json()["est_value"]
+        raw = c.get(f"/api/cards/{ids[0]}").json()["est_value"]
+        assert raw
         c.post("/api/cards/bulk/update", json={"ids": [ids[0]], "changes": {"grade": "PSA 9"}})
-        assert c.get(f"/api/cards/{ids[0]}").json()["est_value"] is None
+        assert c.get(f"/api/cards/{ids[0]}").json()["est_value"] != raw
+        c.post("/api/cards/bulk/update", json={"ids": [ids[1]], "changes": {"grade": "PSA 9"}})  # never priced
+        assert c.get(f"/api/cards/{ids[1]}").json()["est_value"] is None
         assert c.post("/api/cards/bulk/delete", json={"ids": ids}).json() == {"deleted": 3}
         assert c.get(f"/api/cards/{ids[0]}").status_code == 404
 

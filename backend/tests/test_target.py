@@ -111,6 +111,20 @@ def test_duplicates_are_grouped_and_merged_into_one_card():
         assert c.get(f"/api/cards/{b['id']}").status_code == 404 and c.get(f"/api/cards/{d['id']}").status_code == 404
 
 
+def test_cards_with_no_version_are_counted_filtered_and_keep_a_value_when_set_to_base():
+    with TestClient(app) as c:
+        card = c.post("/api/cards", json={"name": "Zed Version Tester", "category": "sports"}).json()
+        c.post(f"/api/cards/{card['id']}/price")  # mock listings, saved for the card
+        c.patch(f"/api/cards/{card['id']}", json={"parallel": None})
+        assert c.get("/api/cards/stats").json()["no_version_cards"] >= 1
+        assert card["id"] in [x["id"] for x in c.get("/api/cards", params={"no_version": True}).json()]
+        r = c.post("/api/cards/bulk/update", json={"ids": [card["id"]], "changes": {"parallel": "Base"}})
+        assert r.status_code == 200
+        got = c.get(f"/api/cards/{card['id']}").json()
+        assert got["parallel"] == "Base" and card["id"] not in [x["id"] for x in c.get("/api/cards", params={"no_version": True}).json()]
+        assert got["est_value"] is not None  # valued from its saved Base listings, not blanked until a re-price
+
+
 def _quote(median):
     return {"query": "q", "sample_size": 10, "low": median * 0.8, "median": median, "mean": median,
             "high": median * 1.2, "spread": 0.2}

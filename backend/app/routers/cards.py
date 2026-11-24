@@ -29,7 +29,7 @@ RISK = func.coalesce(VALUE, 1e9) * (100 - func.coalesce(Card.confidence, 0))
 
 def filtered(stmt, q=None, category=None, status=None, location_id=None, grade=None, min_value=None,
              max_value=None, unpriced=False, stale_days=None, low_confidence=False, no_photo=False,
-             no_cost=False, needs_review=False, review_below: int = 40, unsure=False):
+             no_cost=False, needs_review=False, review_below: int = 40, unsure=False, no_version=False):
     """Narrow a card query. Every filter given must hold (they stack)."""
     if q:
         like = f"%{q}%"
@@ -63,6 +63,8 @@ def filtered(stmt, q=None, category=None, status=None, location_id=None, grade=N
                           or_(col(Card.id_confidence) < LOW_CONFIDENCE, VALUE.is_(None), unsure_price))
     if unsure:
         stmt = stmt.where(unsure_price)
+    if no_version:  # every colour and print run pooled: usually a card saved before versions existed
+        stmt = stmt.where(col(Card.parallel).is_(None))
     return stmt
 
 
@@ -85,13 +87,14 @@ def list_cards(
     no_cost: bool = False,
     needs_review: bool = False,
     unsure: bool = False,
+    no_version: bool = False,
     sort: str = Query("recent", pattern="^(recent|value|name|oldest_price|risk)$"),
     session: Session = Depends(get_session),
 ):
     st = load_app_settings(session)
     stmt = filtered(select(Card), q, category, status, location_id, normalize_grade(grade) if grade else None,
                     min_value, max_value, unpriced, stale_days, low_confidence, no_photo, no_cost, needs_review,
-                    st.review_below, unsure)
+                    st.review_below, unsure, no_version)
     order = {"recent": col(Card.created_at).desc(),
              "value": VALUE.desc().nulls_last(),
              "name": col(Card.name).asc(),
@@ -125,6 +128,8 @@ def stats(session: Session = Depends(get_session)):
     out["asking_cards"] = fallback  # cards still valued at their asking estimate for lack of sales
     # cards whose asking prices spread too widely to give an asking value
     out["flagged_cards"] = session.exec(select(func.count()).where(Card.wide_spread == True, live)).one()  # noqa: E712
+    # cards pooling every colour and print run, offered a one-click "set to Base"
+    out["no_version_cards"] = session.exec(select(func.count()).where(col(Card.parallel).is_(None), live)).one()
     s = get_settings()
     out["modes"] = {"identifier": s.identifier, "ebay": s.ebay_mode}
     return out
@@ -331,8 +336,8 @@ def apply_update(session: Session, card: Card, changes: dict) -> None:
         # The estimate belonged to the old grade or version. Use the newest price we already have for the new one,
         # or clear it until the card is priced, rather than keep showing the old grade's value.
         snap = own_snap(session, card)
-        if snap and revalue(session, card):  # the price window applies to the new version's saved listings too
-            card.priced_at = snap.created_at
+        if revalue(session, card):  # the newest quote, else the new version's saved listings
+            card.priced_at = snap.created_at if snap else card.priced_at
         else:
             apply_asking(card, None, None)
             card.priced_at = None

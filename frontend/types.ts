@@ -265,6 +265,7 @@ export interface Stats {
   asking_value: number
   asking_cards: number
   flagged_cards?: number // unsold cards whose asking prices spread too widely to value
+  no_version_cards?: number // unsold cards pooling every colour and print run (no version picked)
   sold_value: number
   sold_cards: number
   asking_value_of_sold_cards: number

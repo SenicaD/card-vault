@@ -23,6 +23,7 @@ const FLAGS = [
   { key: 'stale_days', label: 'Price over 7 days old' },
   { key: 'low_confidence', label: 'Weak match' },
   { key: 'unsure', label: 'Doubtful price' },
+  { key: 'no_version', label: 'No version' },
   { key: 'no_photo', label: 'No photo' },
   { key: 'no_cost', label: 'No cost' },
 ] as const
@@ -157,6 +158,17 @@ async function revalueAll() {
     await load()
   } catch (e: any) { error.value = e.message } finally { revaluing.value = false }
 }
+// Cards pooling every version (usually saved before versions existed) go to Base in one go; each one is re-valued
+// from its saved Base listings, so nothing waits on eBay
+async function setAllBase() {
+  revaluing.value = true; revalued.value = ''
+  try {
+    const ids = (await api<Card[]>('/api/cards', { query: { no_version: 'true' } })).map((c) => c.id)
+    if (ids.length) await api('/api/cards/bulk/update', { method: 'POST', body: { ids, changes: { parallel: 'Base' } } })
+    revalued.value = `Set ${ids.length} card${ids.length === 1 ? '' : 's'} to the Base version. Pick another version on a card's page if it's a parallel.`
+    await load()
+  } catch (e: any) { error.value = e.message } finally { revaluing.value = false }
+}
 // Spend a few sold-price lookups now, on the cards with the most dollars at risk
 async function checkSold(limit: number) {
   revaluing.value = true; revalued.value = ''
@@ -215,6 +227,12 @@ watch(view, (v) => { try { localStorage.setItem('cv-view', v) } catch {} })
       </div>
     </v-alert>
     <DuplicatesDialog v-model="dupOpen" :groups="dupGroups" @merged="load" />
+    <v-alert v-if="stats?.no_version_cards" type="info" variant="tonal" border="start" density="compact" class="mb-4" icon="mdi-palette-outline">
+      <div class="d-flex align-center justify-space-between flex-wrap ga-2">
+        <span>{{ stats.no_version_cards }} card{{ stats.no_version_cards === 1 ? ' pools' : 's pool' }} every colour and print run, which mixes cheap base listings with numbered parallels.</span>
+        <v-btn size="small" variant="outlined" :loading="revaluing" @click="setAllBase">Set {{ stats.no_version_cards === 1 ? 'it' : 'all' }} to Base</v-btn>
+      </div>
+    </v-alert>
 
     <!-- KPIs -->
     <v-row dense class="mb-2">

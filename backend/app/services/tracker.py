@@ -117,13 +117,21 @@ def mark_window(session: Session, card: Card, app_settings=None) -> None:
 
 
 def revalue(session: Session, card: Card, app_settings=None) -> bool:
-    """Re-value a card from its newest quote and the listings already saved, with no eBay call. False if it has no quote."""
+    """Re-value a card from its newest quote and the listings already saved, with no eBay call. With no quote for the
+    card's grade and version yet (its version was just changed), the saved listings of that version are summarised
+    instead, as a lookup would. False when there is neither."""
     snap = own_snap(session, card)
-    if snap is None:
-        return False
     own = normalize_grade(card.grade)
     rows = session.exec(select(ListingSeen).where(ListingSeen.card_id == card.id, ListingSeen.status == "active",
                                                   ListingSeen.grade == own)).all()
     listings = asking_listings(rows, card.parallel, {r.item_id for r in rows if r.excluded}, identity_of_card(card))
-    apply_asking(card, snap.median, snap.spread, [r.price for r in listings], app_settings or load_app_settings(session))
+    if snap is not None:
+        median, spread = snap.median, snap.spread
+    elif listings:
+        from .pricing import summarize
+        stats = summarize([EbayItem(item_id=r.item_id, title=r.title, price=r.price) for r in listings])
+        median, spread = stats["median"], stats["spread"]
+    else:
+        return False
+    apply_asking(card, median, spread, [r.price for r in listings], app_settings or load_app_settings(session))
     return True
