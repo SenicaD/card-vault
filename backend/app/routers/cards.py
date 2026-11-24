@@ -20,12 +20,16 @@ from ..services.trace import identification_trace, save_trace
 from .common import get_card_or_404, to_read
 
 router = APIRouter(prefix="/api/cards", tags=["cards"])
-VALUE = func.coalesce(Card.manual_value, Card.sold_value, Card.est_value)  # the value shown: yours, else sold, else asking
+# the value shown: the target price (services/target.py), else (a card not saved since targets existed) yours, else
+# sold, else asking
+VALUE = func.coalesce(Card.target_value, Card.manual_value, Card.sold_value, Card.est_value)
+# Dollars at risk: what a wrong price costs, the value times how unsure it is. Unpriced cards come first.
+RISK = func.coalesce(VALUE, 1e9) * (100 - func.coalesce(Card.confidence, 0))
 
 
 def filtered(stmt, q=None, category=None, status=None, location_id=None, grade=None, min_value=None,
              max_value=None, unpriced=False, stale_days=None, low_confidence=False, no_photo=False,
-             no_cost=False, needs_review=False):
+             no_cost=False, needs_review=False, review_below: int = 40, unsure=False):
     """Narrow a card query. Every filter given must hold (they stack)."""
     if q:
         like = f"%{q}%"
@@ -53,8 +57,12 @@ def filtered(stmt, q=None, category=None, status=None, location_id=None, grade=N
         stmt = stmt.where(col(Card.image_path).is_(None))
     if no_cost:
         stmt = stmt.where(col(Card.cost).is_(None))
-    if needs_review:  # not yet looked over, and either poorly identified or without a price
-        stmt = stmt.where(col(Card.reviewed) == False, or_(col(Card.id_confidence) < LOW_CONFIDENCE, VALUE.is_(None)))  # noqa: E712
+    unsure_price = col(Card.confidence) < review_below
+    if needs_review:  # not yet looked over, and poorly identified, without a price, or its price is doubtful
+        stmt = stmt.where(col(Card.reviewed) == False, col(Card.status) != CardStatus.sold,  # noqa: E712
+                          or_(col(Card.id_confidence) < LOW_CONFIDENCE, VALUE.is_(None), unsure_price))
+    if unsure:
+        stmt = stmt.where(unsure_price)
     return stmt
 
 
@@ -76,16 +84,20 @@ def list_cards(
     no_photo: bool = False,
     no_cost: bool = False,
     needs_review: bool = False,
-    sort: str = Query("recent", pattern="^(recent|value|name|oldest_price)$"),
+    unsure: bool = False,
+    sort: str = Query("recent", pattern="^(recent|value|name|oldest_price|risk)$"),
     session: Session = Depends(get_session),
 ):
+    st = load_app_settings(session)
     stmt = filtered(select(Card), q, category, status, location_id, normalize_grade(grade) if grade else None,
-                    min_value, max_value, unpriced, stale_days, low_confidence, no_photo, no_cost, needs_review)
+                    min_value, max_value, unpriced, stale_days, low_confidence, no_photo, no_cost, needs_review,
+                    st.review_below, unsure)
     order = {"recent": col(Card.created_at).desc(),
              "value": VALUE.desc().nulls_last(),
              "name": col(Card.name).asc(),
-             "oldest_price": col(Card.priced_at).asc().nulls_first()}[sort]
-    return [to_read(c) for c in session.exec(stmt.order_by(order)).all()]
+             "oldest_price": col(Card.priced_at).asc().nulls_first(),
+             "risk": RISK.desc()}[sort]
+    return [to_read(c, st.list_markup) for c in session.exec(stmt.order_by(order)).all()]
 
 
 @router.get("/stats")
@@ -239,7 +251,7 @@ def duplicates(name: str, set_name: str | None = None, card_number: str | None =
 
 @router.get("/{card_id}", response_model=CardRead)
 def get_card(card_id: int, session: Session = Depends(get_session)):
-    return to_read(get_card_or_404(session, card_id))
+    return to_read(get_card_or_404(session, card_id), load_app_settings(session).list_markup)
 
 
 def apply_update(session: Session, card: Card, changes: dict) -> None:

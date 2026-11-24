@@ -2317,7 +2317,10 @@ def test_autograph_status_must_match_the_card():
     ("Chrome Chromographs Mike Trout", "trout"),
     ("Jacob Misiorowski", "misiorowski"),
     ("Best Jaron-Keawe Sagapolutele", "sagapolutele"),
-    ("D'Andre Swift", "dandre swift".split()[-1]),
+    ("D'Andre Swift", "swift"),
+    ("A.J. Green Bengals", "green"),  # a surname that is also a city word (Green Bay) is kept
+    ("Bryce Young Carolina Panthers", "young"),
+    ("Young Guns Luke Haymes", "haymes"),
     # nothing names a player: filter by year and number only, never by an insert or team word
     ("Samurai Japan Generational Greats", None),
     ("Samurai Japan", None),
@@ -2627,7 +2630,9 @@ def test_price_clusters_endpoint_unknown_card_and_no_listings():
         assert r.status_code == 200 and r.json() == []
 
 
-DEFAULT_SETTINGS = {"cluster_min_size": 2, "wide_spread_action": "flag", "price_window": 10, "outlier_ratio": None}
+TARGET_DEFAULTS = {"asking_discount": 1.0, "smoothing_band": 0.1, "list_markup": 1.1, "review_below": 40}
+DEFAULT_SETTINGS = {"cluster_min_size": 2, "wide_spread_action": "flag", "price_window": 10, "outlier_ratio": None,
+                    **TARGET_DEFAULTS}
 HIGHEST_GROUP = {"cluster_min_size": 2, "wide_spread_action": "highest_group", "price_window": 3, "outlier_ratio": None}
 
 
@@ -2653,7 +2658,8 @@ def test_settings_are_the_defaults_when_nothing_is_saved():
 
 
 def test_settings_are_saved_and_kept_after_a_restart(restore_settings):
-    saved = {"cluster_min_size": 5, "wide_spread_action": "highest_group", "price_window": 3, "outlier_ratio": 4.5}
+    saved = {"cluster_min_size": 5, "wide_spread_action": "highest_group", "price_window": 3, "outlier_ratio": 4.5,
+             "asking_discount": 0.85, "smoothing_band": 0.15, "list_markup": 1.2, "review_below": 55}
     with TestClient(app) as c:
         r = c.put("/api/settings", json=saved)
         assert r.status_code == 200 and r.json() == saved
@@ -2672,9 +2678,15 @@ def test_settings_are_saved_and_kept_after_a_restart(restore_settings):
                                           ({"outlier_ratio": 0}, "from 1.5 to 100"),
                                           ({"outlier_ratio": 1}, "from 1.5 to 100"),
                                           ({"outlier_ratio": -5}, "from 1.5 to 100"),
-                                          ({"outlier_ratio": 101}, "from 1.5 to 100")])
+                                          ({"outlier_ratio": 101}, "from 1.5 to 100"),
+                                          ({"asking_discount": 0.2}, "from 30% to 100%"),
+                                          ({"asking_discount": 1.1}, "from 30% to 100%"),
+                                          ({"smoothing_band": 0.6}, "from 0% to 50%"),
+                                          ({"list_markup": 0.9}, "from 100% to 200%"),
+                                          ({"review_below": 101}, "from 0 to 100")])
 def test_settings_reject_invalid_values_and_keep_the_saved_ones(restore_settings, bad, message):
-    saved = {"cluster_min_size": 4, "wide_spread_action": "highest_group", "price_window": 7, "outlier_ratio": None}
+    saved = {"cluster_min_size": 4, "wide_spread_action": "highest_group", "price_window": 7, "outlier_ratio": None,
+             **TARGET_DEFAULTS}
     with TestClient(app) as c:
         assert c.put("/api/settings", json=saved).status_code == 200
         r = c.put("/api/settings", json={**saved, **bad})

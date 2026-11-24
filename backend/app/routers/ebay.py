@@ -19,7 +19,7 @@ from ..services.pricing import apply_asking, asking_listings, build_quotes, card
 from ..services.similarity import score_urls
 from ..services.trace import Trace, save_trace
 from ..services.tracker import mark_window, revalue, track_listings
-from .common import get_card_or_404
+from .common import get_card_or_404, to_read
 
 router = APIRouter(prefix="/api/cards/{card_id}", tags=["ebay"])
 
@@ -397,7 +397,7 @@ async def create_listing(card_id: int, body: ListingCreate, session: Session = D
     card = get_card_or_404(session, card_id)
     if card.status == CardStatus.sold:
         raise HTTPException(409, "This card is marked sold")
-    price = body.price or card.est_value or card.manual_value
+    price = body.price or to_read(card, load_app_settings(session).list_markup).list_price  # the target x markup
     if not price:
         raise HTTPException(422, "Set a price, or look up the card's value first")
 

@@ -127,6 +127,15 @@ class Card(CardBase, table=True):
     sold_low: float | None = None
     sold_high: float | None = None
     sold_at: datetime | None = ts(default=None)
+    # The one price the app shows, totals and lists at, kept current by services/target.py: your value, else sold,
+    # else asking x the asking discount. A jump from a daily lookup waits in target_pending until the next lookup
+    # agrees. confidence (0-100) says how sure it is and confidence_reasons why points were taken off.
+    target_value: float | None = None
+    target_basis: str | None = None  # "manual" | "sold" | "asking"
+    target_pending: float | None = None
+    target_at: datetime | None = ts(default=None)
+    confidence: int | None = None
+    confidence_reasons: list[str] | None = Field(default=None, sa_column=Column(JSON, nullable=True))
     created_at: datetime = ts(default_factory=utcnow)
     updated_at: datetime = ts(default_factory=utcnow)
 
@@ -209,9 +218,14 @@ class CardRead(CardBase):
     sold_low: float | None = None
     sold_high: float | None = None
     sold_at: datetime | None = None
-    # The value to show: the sold value when the card has enough sales, otherwise the asking-based estimate
+    # The value to show (the target price): yours, else sold when the card has enough sales, else the asking-based
+    # estimate times the asking discount
     value: float | None = None
     value_basis: str | None = None  # "manual" | "sold" | "asking" | None (no price yet)
+    value_pending: float | None = None  # a jump from a daily lookup waiting for the next one to agree
+    confidence: int | None = None  # 0-100
+    confidence_reasons: list[str] | None = None
+    list_price: float | None = None  # what to list it at: the value x the list markup, ending in .99
     created_at: datetime
     updated_at: datetime
 
@@ -229,6 +243,12 @@ class AppSettings(SQLModel, table=True):
     # the n are picked; None = no limit. Replaces price_ceiling, a fixed dollar cap that capped every card's value
     # (that column stays in existing databases, unused).
     outlier_ratio: float | None = None
+    # Target price (services/target.py): a card valued from asking prices alone is valued at this share of them,
+    # since cards sell below their asking prices (1 = the asking price itself)
+    asking_discount: float = 1.0
+    smoothing_band: float = 0.10  # a daily lookup moving the target by more than this share waits for a second one
+    list_markup: float = 1.10  # list at the target times this, ending in .99, leaving room for Best Offer
+    review_below: int = 40  # cards with less confidence than this go to the review queue
 
 
 # ---------- Price snapshots ----------

@@ -204,7 +204,7 @@ async function load() {
     loadGone()
     form.value = fieldsOf(card.value)
     listTitle.value = defaultTitle(card.value)
-    listPrice.value = card.value.est_value
+    listPrice.value = card.value.list_price ?? card.value.est_value // the value x the Settings page's list markup
     gradeCounts.value = card.value.grade_counts ?? {}
     if (!selectedGrades.value.length) selectedGrades.value = [normalizeGrade(card.value.grade)]
     loadMatches()
@@ -814,7 +814,7 @@ onMounted(() => {
                       <v-text-field v-model="listTitle" label="Listing title" maxlength="80" counter="80" hide-details="auto" />
                     </v-col>
                     <v-col cols="12" sm="4">
-                      <v-text-field v-model.number="listPrice" label="Price" prefix="$" type="number" min="0.99" step="0.01" inputmode="decimal" />
+                      <v-text-field v-model.number="listPrice" label="Price" prefix="$" type="number" min="0.99" step="0.01" inputmode="decimal" :hint="card?.list_price ? `Suggested ${money(card.list_price)}: the value × your list markup` : undefined" persistent-hint />
                     </v-col>
                     <v-col cols="12" sm="8" class="d-flex align-center">
                       <v-btn color="primary" variant="flat" prepend-icon="mdi-upload-outline" :loading="busy === 'list'" :disabled="!listPrice || !listTitle" @click="list">

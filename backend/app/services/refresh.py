@@ -17,6 +17,7 @@ from .grading import grade_sort_key, normalize_grade
 from .identity import identity_of_card, who_of_card
 from .app_settings import load_app_settings
 from .pricing import apply_asking, asking_listings, card_image, quote_grades
+from .target import clear_fresh, mark_fresh
 from .trace import Trace, save_trace
 from .tracker import mark_window, revalue, track_listings
 
@@ -76,7 +77,10 @@ async def reprice_card(card_id: int, query: str, own: str, tracked: list[str], i
             if own_empty and not any(q.grade == own for q in quotes):
                 card.est_value, card.wide_spread, card.spread_rule, card.priced_at = None, False, None, utcnow()  # no matching listings: don't keep an old, wrong number
             session.add(card)
+            if trigger in ("daily", "bulk"):  # a scheduled or bulk lookup: a big jump waits for the next one to agree
+                mark_fresh(card_id)
             session.commit()
+            clear_fresh(card_id)
             ok = bool(quotes)
             try:
                 save_trace(session, trace, card_id)

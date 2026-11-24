@@ -13,7 +13,7 @@ const q = ref((route.query.q as string) || '')
 const category = ref<string | null>(null)
 const status = ref<string | null>(null)
 const locationId = ref<number | null>(route.query.location ? Number(route.query.location) : null)
-const sort = ref<'recent' | 'value' | 'name' | 'oldest_price'>('recent')
+const sort = ref<'recent' | 'value' | 'name' | 'oldest_price' | 'risk'>('recent')
 const grade = ref<string | null>(null)
 const minValue = ref<string>('')
 const maxValue = ref<string>('')
@@ -22,6 +22,7 @@ const FLAGS = [
   { key: 'unpriced', label: 'No price' },
   { key: 'stale_days', label: 'Price over 7 days old' },
   { key: 'low_confidence', label: 'Weak match' },
+  { key: 'unsure', label: 'Doubtful price' },
   { key: 'no_photo', label: 'No photo' },
   { key: 'no_cost', label: 'No cost' },
 ] as const
@@ -50,6 +51,7 @@ const sortItems = [
   { value: 'value', title: 'Highest value' },
   { value: 'name', title: 'Name A–Z' },
   { value: 'oldest_price', title: 'Oldest price first' },
+  { value: 'risk', title: 'Most at risk (value × doubt)' },
 ]
 
 // Clicking a column heading sorts the loaded cards (empty values last); the Sort menu sets the order they arrive in.
@@ -339,6 +341,7 @@ watch(view, (v) => { try { localStorage.setItem('cv-view', v) } catch {} })
           <span class="num font-weight-semibold text-no-wrap">{{ money(item.value) }}</span>
           <v-chip v-if="item.value_basis" size="x-small" :color="item.value_basis === 'sold' ? 'success' : item.value_basis === 'manual' ? 'primary' : undefined" variant="tonal" class="ml-1" :title="item.value_basis === 'manual' ? 'A value you set yourself' : item.value_basis === 'sold' ? `Median of ${item.sold_count} recent sales` : 'Too few sales, so this is the asking-price estimate'">{{ item.value_basis === 'manual' ? 'manual' : item.value_basis === 'sold' ? `sold ${item.sold_count}` : 'asking' }}</v-chip>
           <v-chip v-if="item.wide_spread" size="x-small" color="warning" variant="tonal" prepend-icon="mdi-chart-bell-curve" class="ml-1" title="Prices vary widely; pick a version">wide spread</v-chip>
+          <ConfidenceDot :confidence="item.confidence" :reasons="item.confidence_reasons" :pending="item.value_pending" />
           <v-btn v-if="debug.on" icon="mdi-bug-outline" size="x-small" variant="text" color="warning" :to="`/cards/${item.id}?debug=1`" aria-label="How this price was calculated" title="How this price was calculated" @click.stop />
         </template>
       </v-data-table>
@@ -351,7 +354,7 @@ watch(view, (v) => { try { localStorage.setItem('cv-view', v) } catch {} })
           <div class="pa-3">
             <div class="tile-row d-flex justify-space-between align-baseline ga-2">
               <strong class="truncate">{{ c.name }}</strong>
-              <span class="num font-weight-semibold text-no-wrap">{{ money(c.value) }}</span>
+              <span class="num font-weight-semibold text-no-wrap">{{ money(c.value) }}<ConfidenceDot :confidence="c.confidence" :reasons="c.confidence_reasons" :pending="c.value_pending" /></span>
             </div>
             <div v-if="c.value_basis || c.wide_spread" class="text-caption text-muted-c num"><template v-if="c.value_basis">{{ c.value_basis === 'manual' ? 'your value' : c.value_basis === 'sold' ? `sold, ${c.sold_count} sales` : 'asking price' }}<template v-if="c.value_basis === 'sold' && c.est_value != null"> · asking {{ money(c.est_value) }}</template></template><v-chip v-if="c.wide_spread" size="x-small" color="warning" variant="tonal" prepend-icon="mdi-chart-bell-curve" :class="{ 'ml-1': c.value_basis }" title="Prices vary widely; pick a version">wide spread</v-chip></div>
             <div v-if="debug.on" class="text-caption text-muted-c truncate">#{{ c.id }} · {{ c.priced_at ? isoDate(c.priced_at).slice(0, 10) : 'never priced' }} · {{ c.id_confidence != null ? Math.round(c.id_confidence * 100) + '% match' : 'no match data' }}</div>

@@ -40,9 +40,13 @@ export interface Card extends CardFields {
   sold_low?: number | null
   sold_high?: number | null
   sold_at?: string | null
-  value?: number | null // the value to show: sold when enough sales, else the asking estimate
+  value?: number | null // the target price: yours, else sold when enough sales, else asking x the asking discount
   manual_value?: number | null // set by hand; overrides sold and asking
   value_basis?: 'manual' | 'sold' | 'asking' | null
+  value_pending?: number | null // a jump from a daily lookup waiting for the next lookup to agree
+  confidence?: number | null // 0-100: how sure the value is
+  confidence_reasons?: string[] | null // why points were taken off, worst first
+  list_price?: number | null // what to list it at: the value x the list markup, ending in .99
   created_at: string
   updated_at: string
 }
@@ -155,6 +159,10 @@ export interface AppSettings {
   wide_spread_action: WideSpreadAction
   price_window: number // how many listings Highest, Median and Lowest take the average of
   outlier_ratio: number | null // a listing above this many times the card's own median is left out; null = no limit
+  asking_discount: number // a card valued from asking prices alone is valued at this share of them (0.3-1)
+  smoothing_band: number // a daily lookup moving the value by more than this share waits for a second (0-0.5)
+  list_markup: number // list at the value times this (1-2)
+  review_below: number // cards with less price confidence than this (0-100) go to the review queue
 }
 
 export interface PriceCluster {

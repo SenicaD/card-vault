@@ -17,9 +17,10 @@ _SUFFIX = {"jr", "sr", "ii", "iii", "iv", "v"}
 # "King Miller USC"). They are dropped from the end of a name before its last word is taken as the surname, so
 # "Samurai" doesn't let every Samurai Japan player through. A real surname here (Washington) only makes the filter
 # use the word before it; a name left with nothing ("Tampa Bay Buccaneers") filters by year and number alone.
+# Words that are also common surnames (Green, Young, Brown) are deliberately left out.
 _NOT_A_SURNAME = set("""
 samurai japan sensational generational greats cosmic chrome star stars clusters stellar portraits ud rookies rookie
-rated prospect prospects elite young guns sizzle reel speckle obsidian orbital turbocharged best topps bowman panini
+rated prospect prospects elite guns sizzle reel speckle obsidian orbital turbocharged best topps bowman panini
 prizm donruss optic select mosaic upper deck refractor auto autograph autographs chromographs rc sp ssp insert
 parallel card baseball football basketball hockey soccer wbc team collection variation short print
 cardinals falcons ravens bills panthers bears bengals browns cowboys broncos lions packers texans colts jaguars chiefs
@@ -30,7 +31,7 @@ hawks celtics nets hornets bulls cavaliers cavs mavericks mavs nuggets pistons w
 grizzlies heat bucks timberwolves pelicans knicks thunder sixers suns blazers trail kings spurs raptors jazz wizards
 ducks bruins sabres flames hurricanes blackhawks avalanche jackets wings oilers wild canadiens predators devils
 islanders senators flyers penguins sharks kraken blues lightning leafs maple canucks knights capitals
-arizona atlanta baltimore buffalo carolina chicago cincinnati cleveland dallas denver detroit green bay houston
+arizona atlanta baltimore buffalo carolina chicago cincinnati cleveland dallas denver detroit bay houston
 indianapolis jacksonville kansas city las vegas los angeles miami minnesota new england orleans york philadelphia
 pittsburgh san francisco diego jose seattle tampa tennessee washington boston brooklyn charlotte golden state memphis
 milwaukee oklahoma orlando phoenix portland sacramento antonio toronto utah anaheim calgary columbus edmonton florida
