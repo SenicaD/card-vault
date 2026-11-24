@@ -203,31 +203,42 @@ async def refresh_sold(session: Session, card: Card, kind: str = "manual") -> di
 
 
 def _due_cards(session: Session) -> list[int]:
+    """Cards whose sold prices are due a check, the most dollars at risk first: the value times how unsure it is
+    (100 - confidence), so a doubtful $400 card is checked before a sure one or a doubtful $2 one."""
     s = get_settings()
     cutoff = utcnow() - timedelta(days=s.sold_refresh_days)
     checked = dict(session.exec(select(SoldCall.card_id, func.max(SoldCall.at)).where(SoldCall.ok == True).group_by(SoldCall.card_id)).all())  # noqa: E712
-    cards = session.exec(select(Card).where(col(Card.status) != CardStatus.sold,
-                                            func.coalesce(Card.sold_value, Card.est_value, 0) >= s.sold_min_value)
-                         .order_by(func.coalesce(Card.sold_value, Card.est_value).desc().nulls_last())).all()  # most valuable first
+    value = func.coalesce(Card.target_value, Card.sold_value, Card.est_value, 0)
+    risk = value * (100 - func.coalesce(Card.confidence, 0))
+    cards = session.exec(select(Card).where(col(Card.status) != CardStatus.sold, value >= s.sold_min_value)
+                         .order_by(risk.desc(), value.desc())).all()
     return [c.id for c in cards if checked.get(c.id) is None or checked[c.id] < cutoff]
 
 
-async def sold_once(pause: float | None = None) -> tuple[int, int]:
-    """Check every card that is due, most valuable first, until the automatic budget runs out."""
+def auto_enabled(session: Session) -> bool:
+    """Automatic sold checks: the Settings page's switch, else the SOLD_AUTO_REFRESH setting in .env."""
+    from .app_settings import load_app_settings
+    choice = load_app_settings(session).sold_auto
+    return get_settings().sold_auto_refresh if choice is None else choice
+
+
+async def sold_once(pause: float | None = None, limit: int | None = None, kind: str = "auto") -> tuple[int, int]:
+    """Check the cards that are due, the most dollars at risk first, until the budget runs out (or limit cards are
+    done). kind "auto" spends the automatic share of the budget; "manual" (a button you pressed) the whole budget."""
     pause = PAUSE_BETWEEN_CARDS if pause is None else pause
     done = failed = 0
     with Session(engine) as session:
-        due = _due_cards(session)
+        due = _due_cards(session)[:limit] if limit else _due_cards(session)
     for card_id in due:
         with Session(engine) as session:
-            if budget_left(session, "auto") <= 0:
-                log.info("sold prices: the automatic budget for this month is used up")
+            if budget_left(session, kind) <= 0:
+                log.info("sold prices: the %s budget for this month is used up", kind)
                 break
             card = session.get(Card, card_id)
             if card is None:
                 continue
             try:
-                await refresh_sold(session, card, "auto")
+                await refresh_sold(session, card, kind)
                 done += 1
             except SoldUnavailable:
                 break
@@ -242,9 +253,13 @@ async def sold_once(pause: float | None = None) -> tuple[int, int]:
 
 
 async def sold_loop() -> None:
+    """Runs whenever a sold-price provider is set up; each round checks the Settings page's switch first."""
     while True:
         try:
-            await sold_once()
+            with Session(engine) as session:
+                on = auto_enabled(session)
+            if on:
+                await sold_once()
         except Exception:
             log.exception("sold price round failed")
         await asyncio.sleep(CHECK_EVERY_SECONDS)

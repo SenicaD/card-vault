@@ -109,7 +109,7 @@ def test_the_api_shows_the_target_list_price_and_confidence():
 def test_review_queue_takes_doubtful_prices_riskiest_first():
     defaults = c_defaults = {"cluster_min_size": 2, "wide_spread_action": "flag", "price_window": 10,
                              "outlier_ratio": None, "asking_discount": 1.0, "smoothing_band": 0.1, "list_markup": 1.1,
-                             "review_below": 40}
+                             "review_below": 40, "sold_auto": False}
     with TestClient(app) as c:
         try:
             def unsure(name, median):  # identified with only 55% confidence

@@ -29,17 +29,22 @@ class SettingsBody(BaseModel):
     smoothing_band: float | None = None  # a daily lookup moving the target by more than this share waits for a second
     list_markup: float | None = None  # list at the target times this
     review_below: int | None = None  # cards with less confidence than this (0-100) go to the review queue
+    sold_auto: bool | None = None  # check sold prices automatically, riskiest first; read back as what is in effect
+    sold_available: bool = False  # read only: whether a sold-price provider is set up at all
 
 
-def _body(s) -> SettingsBody:
+def _body(s, session: Session) -> SettingsBody:
+    from ..services.sold import get_sold
+    from ..services.sold_refresh import auto_enabled
     return SettingsBody(cluster_min_size=s.cluster_min_size, wide_spread_action=s.wide_spread_action,
                         price_window=s.price_window, outlier_ratio=s.outlier_ratio,
-                        **{f: getattr(s, f) for f in TARGET_FIELDS})
+                        **{f: getattr(s, f) for f in TARGET_FIELDS},
+                        sold_auto=auto_enabled(session), sold_available=get_sold() is not None)
 
 
 @router.get("", response_model=SettingsBody)
 def get_app_settings(session: Session = Depends(get_session)):
-    return _body(load_app_settings(session))
+    return _body(load_app_settings(session), session)
 
 
 def _check(ok: bool, message: str) -> None:
@@ -69,7 +74,7 @@ def save_app_settings(body: SettingsBody, session: Session = Depends(get_session
     _check(body.review_below is None or 0 <= body.review_below <= 100, "Review below must be from 0 to 100")
     s = load_app_settings(session)
     before = {f: getattr(s, f) for f in TARGET_FIELDS}
-    s.sqlmodel_update(body.model_dump(exclude_none=True) | {"outlier_ratio": body.outlier_ratio})
+    s.sqlmodel_update(body.model_dump(exclude_none=True, exclude={"sold_available"}) | {"outlier_ratio": body.outlier_ratio})
     session.add(s)
     session.commit()
     session.refresh(s)
@@ -78,4 +83,4 @@ def save_app_settings(body: SettingsBody, session: Session = Depends(get_session
             update_target(card, session, s)
             session.add(card)
         session.commit()
-    return _body(s)
+    return _body(s, session)

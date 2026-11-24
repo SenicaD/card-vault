@@ -163,6 +163,8 @@ export interface AppSettings {
   smoothing_band: number // a daily lookup moving the value by more than this share waits for a second (0-0.5)
   list_markup: number // list at the value times this (1-2)
   review_below: number // cards with less price confidence than this (0-100) go to the review queue
+  sold_auto: boolean // check sold prices automatically, the most dollars at risk first
+  sold_available?: boolean // read only: a sold-price provider is set up
 }
 
 export interface PriceCluster {

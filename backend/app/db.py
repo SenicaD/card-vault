@@ -39,7 +39,7 @@ def _add_missing_columns() -> None:
         "soldsale": {"condition": "VARCHAR", "shipping": "FLOAT", "junk": "BOOLEAN DEFAULT 0"},
         "appsettings": {"price_window": "INTEGER DEFAULT 10", "price_ceiling": "FLOAT", "outlier_ratio": "FLOAT",
                         "asking_discount": "FLOAT DEFAULT 1.0", "smoothing_band": "FLOAT DEFAULT 0.1",
-                        "list_markup": "FLOAT DEFAULT 1.1", "review_below": "INTEGER DEFAULT 40"},
+                        "list_markup": "FLOAT DEFAULT 1.1", "review_below": "INTEGER DEFAULT 40", "sold_auto": "BOOLEAN"},
     }
     with engine.begin() as conn:
         for table, cols in additions.items():

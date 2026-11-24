@@ -219,6 +219,20 @@ def bulk_revalue(session: Session = Depends(get_session)):
     return {"changed": changed, "unchanged": same, "skipped": skipped}
 
 
+@router.post("/bulk/sold")
+async def bulk_sold(limit: int = Query(10, ge=1, le=50)):
+    """Check sold prices now for up to `limit` due cards, the most dollars at risk first. Spends the monthly
+    lookup budget (one lookup per card, sometimes more), so you choose how many."""
+    from ..services.sold import get_sold
+    from ..services.sold_refresh import budget_left, sold_once
+    if get_sold() is None:
+        raise HTTPException(422, "Sold prices aren't set up. Add a SoldComps key to turn them on.")
+    done, failed = await sold_once(pause=0.5, limit=limit, kind="manual")
+    with Session(engine) as session:
+        left = budget_left(session, "manual")
+    return {"checked": done, "failed": failed, "budget_left": left}
+
+
 @router.get("/bulk/reprice")
 def bulk_reprice_status():
     job = refresh_service.current_job()

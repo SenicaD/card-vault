@@ -1430,6 +1430,38 @@ def test_automatic_sold_checks_respect_the_auto_budget(monkeypatch):
         assert again == 0  # every card was just checked, so none is due until the refresh interval passes
 
 
+def test_sold_checks_go_to_the_most_dollars_at_risk_first():
+    from sqlmodel import Session
+
+    from app.db import engine
+    from app.models import Card, CardCategory
+    from app.services import sold_refresh
+    with TestClient(app):
+        with Session(engine) as session:
+            cards = {k: Card(name=f"Zed Risk {k}", category=CardCategory.sports, est_value=v, id_confidence=conf)
+                     for k, v, conf in (("sure_dear", 400, 0.95), ("unsure_dear", 400, 0.2), ("unsure_cheap", 2, 0.2))}
+            for c in cards.values():
+                session.add(c)
+            session.commit()
+            ids = {k: c.id for k, c in cards.items()}
+            due = [i for i in sold_refresh._due_cards(session) if i in ids.values()]
+        assert due == [ids["unsure_dear"], ids["sure_dear"], ids["unsure_cheap"]]
+
+
+def test_the_settings_switch_turns_automatic_sold_checks_on_and_off(restore_settings):
+    from sqlmodel import Session
+
+    from app.db import engine
+    from app.services.sold_refresh import auto_enabled
+    with TestClient(app) as c:
+        assert c.get("/api/settings").json()["sold_auto"] is False  # .env default: off
+        assert c.put("/api/settings", json={**DEFAULT_SETTINGS, "sold_auto": True}).json()["sold_auto"] is True
+        with Session(engine) as session:
+            assert auto_enabled(session) is True
+        r = c.post("/api/cards/bulk/sold", params={"limit": 1})  # the mock provider: one card checked by hand
+        assert r.status_code == 200 and r.json()["checked"] + r.json()["failed"] <= 1 and "budget_left" in r.json()
+
+
 class _FakeSold:
     """A sold-prices provider that serves canned pages, to test what gets stored and when paging stops."""
     name = "fake"
@@ -2665,7 +2697,8 @@ def test_price_clusters_endpoint_unknown_card_and_no_listings():
         assert r.status_code == 200 and r.json() == []
 
 
-TARGET_DEFAULTS = {"asking_discount": 1.0, "smoothing_band": 0.1, "list_markup": 1.1, "review_below": 40}
+TARGET_DEFAULTS = {"asking_discount": 1.0, "smoothing_band": 0.1, "list_markup": 1.1, "review_below": 40,
+                   "sold_auto": False, "sold_available": True}  # the tests' mock provider counts as set up
 DEFAULT_SETTINGS = {"cluster_min_size": 2, "wide_spread_action": "flag", "price_window": 10, "outlier_ratio": None,
                     **TARGET_DEFAULTS}
 HIGHEST_GROUP = {"cluster_min_size": 2, "wide_spread_action": "highest_group", "price_window": 3, "outlier_ratio": None}
@@ -2694,7 +2727,8 @@ def test_settings_are_the_defaults_when_nothing_is_saved():
 
 def test_settings_are_saved_and_kept_after_a_restart(restore_settings):
     saved = {"cluster_min_size": 5, "wide_spread_action": "highest_group", "price_window": 3, "outlier_ratio": 4.5,
-             "asking_discount": 0.85, "smoothing_band": 0.15, "list_markup": 1.2, "review_below": 55}
+             "asking_discount": 0.85, "smoothing_band": 0.15, "list_markup": 1.2, "review_below": 55,
+             "sold_auto": True, "sold_available": True}
     with TestClient(app) as c:
         r = c.put("/api/settings", json=saved)
         assert r.status_code == 200 and r.json() == saved

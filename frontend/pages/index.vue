@@ -154,6 +154,15 @@ async function revalueAll() {
     await load()
   } catch (e: any) { error.value = e.message } finally { revaluing.value = false }
 }
+// Spend a few sold-price lookups now, on the cards with the most dollars at risk
+async function checkSold(limit: number) {
+  revaluing.value = true; revalued.value = ''
+  try {
+    const r = await api<{ checked: number; failed: number; budget_left: number }>('/api/cards/bulk/sold', { method: 'POST', query: { limit } })
+    revalued.value = `Checked sold prices for ${r.checked} card${r.checked === 1 ? '' : 's'}${r.failed ? ` (${r.failed} failed)` : ''}. ${r.budget_left} lookups left this month.`
+    await load()
+  } catch (e: any) { error.value = e.message } finally { revaluing.value = false }
+}
 
 let t: ReturnType<typeof setTimeout>
 watch(q, () => { clearTimeout(t); t = setTimeout(load, 250) })
@@ -185,6 +194,7 @@ watch(view, (v) => { try { localStorage.setItem('cv-view', v) } catch {} })
           <v-list density="comfortable">
             <v-list-item prepend-icon="mdi-calculator-variant-outline" title="Re-value all, instantly" subtitle="From saved listings. Use after changing price settings." @click="revalueAll" />
             <v-list-item prepend-icon="mdi-cash-sync" title="Re-price all from eBay" subtitle="Fresh searches. Slow with many cards." @click="repriceAll" />
+            <v-list-item prepend-icon="mdi-cash-check" title="Check sold prices: riskiest 10" subtitle="Spends up to 10 monthly lookups where a wrong price costs most." @click="checkSold(10)" />
           </v-list>
         </v-menu>
         <v-btn variant="outlined" prepend-icon="mdi-clipboard-check-outline" to="/review" class="d-none d-sm-flex">Review queue</v-btn>

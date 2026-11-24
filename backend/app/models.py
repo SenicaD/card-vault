@@ -249,6 +249,9 @@ class AppSettings(SQLModel, table=True):
     smoothing_band: float = 0.10  # a daily lookup moving the target by more than this share waits for a second one
     list_markup: float = 1.10  # list at the target times this, ending in .99, leaving room for Best Offer
     review_below: int = 40  # cards with less confidence than this go to the review queue
+    # Check sold prices automatically, the most dollars at risk first, within the monthly budget's automatic share;
+    # None follows SOLD_AUTO_REFRESH in .env
+    sold_auto: bool | None = None
 
 
 # ---------- Price snapshots ----------

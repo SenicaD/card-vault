@@ -39,6 +39,8 @@ const discount = ref('')
 const smoothing = ref('')
 const markup = ref('')
 const reviewBelow = ref('')
+const soldAuto = ref(false)
+const soldAvailable = ref(false)
 const pctError = (r: Ref<string>, lo: number, hi: number) => computed(() => {
   const v = r.value.trim().replace(/%$/, '')
   return /^\d+$/.test(v) && Number(v) >= lo && Number(v) <= hi ? '' : `Enter a whole number from ${lo} to ${hi}`
@@ -60,6 +62,8 @@ function fill(s: AppSettings) {
   smoothing.value = String(Math.round(s.smoothing_band * 100))
   markup.value = String(Math.round(s.list_markup * 100))
   reviewBelow.value = String(s.review_below)
+  soldAuto.value = s.sold_auto
+  soldAvailable.value = !!s.sold_available
 }
 // The N the rule hints show: what's in the field, or the saved value while the field is invalid
 const shownWindow = computed(() => (windowError.value ? savedWindow.value : Number(windowSize.value.trim())))
@@ -85,6 +89,7 @@ async function save() {
       body: {
         cluster_min_size: Number(size.value.trim()), wide_spread_action: action.value, price_window: Number(windowSize.value.trim()), outlier_ratio: ceilingValue(),
         asking_discount: num(discount) / 100, smoothing_band: num(smoothing) / 100, list_markup: num(markup) / 100, review_below: num(reviewBelow),
+        sold_auto: soldAuto.value,
       },
     }))
     notice.value = 'Settings saved'
@@ -173,6 +178,10 @@ onMounted(load)
               <v-col cols="12" sm="6"><v-text-field v-model="smoothing" label="Hold price jumps over" suffix="%" inputmode="numeric" :disabled="loading" :error-messages="loading ? [] : smoothingError" hint="A daily lookup that moves a value by more than this waits for the next lookup to agree. 0 = no smoothing." persistent-hint /></v-col>
               <v-col cols="12" sm="6"><v-text-field v-model="markup" label="List on eBay at" suffix="% of the value" inputmode="numeric" :disabled="loading" :error-messages="loading ? [] : markupError" hint="Rounded to end in .99, leaving room for Best Offer. 110 lists a $50 card at $54.99." persistent-hint /></v-col>
               <v-col cols="12" sm="6"><v-text-field v-model="reviewBelow" label="Review cards below" suffix="confidence (0–100)" inputmode="numeric" :disabled="loading" :error-messages="loading ? [] : reviewError" hint="Cards whose price confidence is lower go to the review queue, the most dollars at risk first." persistent-hint /></v-col>
+              <v-col cols="12">
+                <v-switch v-model="soldAuto" color="primary" inset :disabled="loading || !soldAvailable" label="Check sold prices automatically"
+                  :hint="soldAvailable ? 'Spends the automatic share of your monthly sold-price lookups, on the cards with the most dollars at risk first. Each card is re-checked at most weekly.' : 'Sold prices aren\'t set up: add a SoldComps key to the server to turn this on.'" persistent-hint />
+              </v-col>
             </v-row>
             <div>
               <v-btn type="submit" color="primary" variant="flat" prepend-icon="mdi-content-save-outline" :loading="saving" :disabled="loading || anyError">
