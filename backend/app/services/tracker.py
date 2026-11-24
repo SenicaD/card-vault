@@ -100,7 +100,7 @@ def window_ids(session: Session, card: Card, app_settings=None) -> set[str]:
     listings = asking_listings(rows, card.parallel, {r.item_id for r in rows if r.excluded}, identity_of_card(card))
     st = app_settings or load_app_settings(session)
     return {r.item_id for r in window_of(listings, card.spread_rule, st.price_window, price=lambda r: r.price,
-                                         ceiling=st.price_ceiling)}
+                                         ratio=st.outlier_ratio)}
 
 
 def mark_window(session: Session, card: Card, app_settings=None) -> None:

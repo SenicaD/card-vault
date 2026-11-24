@@ -28,11 +28,11 @@ const windowError = computed(() => {
   return n < 1 || n > 50 ? 'Must be from 1 to 50' : ''
 })
 const ceilingError = computed(() => {
-  const v = ceiling.value.trim().replace(/^\$/, '')
+  const v = ceiling.value.trim().replace(/[x×]$/i, '')
   if (!v) return ''
-  return /^\d+(\.\d{1,2})?$/.test(v) && Number(v) > 0 ? '' : 'Enter a price above $0, or leave empty for no limit'
+  return /^\d+(\.\d{1,2})?$/.test(v) && Number(v) >= 1.5 && Number(v) <= 100 ? '' : 'Enter a number from 1.5 to 100, or leave empty for no limit'
 })
-const ceilingValue = () => { const v = ceiling.value.trim().replace(/^\$/, ''); return v ? Number(v) : null }
+const ceilingValue = () => { const v = ceiling.value.trim().replace(/[x×]$/i, ''); return v ? Number(v) : null }
 // The N the rule hints show: what's in the field, or the saved value while the field is invalid
 const shownWindow = computed(() => (windowError.value ? savedWindow.value : Number(windowSize.value.trim())))
 
@@ -44,7 +44,7 @@ async function load() {
     action.value = s.wide_spread_action
     windowSize.value = String(s.price_window)
     savedWindow.value = s.price_window
-    ceiling.value = s.price_ceiling == null ? '' : String(s.price_ceiling)
+    ceiling.value = s.outlier_ratio == null ? '' : String(s.outlier_ratio)
   } catch (e: any) {
     error.value = `Couldn't load the settings: ${e.message}`
   } finally {
@@ -59,13 +59,13 @@ async function save() {
   try {
     const s = await api<AppSettings>('/api/settings', {
       method: 'PUT',
-      body: { cluster_min_size: Number(size.value.trim()), wide_spread_action: action.value, price_window: Number(windowSize.value.trim()), price_ceiling: ceilingValue() },
+      body: { cluster_min_size: Number(size.value.trim()), wide_spread_action: action.value, price_window: Number(windowSize.value.trim()), outlier_ratio: ceilingValue() },
     })
     size.value = String(s.cluster_min_size)
     action.value = s.wide_spread_action
     windowSize.value = String(s.price_window)
     savedWindow.value = s.price_window
-    ceiling.value = s.price_ceiling == null ? '' : String(s.price_ceiling)
+    ceiling.value = s.outlier_ratio == null ? '' : String(s.outlier_ratio)
     notice.value = 'Settings saved'
   } catch (e: any) {
     error.value = `Couldn't save the settings: ${e.message}`
@@ -130,11 +130,11 @@ onMounted(load)
             <v-text-field
               v-model="ceiling"
               label="Ignore listings priced above"
-              prefix="$"
+              suffix="× the card's median"
               inputmode="decimal"
               :disabled="loading"
               :error-messages="loading ? [] : ceilingError"
-              hint="An outlier price: a listing above this is left out of every card's value, even if it would be one of the listings above. Leave empty for no limit."
+              hint="Relative to each card: with 5, a $20 card ignores listings over $100 and a $400 card ignores listings over $2,000. Leave empty for no limit."
               persistent-hint
               style="max-width: 360px"
             />

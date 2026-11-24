@@ -154,7 +154,7 @@ export interface AppSettings {
   cluster_min_size: number
   wide_spread_action: WideSpreadAction
   price_window: number // how many listings Highest, Median and Lowest take the average of
-  price_ceiling: number | null // a listing priced above this is left out of the calculation; null = no limit
+  outlier_ratio: number | null // a listing above this many times the card's own median is left out; null = no limit
 }
 
 export interface PriceCluster {

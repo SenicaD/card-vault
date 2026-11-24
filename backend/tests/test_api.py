@@ -2552,8 +2552,8 @@ def test_price_clusters_endpoint_unknown_card_and_no_listings():
         assert r.status_code == 200 and r.json() == []
 
 
-DEFAULT_SETTINGS = {"cluster_min_size": 2, "wide_spread_action": "flag", "price_window": 10, "price_ceiling": None}
-HIGHEST_GROUP = {"cluster_min_size": 2, "wide_spread_action": "highest_group", "price_window": 3, "price_ceiling": None}
+DEFAULT_SETTINGS = {"cluster_min_size": 2, "wide_spread_action": "flag", "price_window": 10, "outlier_ratio": None}
+HIGHEST_GROUP = {"cluster_min_size": 2, "wide_spread_action": "highest_group", "price_window": 3, "outlier_ratio": None}
 
 
 @pytest.fixture
@@ -2578,7 +2578,7 @@ def test_settings_are_the_defaults_when_nothing_is_saved():
 
 
 def test_settings_are_saved_and_kept_after_a_restart(restore_settings):
-    saved = {"cluster_min_size": 5, "wide_spread_action": "highest_group", "price_window": 3, "price_ceiling": 100.5}
+    saved = {"cluster_min_size": 5, "wide_spread_action": "highest_group", "price_window": 3, "outlier_ratio": 4.5}
     with TestClient(app) as c:
         r = c.put("/api/settings", json=saved)
         assert r.status_code == 200 and r.json() == saved
@@ -2594,10 +2594,12 @@ def test_settings_are_saved_and_kept_after_a_restart(restore_settings):
                                           ({"price_window": 0}, "from 1 to 50"),
                                           ({"price_window": 51}, "from 1 to 50"),
                                           ({"price_window": 2.5}, None),
-                                          ({"price_ceiling": 0}, "above $0"),
-                                          ({"price_ceiling": -5}, "above $0")])
+                                          ({"outlier_ratio": 0}, "from 1.5 to 100"),
+                                          ({"outlier_ratio": 1}, "from 1.5 to 100"),
+                                          ({"outlier_ratio": -5}, "from 1.5 to 100"),
+                                          ({"outlier_ratio": 101}, "from 1.5 to 100")])
 def test_settings_reject_invalid_values_and_keep_the_saved_ones(restore_settings, bad, message):
-    saved = {"cluster_min_size": 4, "wide_spread_action": "highest_group", "price_window": 7, "price_ceiling": None}
+    saved = {"cluster_min_size": 4, "wide_spread_action": "highest_group", "price_window": 7, "outlier_ratio": None}
     with TestClient(app) as c:
         assert c.put("/api/settings", json=saved).status_code == 200
         r = c.put("/api/settings", json={**saved, **bad})
@@ -2733,18 +2735,30 @@ def test_the_window_rules_ignore_the_minimum_group_size(restore_settings):
         assert got["wide_spread"] is False and got["est_value"] == 700 and got["spread_rule"] == "highest_group"
 
 
-def test_the_price_ceiling_leaves_listings_out_even_when_they_are_in_the_window(restore_settings):
+def test_the_outlier_ratio_leaves_listings_out_even_when_they_are_in_the_window(restore_settings):
     with TestClient(app) as c:
         assert c.put("/api/settings", json=HIGHEST_GROUP).status_code == 200
-        card = _spread_card(c, "Ceiling")  # 3, 3.2, 3.5, 3.8, 400, 500, 700, 900
+        card = _spread_card(c, "Ceiling")  # 3, 3.2, 3.5, 3.8, 400, 500, 700, 900: median 201.9
         assert _reprice_from_saved(c, card)["est_value"] == 700  # mean of 500, 700, 900
-        assert c.put("/api/settings", json={**HIGHEST_GROUP, "price_ceiling": 600}).status_code == 200
+        assert c.put("/api/settings", json={**HIGHEST_GROUP, "outlier_ratio": 3}).status_code == 200
         out = c.post(f"/api/cards/{card['id']}/matches/exclude", json={"item_ids": [f"{card['id']}-l0"], "excluded": False})
         assert out.status_code == 200
         got = c.get(f"/api/cards/{card['id']}").json()
-        assert got["est_value"] == 301.27  # the 700 and 900 are over the ceiling, so the 3 highest left are 3.8, 400, 500
+        assert got["est_value"] == 301.27  # 3 × 201.9 = 605.7, so the 700 and 900 are out and the 3 highest are 3.8, 400, 500
         marked = sorted(r["price"] for r in c.get(f"/api/cards/{card['id']}/matches").json() if r["in_window"])
-        assert marked == [3.8, 400, 500] and max(marked) <= 600
+        assert marked == [3.8, 400, 500]
+
+
+def test_the_outlier_ratio_scales_with_the_card_so_it_never_caps_an_expensive_card():
+    from app.services.pricing import relative_ceiling, window_value
+    dear = [350, 380, 400, 420, 450, 500, 16_500]  # a $400 card with one absurd listing
+    assert relative_ceiling(dear, 5) == 2100  # 5 × the 420 median
+    assert window_value(dear, "highest_group", 3, ratio=5) == 456.67  # the 16,500 is out; 420, 450, 500 stay in
+    cheap = [1, 2, 2, 3, 3, 4, 250]  # a $3 card with one dear listing
+    assert relative_ceiling(cheap, 5) == 15
+    assert window_value(cheap, "highest_group", 3, ratio=5) == 3.33  # 3, 3, 4
+    assert relative_ceiling(dear, None) is None and relative_ceiling([], 5) is None
+    assert relative_ceiling([0, 0, 10], 2) == 20  # $0 prices don't pull the median down
 
 
 def test_excluding_a_listing_moves_the_window(restore_settings):

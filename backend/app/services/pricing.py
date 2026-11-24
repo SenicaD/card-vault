@@ -32,7 +32,7 @@ def apply_asking(card, median: float | None, spread: float | None, prices: list[
     card.spread_rule = None
     rule = (card.wide_spread_action or app_settings.wide_spread_action) if app_settings is not None else "flag"
     if median is not None and rule in ("highest_group", "median", "lowest_group") and prices:
-        value = window_value(prices, rule, app_settings.price_window, app_settings.price_ceiling)
+        value = window_value(prices, rule, app_settings.price_window, app_settings.outlier_ratio)
         if value is not None:
             card.wide_spread, card.est_value, card.spread_rule = False, value, rule
             return
@@ -42,13 +42,14 @@ def apply_asking(card, median: float | None, spread: float | None, prices: list[
         card.wide_spread, card.est_value = False, median
 
 
-def window_of(items: list, rule: str, n: int, price=lambda i: i, ceiling: float | None = None) -> list:
+def window_of(items: list, rule: str, n: int, price=lambda i: i, ratio: float | None = None) -> list:
     """The items whose prices form the window: outliers are left out, then the n most expensive ("highest_group"),
     the n cheapest ("lowest_group") or the n in the middle of the price order ("median"; it leans one price toward
     the cheaper side when it can't be centred exactly). With n or fewer left, all of them.
-    A price above the ceiling (when set) is left out first, so the n are picked from what is under it."""
-    if ceiling is not None:
-        items = [i for i in items if price(i) <= ceiling]
+    With a ratio, a price more than ratio times the median of the card's own listings is left out first (see
+    relative_ceiling), so a $16,500 listing can't set a $400 card's value while a $400 card's real listings stay in."""
+    if (cap := relative_ceiling([price(i) for i in items], ratio)) is not None:
+        items = [i for i in items if price(i) <= cap]
     fences = outlier_fences([price(i) for i in items])
     p = sorted((i for i in items if fences is None or fences[2] <= price(i) <= fences[3]), key=price)
     if len(p) > n:
@@ -57,9 +58,15 @@ def window_of(items: list, rule: str, n: int, price=lambda i: i, ceiling: float 
     return p
 
 
-def window_value(prices: list[float], rule: str, n: int, ceiling: float | None = None) -> float | None:
+def relative_ceiling(prices: list[float], ratio: float | None) -> float | None:
+    """The highest price kept: ratio times the median of the prices above $0. None (no limit) without a ratio or prices."""
+    p = [x for x in prices if x > 0]
+    return round(ratio * statistics.median(p), 2) if ratio and p else None
+
+
+def window_value(prices: list[float], rule: str, n: int, ratio: float | None = None) -> float | None:
     """The mean (average) of the window (see window_of) of the prices; None with no prices left."""
-    p = window_of(prices, rule, n, ceiling=ceiling)
+    p = window_of(prices, rule, n, ratio=ratio)
     return round(statistics.mean(p), 2) if p else None
 
 

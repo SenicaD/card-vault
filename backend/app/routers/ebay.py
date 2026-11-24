@@ -143,7 +143,7 @@ def matches(card_id: int, grades: list[str] | None = Query(None), session: Sessi
         listings = asking_listings(own, card.parallel, {r.item_id for r in own if r.excluded}, identity_of_card(card))
         st = load_app_settings(session)
         in_window = {r.item_id for r in window_of(listings, card.spread_rule, st.price_window, price=lambda r: r.price,
-                                                  ceiling=st.price_ceiling)}
+                                                  ratio=st.outlier_ratio)}
     return [MatchRow(item_id=r.item_id, title=r.title, price=r.price, currency=r.currency, grade=r.grade,
                      parallel=parse_parallel(r.title), condition=r.condition, url=r.url, image_url=r.image_url,
                      excluded=r.excluded, in_window=r.item_id in in_window) for r in _active_rows(session, card_id, grades)]
