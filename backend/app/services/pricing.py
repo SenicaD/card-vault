@@ -369,6 +369,8 @@ def build_quotes(groups: dict[str, list[EbayItem]], grades: list[str], query: st
     if other_identity:
         code = f"shows a different card code than {ident.code.upper()} or " if ident.code else ""
         rule = "isn't for a redemption card" if ident.redemption else "is for a redemption card, which this card isn't"
+        if ident.auto is not None and not ident.redemption:
+            rule += (", or isn't for an autograph" if ident.auto else ", or is for an autograph, which this card isn't")
         trace.note(f"{other_identity} listings were left out because their title {code}{rule}.")
     return quotes, used
 

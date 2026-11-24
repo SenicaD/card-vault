@@ -13,7 +13,7 @@ export const DECISION_LABEL: Record<string, string> = {
   grade_not_requested: 'Another grade',
   excluded: 'You unticked it',
   other_card: 'Different card',
-  other_identity: 'Different number or redemption',
+  other_identity: 'Different number, redemption or auto',
   not_alike: "Doesn't look like your photo",
   other_version: 'Different version',
   outlier: 'Price outlier',

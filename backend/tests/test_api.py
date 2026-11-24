@@ -2158,15 +2158,19 @@ def test_cards_without_a_code_are_priced_as_before():
     from app.services.identity import CardIdentity, identity_of_card
     from app.services.pricing import build_quotes, group_by_grade
     groups = group_by_grade(_items(*_CARD46_OTHERS[:1], *_CARD46_BTP))
-    plain, plain_used = build_quotes(groups, ["Raw"], "q", "ebay-active")
+    # the $600 listing is an autograph, which this card isn't, so it is the only one left out
+    plain, plain_used = build_quotes(group_by_grade(_items(*_CARD46_BTP)), ["Raw"], "q", "ebay-active")
     for number in (None, "136"):
         card = SimpleNamespace(name="Jacob Misiorowski", set_name="2026 Topps Chrome", variant=None, card_number=number,
-                               search_query="2026 Topps Chrome Jacob Misiorowski", id_confidence=0.9, is_redemption=False)
+                               search_query="2026 Topps Chrome Jacob Misiorowski", id_confidence=0.9, is_redemption=False,
+                               is_auto=False)
         ident = identity_of_card(card)
-        assert ident == CardIdentity(None, False)
+        assert ident == CardIdentity(None, False, False)
         quotes, used = build_quotes(groups, ["Raw"], "q", "ebay-active", ident=ident)
-        assert [q.model_dump() for q in quotes] == [q.model_dump() for q in plain] and used == plain_used
+        stats = lambda qs: [(q.sample_size, q.low, q.median, q.high) for q in qs]  # noqa: E731 (item ids shift by one)
+        assert stats(quotes) == stats(plain) and [i.price for i in used] == [i.price for i in plain_used]
         assert any("BTP-2" in i.title for i in used)  # a code in the title is kept when the card has none
+        assert all(i.price != 600 for i in used)
 
 
 def test_listings_for_another_identity_are_traced(monkeypatch):
@@ -2247,9 +2251,9 @@ def test_identity_of_card_reads_redemption_from_the_card():
     def card(**kw):
         return SimpleNamespace(**{"name": "Jacob Misiorowski", "set_name": "2026 Bowman Chrome", "variant": None,
                                   "card_number": "CRA-JMI", "search_query": None, "id_confidence": None,
-                                  "is_redemption": False, **kw})
-    assert identity_of_card(card()) == CardIdentity("crajmi", False)
-    assert identity_of_card(card(variant="Auto Redemption")) == CardIdentity("crajmi", True)
+                                  "is_redemption": False, "is_auto": False, **kw})
+    assert identity_of_card(card()) == CardIdentity("crajmi", False, False)
+    assert identity_of_card(card(variant="Auto Redemption")) == CardIdentity("crajmi", True, True)
     assert identity_of_card(card(search_query="2026 Bowman Chrome Misiorowski CRA-JMI REDEMPTION")).redemption
     assert identity_of_card(card(id_confidence=0.3, variant="Auto Redemption")) is None
 
@@ -2262,10 +2266,81 @@ def test_identity_of_card_reads_the_saved_redemption_flag():
     def card(**kw):
         return SimpleNamespace(**{"name": "Jacob Misiorowski", "set_name": "2026 Bowman Chrome", "variant": None,
                                   "card_number": "CRA-JMI", "search_query": "2026 Bowman Chrome Jacob Misiorowski CRA-JMI",
-                                  "id_confidence": 0.9, "is_redemption": False, **kw})
+                                  "id_confidence": 0.9, "is_redemption": False, "is_auto": False, **kw})
     assert identity_of_card(card(is_redemption=True)).redemption is True  # no "redemp" in any text
     assert identity_of_card(card(variant="Auto Redemption")).redemption is True  # text alone still counts
     assert identity_of_card(card(is_redemption=True, id_confidence=0.3)) is None
+
+
+def test_identity_of_card_reads_autograph_status_from_the_flag_or_the_text():
+    """Cards saved before the is_auto flag existed only say "Auto" in their variant."""
+    from types import SimpleNamespace
+
+    from app.services.identity import identity_of_card
+
+    def card(**kw):
+        return SimpleNamespace(**{"name": "Chrome Chromographs Mike Trout", "set_name": "Topps", "variant": None,
+                                  "card_number": None, "search_query": "topps 2026 chrome chromographs mike trout",
+                                  "id_confidence": 0.75, "is_redemption": False, "is_auto": False, **kw})
+    assert identity_of_card(card()).auto is False
+    assert identity_of_card(card(is_auto=True)).auto is True
+    assert identity_of_card(card(variant="Auto")).auto is True  # an older card: only the variant says it
+    assert identity_of_card(card(search_query="topps 2026 chrome chromographs mike trout auto")).auto is True
+    assert identity_of_card(card(is_redemption=True)).auto is True  # a redemption is for an autograph
+
+
+def test_autograph_status_must_match_the_card():
+    from app.services.identity import CardIdentity, fits_identity
+    auto, plain, either = CardIdentity(None, False, True), CardIdentity(None, False, False), CardIdentity(None, False)
+    trout_auto = "2026 Topps Chrome Chromographs Mike Trout Auto Gold Refractor /50 CHR-MT"
+    trout_insert = "2026 Topps Chrome Big Ticket Players Mike Trout #BTP-1"
+    assert fits_identity(trout_auto, auto) and not fits_identity(trout_insert, auto)
+    assert fits_identity(trout_insert, plain) and not fits_identity(trout_auto, plain)
+    assert fits_identity(trout_auto, either) and fits_identity(trout_insert, either)
+    for word in ("AUTO", "Autograph", "Autographed", "RPA", "autos"):
+        assert fits_identity(f"2026 Bowman Chrome Player {word}", auto), word
+    redemption = CardIdentity(None, True, True)  # sellers often leave "auto" out of a redemption's title
+    assert fits_identity("2026 Bowman Chrome Jacob Misiorowski CRA-JMI Redemption", redemption)
+
+
+@pytest.mark.parametrize("name, surname", [
+    ("Samurai Japan Yoshinobu Yamamoto Sensational Samurai", "yamamoto"),
+    ("Yoshinobu Yamamoto SAMURAI JAPAN", "yamamoto"),
+    ("RJ Harvey Denver Broncos", "harvey"),
+    ("Pat Surtain II Denver Broncos", "surtain"),
+    ("Wesley Walls Carolina Panthers", "walls"),
+    ("Reggie Wayne Colts", "wayne"),
+    ("Cosmic Chrome Juan Soto Stellar Stars", "soto"),
+    ("Cosmic Chrome Star Clusters Mets Soto", "soto"),
+    ("William Nylander UD Portraits", "nylander"),
+    ("Obsidian Orbital King Miller USC", "miller"),
+    ("Chrome Chromographs Mike Trout", "trout"),
+    ("Jacob Misiorowski", "misiorowski"),
+    ("Best Jaron-Keawe Sagapolutele", "sagapolutele"),
+    ("D'Andre Swift", "dandre swift".split()[-1]),
+    # nothing names a player: filter by year and number only, never by an insert or team word
+    ("Samurai Japan Generational Greats", None),
+    ("Samurai Japan", None),
+    ("Tampa Bay Buccaneers", None),
+    ("dallas stars", None),
+    ("Rated Prospect Elite OKLAHOMA", None),
+    ("Chrome", None),
+])
+def test_the_surname_skips_insert_team_and_college_words(name, surname):
+    from app.services.identity import surname_of, who_from
+    assert surname_of(name) == surname
+    who = who_from(name, "2026", None)
+    assert who is not None and who.surname == surname
+
+
+def test_an_insert_word_in_the_name_no_longer_lets_other_players_through():
+    from app.services.identity import same_card, who_from
+    who = who_from("Samurai Japan Yoshinobu Yamamoto Sensational Samurai", "2026", None)
+    assert same_card("2026 Topps Chrome Samurai Japan Yoshinobu Yamamoto Sensational Samurai SS-4", who)
+    for other in ("2026 Topps Chrome Samurai Japan Yu Darvish Sensational Samurai SS-3",
+                  "ICHIRO 2026 Topps Chrome Samurai Japan Sensational Samurai Refractor SS-2",
+                  "Kazuma Okamoto 2026 Topps Chrome Samurai Japan Collection Sensational SS-10 /50"):
+        assert not same_card(other, who), other
 
 
 # Ordinary title words that look like a no-hyphen code ("letters then digits")
