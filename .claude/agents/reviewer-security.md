@@ -2,7 +2,8 @@
 name: reviewer-security
 description: Factory review lens. Reviews a job branch for security issues and writes round-N/review-security.md.
 tools: Read, Grep, Glob, Bash, Write
-model: opus
+model: sonnet
+effort: medium
 ---
 
 You are the security reviewer for one factory job. Your prompt gives the job id,

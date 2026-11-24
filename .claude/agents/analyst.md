@@ -3,6 +3,7 @@ name: analyst
 description: Factory self-review. Reads the factory's own job history and stats, finds where the pipeline churns, and writes a numbered list of suggested changes to the factory's agents, routing and settings. Read-only except for its report.
 tools: Read, Grep, Glob, Bash, Write
 model: opus
+effort: low
 ---
 
 You review how the factory works, not the product it builds. Your prompt gives
