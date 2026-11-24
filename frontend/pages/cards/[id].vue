@@ -29,6 +29,17 @@ const busy = ref('')
 const error = ref('')
 const confirmDelete = ref(false)
 const tab = ref('value')
+const showScatter = ref(false) // "Every price" is a dense chart: folded until asked for
+
+// One line on how far to trust the value, and the reasons, above the numbers
+const verdict = computed(() => {
+  const c = card.value
+  if (!c || c.confidence == null) return null
+  const level = c.confidence >= 70 ? { type: 'success', word: 'High' } : c.confidence >= 40 ? { type: 'warning', word: 'Medium' } : { type: 'error', word: 'Low' }
+  const source = c.value_basis === 'manual' ? 'your own value' : c.value_basis === 'sold' ? `the median of ${c.sold_count} recent sales`
+    : c.value_basis === 'asking' ? 'asking prices (no recent sales)' : 'nothing yet'
+  return { ...level, source, reasons: c.confidence_reasons ?? [] }
+})
 
 const listTitle = ref('')
 const listPrice = ref<number | null>(null)
@@ -507,6 +518,21 @@ onMounted(() => {
           </div>
         </v-card>
 
+        <!-- Verdict: the value, where it comes from, and how far to trust it -->
+        <v-alert v-if="verdict" :type="verdict.type" variant="tonal" density="compact" border="start" class="mb-3" :icon="verdict.type === 'success' ? 'mdi-shield-check-outline' : 'mdi-shield-alert-outline'">
+          <div class="text-body-2">
+            <strong class="num">{{ money(card.value) }}</strong> from {{ verdict.source }} ·
+            <strong>{{ verdict.word }} confidence</strong> <span class="num">({{ card.confidence }}/100)</span>
+            <template v-if="card.list_price"> · list at <strong class="num">{{ money(card.list_price) }}</strong></template>
+          </div>
+          <div v-if="card.value_pending != null" class="text-caption mt-1">
+            <v-icon icon="mdi-timer-sand" size="12" /> The last lookup found {{ money(card.value_pending) }}. It becomes the value if the next daily lookup agrees.
+          </div>
+          <ul v-if="verdict.reasons.length" class="verdict-reasons text-caption mt-1">
+            <li v-for="r in verdict.reasons" :key="r">{{ r }}</li>
+          </ul>
+        </v-alert>
+
         <!-- Value KPIs -->
         <v-row dense class="mb-2">
           <v-col cols="6" sm="3" class="kpi-wrap">
@@ -702,9 +728,12 @@ onMounted(() => {
               <v-divider />
               <div class="px-5 pt-4 pb-2 d-flex align-center justify-space-between flex-wrap ga-2">
                 <span class="text-body-2 font-weight-medium">Every price: asking vs sold</span>
-                <v-select v-model="pointsGrade" :items="selectedGrades" :placeholder="normalizeGrade(card.grade)" density="compact" hide-details clearable style="max-width: 180px" aria-label="Grade for this chart" />
+                <div class="d-flex align-center ga-2">
+                  <v-select v-if="showScatter" v-model="pointsGrade" :items="selectedGrades" :placeholder="normalizeGrade(card.grade)" density="compact" hide-details clearable style="max-width: 180px" aria-label="Grade for this chart" />
+                  <v-btn size="small" variant="text" :append-icon="showScatter ? 'mdi-chevron-up' : 'mdi-chevron-down'" :aria-expanded="showScatter" @click="showScatter = !showScatter">{{ showScatter ? 'Hide' : 'Show' }}</v-btn>
+                </div>
               </div>
-              <div class="px-5 pb-4"><PriceScatter :data="points" /></div>
+              <div v-if="showScatter" class="px-5 pb-4"><PriceScatter :data="points" /></div>
 
               <!-- Asking vs sold -->
               <template v-if="sold && (sold.provider.configured || sold.grades.some((g) => g.sold_count || g.yours_count) || sold.rows.length)">
@@ -913,6 +942,7 @@ onMounted(() => {
 </template>
 
 <style scoped>
+.verdict-reasons { margin: 0; padding-left: 18px; }
 .side { display: grid; gap: 16px; position: sticky; top: 84px; }
 @media (max-width: 959px) { .side { position: static; } }
 @media (max-width: 959px) { .photo { max-width: 240px; margin: 0 auto; } }
