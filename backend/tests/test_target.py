@@ -93,6 +93,24 @@ def test_list_price_ends_in_99():
     assert list_price(None, 1.1) is None and list_price(0, 1.1) is None
 
 
+def test_duplicates_are_grouped_and_merged_into_one_card():
+    with TestClient(app) as c:
+        mk = lambda **kw: c.post("/api/cards", json={"name": "Zed Dup Helenius", "category": "sports", "set_name": "Upper Deck",  # noqa: E731
+                                                     "card_number": "210", "grade": "Raw", **kw}).json()
+        a, b, d = mk(cost=2.0, notes="binder A"), mk(cost=4.0, quantity=3, notes="box 2"), mk(quantity=1)
+        other = mk(card_number="211")  # another card: never grouped with these
+        groups = [[x["id"] for x in g] for g in c.get("/api/cards/duplicate-groups").json()]
+        assert [a["id"], b["id"], d["id"]] in groups and not any(other["id"] in g for g in groups)
+
+        assert c.post("/api/cards/merge", json={"keep": a["id"], "merge": [other["id"]]}).status_code == 422
+        r = c.post("/api/cards/merge", json={"keep": a["id"], "merge": [b["id"], d["id"]]})
+        assert r.status_code == 200
+        kept = r.json()
+        assert kept["quantity"] == 5 and kept["cost"] == 3.5  # (2 x 1 + 4 x 3) / 4 copies with a known cost
+        assert kept["notes"] == "binder A\nbox 2"
+        assert c.get(f"/api/cards/{b['id']}").status_code == 404 and c.get(f"/api/cards/{d['id']}").status_code == 404
+
+
 def _quote(median):
     return {"query": "q", "sample_size": 10, "low": median * 0.8, "median": median, "mean": median,
             "high": median * 1.2, "spread": 0.2}

@@ -263,6 +263,60 @@ def duplicates(name: str, set_name: str | None = None, card_number: str | None =
     return out[:5]
 
 
+def _dup_key(c: Card) -> tuple:
+    """Cards with the same key are the same card entered twice: name, grade, set, number and version all agree."""
+    return ((c.name or "").strip().lower(), normalize_grade(c.grade), (c.set_name or "").strip().lower(),
+            _norm_num(c.card_number), c.parallel or "")
+
+
+@router.get("/duplicate-groups", response_model=list[list[CardRead]])
+def duplicate_groups(session: Session = Depends(get_session)):
+    """Unsold cards entered more than once (same name, grade, set, number and version), oldest first in each group,
+    so they can be merged into one card with the quantities added up."""
+    groups: dict[tuple, list[Card]] = {}
+    for c in session.exec(select(Card).where(col(Card.status) != CardStatus.sold).order_by(col(Card.id))).all():
+        groups.setdefault(_dup_key(c), []).append(c)
+    markup = load_app_settings(session).list_markup
+    return [[to_read(c, markup) for c in g] for g in groups.values() if len(g) > 1]
+
+
+class MergeBody(BaseModel):
+    keep: int  # the card that stays (its photo, prices and history)
+    merge: list[int] = Field(min_length=1, max_length=500)  # cards folded into it, then deleted
+
+
+@router.post("/merge", response_model=CardRead)
+def merge_cards(body: MergeBody, session: Session = Depends(get_session)):
+    """Fold duplicate cards into one: the quantities are added up, a cost or value missing on the kept card is taken
+    from the others (cost averaged over the copies), notes are joined, and the other cards are deleted."""
+    keep = get_card_or_404(session, body.keep)
+    others = session.exec(select(Card).where(col(Card.id).in_(set(body.merge) - {keep.id}))).all()
+    if not others:
+        raise HTTPException(422, "Nothing to merge")
+    if any(c.status == CardStatus.sold for c in [keep, *others]):
+        raise HTTPException(409, "Sold cards can't be merged")
+    if any(_dup_key(c) != _dup_key(keep) for c in others):
+        raise HTTPException(422, "Only the same card can be merged: name, grade, set, number and version must match")
+    cards = [keep, *others]
+    costed = [c for c in cards if c.cost is not None]
+    if costed:  # the average paid per copy, over the copies whose cost is known
+        keep.cost = round(sum(c.cost * c.quantity for c in costed) / sum(c.quantity for c in costed), 2)
+    keep.quantity = sum(c.quantity for c in cards)
+    keep.manual_value = keep.manual_value if keep.manual_value is not None else next(
+        (c.manual_value for c in others if c.manual_value is not None), None)
+    keep.location_id = keep.location_id if keep.location_id is not None else next(
+        (c.location_id for c in others if c.location_id is not None), None)
+    notes = [n for n in dict.fromkeys(c.notes.strip() for c in cards if c.notes and c.notes.strip())]
+    keep.notes = "\n".join(notes) or None
+    keep.updated_at = utcnow()
+    session.add(keep)
+    for c in others:
+        session.delete(c)
+    session.commit()
+    session.refresh(keep)
+    return to_read(keep, load_app_settings(session).list_markup)
+
+
 @router.get("/{card_id}", response_model=CardRead)
 def get_card(card_id: int, session: Session = Depends(get_session)):
     return to_read(get_card_or_404(session, card_id), load_app_settings(session).list_markup)

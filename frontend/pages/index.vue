@@ -111,6 +111,8 @@ function saveView() {
 }
 function deleteView(name: string) { views.value = views.value.filter((v) => v.name !== name); persistViews() }
 
+const dupGroups = ref<Card[][]>([]) // cards entered more than once, offered for merging
+const dupOpen = ref(false)
 async function load() {
   loading.value = true
   error.value = ''
@@ -124,10 +126,11 @@ async function load() {
     if (minValue.value !== '') query.min_value = String(minValue.value)
     if (maxValue.value !== '') query.max_value = String(maxValue.value)
     for (const f of flags.value) query[f] = f === 'stale_days' ? '7' : 'true'
-    ;[cards.value, stats.value, locations.value] = await Promise.all([
+    ;[cards.value, stats.value, locations.value, dupGroups.value] = await Promise.all([
       api<Card[]>('/api/cards', { query }),
       api<Stats>('/api/cards/stats'),
       api<Location[]>('/api/locations'),
+      api<Card[][]>('/api/cards/duplicate-groups').catch(() => []), // an optional hint: never block the inventory
     ])
     const here = new Set(cards.value.map((c) => c.id))
     selected.value = selected.value.filter((id) => here.has(id)) // drop anything that is no longer listed
@@ -205,6 +208,13 @@ watch(view, (v) => { try { localStorage.setItem('cv-view', v) } catch {} })
     <v-alert v-if="error" type="error" variant="tonal" border="start" class="mb-4" :text="error" />
     <v-alert v-if="revalued" type="success" variant="tonal" border="start" class="mb-4" closable :text="revalued" @click:close="revalued = ''" />
     <RepriceStatus ref="reprice" @finished="load" />
+    <v-alert v-if="dupGroups.length" type="info" variant="tonal" border="start" density="compact" class="mb-4" icon="mdi-content-duplicate">
+      <div class="d-flex align-center justify-space-between flex-wrap ga-2">
+        <span>{{ dupGroups.length }} card{{ dupGroups.length === 1 ? ' looks' : 's look' }} entered more than once.</span>
+        <v-btn size="small" variant="outlined" @click="dupOpen = true">Review and merge</v-btn>
+      </div>
+    </v-alert>
+    <DuplicatesDialog v-model="dupOpen" :groups="dupGroups" @merged="load" />
 
     <!-- KPIs -->
     <v-row dense class="mb-2">
